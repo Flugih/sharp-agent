@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SharpAgent</RootNamespace>
+    <AssemblyName>SharpAgent</AssemblyName>
+    <Product>Sharp Agent</Product>
+    <Version>1.2.0</Version>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+    <None Include="plugins\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Compile Remove="Agent\CodeIndexWorker.cs" />
+    <EmbeddedResource Include="Agent\CodeIndexWorker.cs" LogicalName="SharpAgent.CodeIndexWorker.cs" />
+  </ItemGroup>
+
+</Project>
