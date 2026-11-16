@@ -1,45 +1,39 @@
-using System.Windows;
-using System.Windows.Automation;
-using System.Windows.Controls;
-using SharpAgent.Agent;
-using SharpAgent.Ui;
-
 namespace SharpAgent;
 
 public partial class MainWindow
 {
-    private void UpdateTrashCount()
+    void UpdateTrashCount()
     {
         int count = _agent.Store.TrashCount();
         TrashCount.Text = count > 0 ? count.ToString() : "";
-        var hint = count > 0 ? "Корзина: " + Plural(count, "удалённый чат", "удалённых чата", "удалённых чатов") : "Корзина пуста";
-        TrashButton.ToolTip = hint;
-        AutomationProperties.SetName(TrashButton, hint);
+        SetHint(TrashButton, count > 0 ? "Корзина: " + Plural(count, "удалённый чат", "удалённых чата", "удалённых чатов") : "Корзина пуста");
     }
 
-    private void Trash_Click(object sender, RoutedEventArgs e)
+    void Trash_Click(object s, RoutedEventArgs e)
     {
         if (FlyoutShows(TrashCard)) CloseFlyout();
         else ShowTrash();
     }
 
-    private void ShowTrash()
+    void ShowTrash()
     {
         var chats = _agent.Store.ListTrash().OrderByDescending(c => c.Updated).ToList();
         TrashPanel.Children.Clear();
-
-        var header = new DockPanel { Margin = new Thickness(4, 0, 4, 4) };
+        var header = new DockPanel { Margin = new(4, 0, 4, 4) };
         if (chats.Count > 0)
         {
             var clear = new Button { Content = "Очистить", Height = 28 };
-            clear.Click += (_, _) => EmptyTrash(chats);
+            clear.Click += (_, _) =>
+            {
+                if (DarkDialog.Ask(this, "Очистить корзину?",
+                        $"{Plural(chats.Count, "чат будет удалён", "чата будут удалены", "чатов будут удалены")} навсегда. Восстановить их будет нельзя.",
+                        "Очистить", danger: true))
+                    RemoveFromTrash(chats);
+            };
             DockPanel.SetDock(clear, Dock.Right);
             header.Children.Add(clear);
         }
-        header.Children.Add(new TextBlock
-        {
-            Text = "Корзина", FontSize = 16, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center,
-        });
+        header.Children.Add(new TextBlock { Text = "Корзина", FontSize = 16, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         var caption = Caption(chats.Count == 0
             ? "Пусто. Удалённые чаты попадают сюда, и их можно вернуть."
             : "Удалённые чаты хранятся здесь, пока вы не удалите их навсегда.", 0, 8);
@@ -47,7 +41,6 @@ public partial class MainWindow
         DockPanel.SetDock(caption, Dock.Top);
         TrashPanel.Children.Add(header);
         TrashPanel.Children.Add(caption);
-
         if (chats.Count > 0)
         {
             var list = new StackPanel();
@@ -61,47 +54,37 @@ public partial class MainWindow
         if (!FlyoutShows(TrashCard)) ShowFlyout(TrashCard, TrashButton);
     }
 
-    private FrameworkElement TrashRow(ChatSummary chat)
+    DockPanel TrashRow(ChatSummary chat)
     {
         var restore = Theme.IconButton(Glyphs.Undo, $"Вернуть чат «{chat.Title}»");
         restore.Click += (_, _) => RestoreChat(chat.Path);
         var delete = Theme.IconButton(Glyphs.Delete, $"Удалить чат «{chat.Title}» навсегда");
-        delete.Click += (_, _) => DeleteForever(chat);
-
-        var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 8, 0) };
+        delete.Click += (_, _) =>
+        {
+            if (DarkDialog.Ask(this, "Удалить чат навсегда?", "Восстановить его будет нельзя.", "Удалить навсегда", danger: true, code: chat.Title))
+                RemoveFromTrash([chat]);
+        };
+        var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(4, 0, 8, 0) };
         texts.Children.Add(new TextBlock
         {
-            Text = chat.Title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis,
-            ToolTip = chat.Title.Length > 40 ? chat.Title : null,
+            Text = chat.Title, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = chat.Title.Length > 40 ? chat.Title : null,
         });
         texts.Children.Add(Caption("Удалён " + WhenText(chat.Updated), 2));
-
-        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
         DockPanel.SetDock(delete, Dock.Right);
         DockPanel.SetDock(restore, Dock.Right);
-        row.Children.Add(delete);
-        row.Children.Add(restore);
-        row.Children.Add(texts);
-        return row;
+        return new DockPanel { Margin = new(0, 0, 0, 6), Children = { delete, restore, texts } };
     }
 
-    private static string WhenText(DateTime time)
+    static string WhenText(DateTime time) => (DateTime.Today - time.Date).TotalDays switch
     {
-        var day = (DateTime.Today - time.Date).TotalDays switch
-        {
-            < 1 => "сегодня",
-            < 2 => "вчера",
-            _ => time.ToString(time.Year == DateTime.Today.Year ? "d MMMM" : "d MMMM yyyy", Ru),
-        };
-        return $"{day}, {time.ToString("HH:mm", Ru)}";
-    }
+        < 1 => "сегодня",
+        < 2 => "вчера",
+        _ => time.ToString(time.Year == DateTime.Today.Year ? "d MMMM" : "d MMMM yyyy", Ru),
+    } + ", " + time.ToString("HH:mm", Ru);
 
-    private void RestoreChat(string path)
+    void RestoreChat(string path)
     {
-        try
-        {
-            _agent.Store.Restore(path);
-        }
+        try { _agent.Store.Restore(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ShowToast("Не удалось вернуть чат: " + ex.Message, ToastKind.Error);
@@ -113,35 +96,12 @@ public partial class MainWindow
         ShowToast("Чат возвращён в список", ToastKind.Success);
     }
 
-    private void DeleteForever(ChatSummary chat)
-    {
-        if (!DarkDialog.Ask(this, "Удалить чат навсегда?", "Восстановить его будет нельзя.", "Удалить навсегда",
-                danger: true, code: chat.Title))
-            return;
-        RemoveFromTrash([chat]);
-    }
-
-    private void EmptyTrash(List<ChatSummary> chats)
-    {
-        if (!DarkDialog.Ask(this, "Очистить корзину?",
-                $"{Plural(chats.Count, "чат будет удалён", "чата будут удалены", "чатов будут удалены")} навсегда. Восстановить их будет нельзя.",
-                "Очистить", danger: true))
-            return;
-        RemoveFromTrash(chats);
-    }
-
-    private void RemoveFromTrash(IEnumerable<ChatSummary> chats)
+    void RemoveFromTrash(List<ChatSummary> chats)
     {
         foreach (var chat in chats)
         {
-            try
-            {
-                _agent.Store.DeleteForever(chat.Path);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                ShowToast("Не удалось удалить чат: " + ex.Message, ToastKind.Error);
-            }
+            try { _agent.Store.DeleteForever(chat.Path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowToast("Не удалось удалить чат: " + ex.Message, ToastKind.Error); }
         }
         UpdateTrashCount();
         ShowTrash();

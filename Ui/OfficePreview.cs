@@ -1,8 +1,4 @@
-using System.Diagnostics;
 using System.IO.Compression;
-using System.Runtime.InteropServices;
-using System.Text.Json;
-using SharpAgent.Core;
 
 namespace SharpAgent.Ui;
 
@@ -10,7 +6,7 @@ internal sealed record OfficePages(string Name, string[] Files);
 
 internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages> groups) : IDisposable
 {
-    private static string Folder => Path.Combine(AppPaths.TempFolder, "office-preview");
+    static string Folder => Path.Combine(AppPaths.TempFolder, "office-preview");
 
     public IReadOnlyList<OfficePages> Groups => groups;
 
@@ -20,6 +16,7 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
 
     public static async Task<OfficePreview> OpenAsync(string source, CancellationToken ct)
     {
+        Clear(Folder);
         var directory = Path.Combine(Folder, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -27,22 +24,22 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         try
         {
             var processPath = Environment.ProcessPath ?? throw new IOException("Не удалось запустить предпросмотр.");
-            var start = new ProcessStartInfo(processPath) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
+            var start = new ProcessStartInfo(processPath) { CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
             if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
                 start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, typeof(OfficePreview).Assembly.GetName().Name + ".dll"));
             start.ArgumentList.Add("--office-preview");
             start.ArgumentList.Add(Path.GetFullPath(source));
             start.ArgumentList.Add(directory);
             using var child = Process.Start(start) ?? throw new IOException("Не удалось запустить предпросмотр.");
+            void Kill() { try { child.Kill(); } catch { } }
+            using var stop = ct.Register(Kill);
             try { await child.WaitForExitAsync(timeout.Token); }
             catch (OperationCanceledException)
             {
-                if (!child.HasExited)
-                    try { child.Kill(); } catch (InvalidOperationException) { }
+                Kill();
                 if (ct.IsCancellationRequested) throw;
                 throw new IOException("Предпросмотр занял слишком много времени. Откройте файл во внешней программе.");
             }
-
             if (child.ExitCode != 0) throw new IOException(child.ExitCode switch
             {
                 2 => "Для предпросмотра установите соответствующее приложение Microsoft Office или откройте файл во внешней программе.",
@@ -50,15 +47,10 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
                 4 => "Windows не разрешила запустить Office для предпросмотра. Откройте файл во внешней программе.",
                 _ => "Не удалось отобразить документ. Откройте его во внешней программе.",
             });
-
-            var manifest = await File.ReadAllTextAsync(Path.Combine(directory, "pages.json"), ct);
-            var pages = JsonSerializer.Deserialize<OfficePages[]>(manifest) ?? [];
+            var pages = JsonSerializer.Deserialize<OfficePages[]>(await File.ReadAllTextAsync(Path.Combine(directory, "pages.json"), ct)) ?? [];
             if (pages.Length == 0) throw new IOException("В документе нет страниц для показа.");
-            var full = pages.Select(group => group with
-            {
-                Files = group.Files.Select(file => Path.Combine(directory, Path.GetFileName(file))).ToArray(),
-            }).ToArray();
-            return new OfficePreview(directory, full);
+            return new OfficePreview(directory,
+                pages.Select(group => group with { Files = [.. group.Files.Select(file => Path.Combine(directory, Path.GetFileName(file)))] }).ToArray());
         }
         catch
         {
@@ -79,15 +71,14 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
             var kind = Path.GetExtension(source).ToLowerInvariant();
             var (program, process) = kind switch
             {
-                ".docx" => ("Word.Application", "WINWORD"),
-                ".xlsx" => ("Excel.Application", "EXCEL"),
-                ".pptx" or ".ppsx" => ("PowerPoint.Application", "POWERPNT"),
+                ".docx" => ("Word", "WINWORD"),
+                ".xlsx" => ("Excel", "EXCEL"),
+                ".pptx" or ".ppsx" => ("PowerPoint", "POWERPNT"),
                 _ => ("", ""),
             };
             if (program.Length == 0 || !IsDocumentPackage(source)) return 3;
-            if (Type.GetTypeFromProgID(program) is not { } type) return 2;
+            if (Type.GetTypeFromProgID(program + ".Application") is not { } type) return 2;
             var running = Process.GetProcessesByName(process);
-            bool startedForPreview = running.Length == 0;
             foreach (var item in running) item.Dispose();
             object instance;
             try { instance = Activator.CreateInstance(type)!; }
@@ -109,24 +100,17 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
                 try
                 {
                     dynamic app = instance;
-                    if (startedForPreview && (kind switch
-                        {
-                            ".docx" => app.Documents.Count == 0,
-                            ".xlsx" => app.Workbooks.Count == 0,
-                            _ => app.Presentations.Count == 0,
-                        })) app.Quit();
+                    if (running.Length == 0 && (kind switch { ".docx" => app.Documents, ".xlsx" => app.Workbooks, _ => app.Presentations }).Count == 0)
+                        app.Quit();
                 }
                 catch { }
                 Marshal.FinalReleaseComObject(instance);
             }
         }
-        catch (Exception)
-        {
-            return 1;
-        }
+        catch { return 1; }
     }
 
-    private static bool IsDocumentPackage(string path)
+    static bool IsDocumentPackage(string path)
     {
         using var zip = ZipFile.OpenRead(path);
         return zip.GetEntry("[Content_Types].xml") != null && !zip.Entries.Any(entry =>
@@ -134,7 +118,7 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
             entry.FullName.StartsWith("xl/macrosheets/", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static OfficePages[] ExportWord(dynamic app, string source, string target)
+    static OfficePages[] ExportWord(dynamic app, string source, string target)
     {
         dynamic? document = null;
         int security = app.AutomationSecurity;
@@ -152,7 +136,7 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         }
         finally
         {
-            try { if (document != null) document.Close(0); }
+            try { document?.Close(0); }
             finally
             {
                 app.Options.UpdateLinksAtOpen = update;
@@ -162,7 +146,7 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         }
     }
 
-    private static OfficePages[] ExportExcel(dynamic app, string source, string target)
+    static OfficePages[] ExportExcel(dynamic app, string source, string target)
     {
         dynamic? book = null;
         int security = app.AutomationSecurity;
@@ -180,14 +164,15 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
                 dynamic sheet = sheets.Item[i];
                 if (sheet.Visible != -1) continue;
                 var file = $"sheet-{i}.xps";
-                sheet.ExportAsFixedFormat(Type: 1, Filename: Path.Combine(target, file), IgnorePrintAreas: true);
-                if (File.Exists(Path.Combine(target, file))) groups.Add(new OfficePages((string)sheet.Name, [file]));
+                var path = Path.Combine(target, file);
+                sheet.ExportAsFixedFormat(Type: 1, Filename: path, IgnorePrintAreas: true);
+                if (File.Exists(path)) groups.Add(new OfficePages((string)sheet.Name, [file]));
             }
             return [.. groups];
         }
         finally
         {
-            try { if (book != null) book.Close(false); }
+            try { book?.Close(false); }
             finally
             {
                 app.DisplayAlerts = alerts;
@@ -196,7 +181,7 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         }
     }
 
-    private static OfficePages[] ExportSlides(dynamic app, string source, string target)
+    static OfficePages[] ExportSlides(dynamic app, string source, string target)
     {
         dynamic? presentation = null;
         int security = app.AutomationSecurity;
@@ -216,17 +201,16 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         }
         finally
         {
-            try { if (presentation != null) presentation.Close(); }
+            try { presentation?.Close(); }
             finally { app.AutomationSecurity = security; }
         }
     }
 
     public void Dispose() => Clear(directory);
 
-    private static void Clear(string path)
+    static void Clear(string path)
     {
         try { Directory.Delete(path, true); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 }

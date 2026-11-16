@@ -1,29 +1,18 @@
-using System.Net;
-using System.Windows;
 using System.Windows.Automation.Peers;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media.Animation;
-using System.Windows.Threading;
-using SharpAgent.Api;
-using SharpAgent.Core;
-using SharpAgent.Ui;
 
 namespace SharpAgent;
 
 public partial class MainWindow
 {
-    private static readonly TimeSpan ShortestRecording = TimeSpan.FromSeconds(0.5);
+    readonly DispatcherTimer _voiceTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    VoiceRecorder? _recorder;
+    CancellationTokenSource? _voice;
 
-    private readonly DispatcherTimer _voiceTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
-    private VoiceRecorder? _recorder;
-    private CancellationTokenSource? _voice;
+    bool VoiceShown => IsShown(VoicePanel);
 
-    private bool VoiceShown => VoicePanel.Visibility == Visibility.Visible;
+    UIElement ComposerFocus => !VoiceShown ? InputBox : _recorder != null ? VoiceDoneButton : VoiceTime;
 
-    private UIElement ComposerFocus => !VoiceShown ? InputBox : _recorder != null ? VoiceDoneButton : VoiceTime;
-
-    private async void Mic_Click(object sender, RoutedEventArgs e)
+    async void Mic_Click(object sender, RoutedEventArgs e)
     {
         if (!_config.HasGroqKey)
         {
@@ -32,19 +21,13 @@ public partial class MainWindow
         }
         VoiceRecorder recorder;
         MicButton.IsEnabled = false;
-        try
-        {
-            recorder = await Task.Run(VoiceRecorder.Start);
-        }
+        try { recorder = await Task.Run(VoiceRecorder.Start); }
         catch (MicrophoneException ex)
         {
             ShowMicrophoneProblem(ex);
             return;
         }
-        finally
-        {
-            MicButton.IsEnabled = true;
-        }
+        finally { MicButton.IsEnabled = true; }
         if (_voice != null)
         {
             recorder.Cancel();
@@ -56,7 +39,7 @@ public partial class MainWindow
         _ = Dispatcher.InvokeAsync(() => VoiceDoneButton.Focus(), DispatcherPriority.Input);
     }
 
-    private void OnVoiceTick()
+    void OnVoiceTick()
     {
         if (_recorder is not { } recorder) return;
         while (recorder.Levels.TryDequeue(out var level)) VoiceWave.Push(level);
@@ -65,20 +48,17 @@ public partial class MainWindow
         if (recorder.Ended) _ = FinishVoiceAsync();
     }
 
-    private void VoiceDone_Click(object sender, RoutedEventArgs e) => _ = FinishVoiceAsync();
+    void VoiceDone_Click(object sender, RoutedEventArgs e) => _ = FinishVoiceAsync();
 
-    private void VoiceCancel_Click(object sender, RoutedEventArgs e) => CancelVoice();
+    void VoiceCancel_Click(object sender, RoutedEventArgs e) => CancelVoice();
 
-    private async Task FinishVoiceAsync()
+    async Task FinishVoiceAsync()
     {
         if (_recorder is not { } recorder || _voice is not { } session) return;
         _recorder = null;
         ShowVoice(recording: false);
         byte[] wav;
-        try
-        {
-            wav = await recorder.StopAsync();
-        }
+        try { wav = await recorder.StopAsync(); }
         catch (Exception ex)
         {
             App.LogError(ex);
@@ -88,7 +68,7 @@ public partial class MainWindow
             return;
         }
         if (session.IsCancellationRequested) return;
-        if (recorder.Silent || recorder.Length < ShortestRecording)
+        if (recorder.Silent || recorder.Length < TimeSpan.FromSeconds(0.5))
         {
             EndVoice(session);
             if (recorder.Silent) ShowMicrophoneProblem(VoiceRecorder.SilenceProblem());
@@ -99,7 +79,7 @@ public partial class MainWindow
         await TranscribeAsync(wav, session);
     }
 
-    private async Task TranscribeAsync(byte[] wav, CancellationTokenSource session)
+    async Task TranscribeAsync(byte[] wav, CancellationTokenSource session)
     {
         try
         {
@@ -114,20 +94,17 @@ public partial class MainWindow
             EndVoice(session);
             if (ex is not (ApiException or HttpRequestException or OperationCanceledException)) App.LogError(ex);
             bool key = ex is ApiException { StatusCode: HttpStatusCode.Unauthorized };
-            ShowToast(VoiceError(ex), ToastKind.Error, key ? "Указать ключ" : "Повторить",
-                key ? ShowVoiceKeySettings : () => RetryVoice(wav));
+            ShowToast(ex switch
+            {
+                ApiException => ex.Message.Split('\n')[0],
+                HttpRequestException => "Нет связи с Groq. Проверьте подключение к интернету и нажмите «Повторить».",
+                OperationCanceledException => "Groq не ответил вовремя. Нажмите «Повторить».",
+                _ => "Не удалось распознать речь: " + ex.Message,
+            }, ToastKind.Error, key ? "Указать ключ" : "Повторить", key ? ShowVoiceKeySettings : () => RetryVoice(wav));
         }
     }
 
-    private static string VoiceError(Exception ex) => ex switch
-    {
-        ApiException => ex.Message.Split('\n')[0],
-        HttpRequestException => "Нет связи с Groq. Проверьте подключение к интернету и нажмите «Повторить».",
-        OperationCanceledException => "Groq не ответил вовремя. Нажмите «Повторить».",
-        _ => "Не удалось распознать речь: " + ex.Message,
-    };
-
-    private void RetryVoice(byte[] wav)
+    void RetryVoice(byte[] wav)
     {
         if (_voice != null) return;
         _voice = new CancellationTokenSource();
@@ -135,7 +112,7 @@ public partial class MainWindow
         _ = TranscribeAsync(wav, _voice);
     }
 
-    private void CancelVoice()
+    void CancelVoice()
     {
         _recorder?.Cancel();
         _recorder = null;
@@ -145,7 +122,7 @@ public partial class MainWindow
         HideVoice();
     }
 
-    private void EndVoice(CancellationTokenSource session)
+    void EndVoice(CancellationTokenSource session)
     {
         session.Dispose();
         if (_voice != session) return;
@@ -153,7 +130,7 @@ public partial class MainWindow
         HideVoice();
     }
 
-    private void ShowVoice(bool recording)
+    void ShowVoice(bool recording)
     {
         VoiceTime.Text = recording ? "0:00" : "Распознаю речь…";
         if (!recording && VoiceDoneButton.IsKeyboardFocused) VoiceTime.Focus();
@@ -161,13 +138,13 @@ public partial class MainWindow
         VoicePanel.Visibility = Visibility.Visible;
         InputBox.Visibility = Visibility.Collapsed;
         UpdateInputHint();
-        VoiceWave.Visibility = VoiceDoneButton.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
+        VoiceWave.Visibility = VoiceDoneButton.Visibility = VisibleIf(recording);
         if (!recording) UIElementAutomationPeer.CreatePeerForElement(VoiceTime)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
         SetVoiceMark(recording ? RecordingDot() : MakeSpinner(14));
         UpdateComposerButtons();
     }
 
-    private void HideVoice()
+    void HideVoice()
     {
         _voiceTimer.Stop();
         SetVoiceMark(null);
@@ -182,7 +159,7 @@ public partial class MainWindow
         }, DispatcherPriority.Input);
     }
 
-    private void SetVoiceMark(FrameworkElement? mark)
+    void SetVoiceMark(FrameworkElement? mark)
     {
         if (VoiceMark.Child is FrameworkElement old)
         {
@@ -192,22 +169,18 @@ public partial class MainWindow
         VoiceMark.Child = mark;
     }
 
-    private static FrameworkElement RecordingDot()
+    static FrameworkElement RecordingDot()
     {
         var dot = new System.Windows.Shapes.Ellipse
         {
-            Width = 8, Height = 8, Fill = Theme.DangerText,
-            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Width = 8, Height = 8, Fill = Theme.DangerText, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
         };
         if (Theme.AnimationsEnabled)
-            dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.35, TimeSpan.FromSeconds(0.7))
-            {
-                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
-            });
+            dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.35, TimeSpan.FromSeconds(0.7)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever });
         return dot;
     }
 
-    private void InsertDictation(string text)
+    void InsertDictation(string text)
     {
         var current = InputBox.Text;
         int start = InputBox.SelectionStart, end = start + InputBox.SelectionLength;
@@ -217,9 +190,8 @@ public partial class MainWindow
         InputBox.Select(start + text.Length, 0);
     }
 
-    private void ShowMicrophoneProblem(MicrophoneException problem) =>
-        ShowToast(problem.Message, ToastKind.Error, problem.Privacy ? "Открыть параметры" : null,
-            problem.Privacy ? () => FileActions.OpenWindowsSettings("privacy-microphone") : null);
+    void ShowMicrophoneProblem(MicrophoneException problem) => ShowToast(problem.Message, ToastKind.Error,
+        problem.Privacy ? "Открыть параметры" : null, problem.Privacy ? () => FileActions.OpenWindowsSettings("privacy-microphone") : null);
 
-    private void ShowVoiceKeySettings() => OpenSettings(_config.Provider == AgentProvider.Groq ? KeyPasswordBox : VoiceKeyBox);
+    void ShowVoiceKeySettings() => OpenSettings(_config.Provider == AgentProvider.Groq ? KeyPasswordBox : VoiceKeyBox);
 }

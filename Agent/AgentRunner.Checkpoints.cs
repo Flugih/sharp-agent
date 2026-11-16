@@ -1,62 +1,57 @@
-using System.Text.Json.Nodes;
-using SharpAgent.Core;
-using SharpAgent.Tools;
-
 namespace SharpAgent.Agent;
 
-public sealed partial class AgentRunner
+partial class AgentRunner
 {
-    private sealed record CompletedWrite(string Id, string Path, string Hash, string Output);
-    private readonly Dictionary<string, CompletedWrite> _completedWrites = new(StringComparer.Ordinal);
+    sealed record CompletedWrite(string Id, string Path, string Hash, string Output);
+    readonly Dictionary<string, CompletedWrite> _completedWrites = new();
 
-    private void RecordCompletedWrite(ToolCallEvent call, JsonObject result, FileChange? change)
+    void RecordChange(ToolCallEvent call, JsonObject message, FileChange? change)
     {
-        if (call.Name is not ("write_file" or "edit_file" or "run_plugin")) return;
-        var path = change?.Path ?? WriteTarget(call);
-        if (path == null || (change?.AfterHash ?? FileChanges.CurrentHash(path)) is not { } hash) return;
-        if (result[MetaField] is not JsonObject meta) result[MetaField] = meta = new JsonObject();
+        if (change != null)
+            EnsureMeta(message)["file_change"] = new JsonObject
+            {
+                ["path"] = change.Path, ["before"] = change.BeforeHash, ["after"] = change.AfterHash, ["backup"] = change.Backup,
+            };
+        if (call.Name is not ("write_file" or "edit_file" or "run_plugin") || (change?.Path ?? WriteTarget(call)) is not { } path ||
+            (change?.AfterHash ?? FileChanges.CurrentHash(path)) is not { } hash) return;
+        var meta = EnsureMeta(message);
         meta["written_path"] = path;
         meta["written_hash"] = hash;
     }
 
-    private void RestoreCompletedWrites()
+    void RestoreCompletedWrites()
     {
         _completedWrites.Clear();
         foreach (var (call, result) in CurrentActions())
-        {
-            if (result[MetaField] is not JsonObject meta || JsonUtil.Str(meta["written_path"]) is not { } path ||
-                JsonUtil.Str(meta["written_hash"]) is not { } hash) continue;
-            var previous = JsonUtil.Str(result["content"])?.Split('\n', 2)[0] ?? "";
-            var note = $"Действие уже успешно выполнено до остановки. Файл {path} сохранил записанное содержимое. " +
-                       "Переходи к оставшимся шагам. Предыдущий результат: " + previous;
-            _completedWrites[WriteKey(call)] = new CompletedWrite(call.Id, path, hash, note);
-        }
+            if (MetaOf(result) is { } meta && Str(meta["written_path"]) is { } path && Str(meta["written_hash"]) is { } hash)
+                _completedWrites[WriteKey(call)] = new(call.Id, path, hash,
+                    $"Действие уже успешно выполнено до остановки. Файл {path} сохранил записанное содержимое. " +
+                    $"Переходи к оставшимся шагам. Предыдущий результат: {Str(result["content"])?.Split('\n', 2)[0]}");
     }
 
-    private CompletedWrite? CompletedWriteOf(ToolCallEvent call) =>
+    CompletedWrite? CompletedWriteOf(ToolCallEvent call) =>
         _completedWrites.Count > 0 && _completedWrites.TryGetValue(WriteKey(call), out var completed) &&
         WriteTarget(call) is { } path && PathHelper.SamePath(path, completed.Path) && FileChanges.CurrentHash(path) == completed.Hash
             ? completed : null;
 
-    private static string WriteKey(ToolCallEvent call)
+    static string WriteKey(ToolCallEvent call)
     {
-        JsonNode? Ordered(JsonNode? value) => value switch
+        static JsonNode? Ordered(JsonNode? value) => value switch
         {
             JsonObject map => new JsonObject(map.OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, Ordered(pair.Value)))),
-            JsonArray list => new JsonArray(list.Select(Ordered).ToArray()),
+                .Select(pair => KeyValuePair.Create(pair.Key, Ordered(pair.Value)))),
+            JsonArray list => new JsonArray([.. list.Select(Ordered)]),
             _ => value?.DeepClone(),
         };
-        return call.Name + " " + Ordered(JsonUtil.ParseObject(call.ArgumentsJson))?.ToJsonString(JsonUtil.Compact);
+        return call.Name + " " + Ordered(ArgsOf(call))?.ToJsonString(Compact);
     }
 
-    private string? WriteTarget(ToolCallEvent call)
+    string? WriteTarget(ToolCallEvent call)
     {
-        if (call.Name is not ("write_file" or "edit_file" or "run_plugin") ||
-            JsonUtil.ParseObject(call.ArgumentsJson) is not { } args) return null;
+        if (call.Name is not ("write_file" or "edit_file" or "run_plugin") || ArgsOf(call) is not { } args) return null;
         try
         {
-            var raw = call.Name == "run_plugin" ? PluginTools.TargetOf(new ToolArgs(args), tools.Context) : JsonUtil.Str(args["path"]);
+            var raw = call.Name == "run_plugin" ? PluginTools.TargetOf(new ToolArgs(args), tools.Context) : Str(args["path"]);
             if (string.IsNullOrWhiteSpace(raw)) return null;
             var path = PathHelper.FinalPath(tools.Context.Resolve(raw));
             tools.Context.GuardSecrets(path);
@@ -69,32 +64,29 @@ public sealed partial class AgentRunner
         }
     }
 
-    private static void RecordFileChange(JsonObject message, FileChange? change)
-    {
-        if (change == null) return;
-        if (message[MetaField] is not JsonObject meta) message[MetaField] = meta = new JsonObject();
-        meta["file_change"] = new JsonObject
-        {
-            ["path"] = change.Path, ["before"] = change.BeforeHash, ["after"] = change.AfterHash, ["backup"] = change.Backup,
-        };
-    }
-
-    private static JsonObject? FileChangeMeta(JsonNode message) =>
-        ((message as JsonObject)?[MetaField] as JsonObject)?["file_change"] as JsonObject;
+    static JsonObject? FileChangeMeta(JsonNode message) => MetaOf(message)?["file_change"] as JsonObject;
 
     internal static FileChange? FileChangeOf(JsonNode message) =>
-        FileChangeMeta(message) is { } info && JsonUtil.Str(info["path"]) is { } path &&
-        JsonUtil.Str(info["after"]) is { } after
-            ? new FileChange(path, JsonUtil.Str(info["before"]), after, JsonUtil.Str(info["backup"]))
+        FileChangeMeta(message) is { } info && Str(info["path"]) is { } path && Str(info["after"]) is { } after
+            ? new FileChange(path, Str(info["before"]), after, Str(info["backup"]))
             : null;
 
-    internal static bool FileChangeUndone(JsonNode message) =>
-        JsonUtil.Bool(FileChangeMeta(message)?["undone"]) == true;
+    internal static bool FileChangeUndone(JsonNode message) => Bool(FileChangeMeta(message)?["undone"]) == true;
 
-    internal void MarkFileChangeUndone(IReadOnlyCollection<string> ids)
+    internal void MarkFileChangeUndone(IEnumerable<(FileChange Change, int Steps)> changes)
     {
-        foreach (var result in _history.Where(node => JsonUtil.Str(node["tool_call_id"]) is { } id && ids.Contains(id)))
-            if (FileChangeMeta(result) is { } info) info["undone"] = true;
+        foreach (var (change, steps) in changes)
+        {
+            string? after = change.AfterHash;
+            for (int i = _history.Count - 1, left = steps; i >= 0 && left > 0; i--)
+                if (FileChangeOf(_history[i]) is { } step && step.AfterHash == after && !FileChangeUndone(_history[i]) &&
+                    PathHelper.SamePath(step.Path, change.Path))
+                {
+                    FileChangeMeta(_history[i])!["undone"] = true;
+                    after = step.BeforeHash;
+                    left--;
+                }
+        }
         InvalidateProjectContext();
         Save();
     }

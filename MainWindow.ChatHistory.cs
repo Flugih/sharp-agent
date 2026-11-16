@@ -1,24 +1,14 @@
-using System.Diagnostics;
-using System.Text.Json.Nodes;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Input;
-using System.Windows.Threading;
-using SharpAgent.Core;
-using SharpAgent.Ui;
-
 namespace SharpAgent;
 
 public partial class MainWindow
 {
-    private const int HistoryPageSize = 8;
-    private const double HistoryEdge = 110;
-    private int _historyStart, _historyVersion;
-    private bool _changingHistory, _historyPagePending;
-    private DispatcherTimer? _chatMotion;
+    const int HistoryPageSize = 8;
+    const double HistoryEdge = 110;
+    int _historyStart, _historyVersion;
+    bool _changingHistory, _historyPagePending;
+    DispatcherTimer? _chatMotion;
 
-    private void ResetHistoryPages()
+    void ResetHistoryPages()
     {
         StopChatMotion();
         int version = ++_historyVersion;
@@ -30,10 +20,7 @@ public partial class MainWindow
             _historyStart = FindHistoryPageStart(_agent.History.Count);
             RenderHistory(_agent.History.Skip(_historyStart).ToArray());
         }
-        finally
-        {
-            _changingHistory = false;
-        }
+        finally { _changingHistory = false; }
         Dispatcher.InvokeAsync(() =>
         {
             if (version != _historyVersion || !_autoScroll) return;
@@ -42,7 +29,7 @@ public partial class MainWindow
         }, DispatcherPriority.Loaded);
     }
 
-    private int FindHistoryPageStart(int end)
+    int FindHistoryPageStart(int end)
     {
         int remaining = HistoryPageSize;
         for (int i = end - 1; i >= 0; i--)
@@ -51,7 +38,7 @@ public partial class MainWindow
         return 0;
     }
 
-    private void CheckOlderHistory()
+    void CheckOlderHistory()
     {
         if (_changingHistory || _historyPagePending || _historyStart == 0 || ChatScroll.VerticalOffset > HistoryEdge) return;
         _historyPagePending = true;
@@ -64,7 +51,7 @@ public partial class MainWindow
         }, DispatcherPriority.Background);
     }
 
-    private void LoadOlderHistory()
+    void LoadOlderHistory()
     {
         _changingHistory = true;
         _autoScroll = false;
@@ -73,8 +60,8 @@ public partial class MainWindow
             int start = FindHistoryPageStart(_historyStart);
             var page = new StackPanel();
             var live = _chatView;
-            _chatView = new ChatRenderState(page);
-            try { RenderHistory(_agent.History.Skip(start).Take(_historyStart - start).ToArray()); }
+            _chatView = new(page);
+            try { RenderHistory(_agent.History.Take(start.._historyStart).ToArray()); }
             finally { _chatView = live; }
             _historyStart = start;
             double offset = ChatScroll.VerticalOffset;
@@ -83,14 +70,11 @@ public partial class MainWindow
             ChatScroll.ScrollToVerticalOffset(offset + page.ActualHeight);
             ChatScroll.UpdateLayout();
         }
-        finally
-        {
-            _changingHistory = false;
-        }
+        finally { _changingHistory = false; }
         UpdateScrollDownButton();
     }
 
-    private void ScrollChatBy(double delta)
+    void ScrollChatBy(double delta)
     {
         StopChatMotion();
         _autoScroll = delta > 0 && ChatScroll.VerticalOffset + delta >= ChatScroll.ScrollableHeight;
@@ -98,7 +82,7 @@ public partial class MainWindow
         if (delta < 0) CheckOlderHistory();
     }
 
-    private void ScrollToLatest()
+    void ScrollToLatest()
     {
         StopChatMotion();
         var start = ChatScroll.VerticalOffset;
@@ -110,7 +94,7 @@ public partial class MainWindow
         }
         _autoScroll = false;
         var clock = Stopwatch.StartNew();
-        var timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
+        var timer = _chatMotion = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
         timer.Tick += (_, _) =>
         {
             double ratio = Math.Min(1, clock.Elapsed.TotalMilliseconds / 340);
@@ -120,21 +104,18 @@ public partial class MainWindow
             _autoScroll = true;
             UpdateScrollDownButton();
         };
-        _chatMotion = timer;
         timer.Start();
     }
 
-    private void StopChatMotion()
+    void StopChatMotion()
     {
         _chatMotion?.Stop();
         _chatMotion = null;
     }
 
-    private void UpdateScrollDownButton() =>
-        ScrollDownButton.Visibility = ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset > 80
-            ? Visibility.Visible : Visibility.Collapsed;
+    void UpdateScrollDownButton() => ScrollDownButton.Visibility = VisibleIf(ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset > 80);
 
-    private void ChatScroll_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    void ChatScroll_PreviewMouseLeftButtonDown(object s, MouseButtonEventArgs e)
     {
         for (var node = e.OriginalSource as DependencyObject; node != null && node != ChatScroll; node = ParentOf(node))
             if (node is ScrollBar or CodeBlockView)

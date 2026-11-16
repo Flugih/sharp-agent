@@ -1,10 +1,8 @@
-using System.Globalization;
-
 namespace SharpAgent.Core;
 
 public static class Tokens
 {
-    private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
+    static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
 
     public static string Format(long value)
     {
@@ -17,8 +15,7 @@ public static class Tokens
 
     public static string ToMillions(long value) => (value / 1e6).ToString("0.###", Ru);
 
-    public static string Percent(double fraction) =>
-        Math.Round(Math.Clamp(fraction, 0, 1) * 100).ToString("0", Ru) + "%";
+    public static string Percent(double fraction) => Math.Round(Math.Clamp(fraction, 0, 1) * 100).ToString("0", Ru) + "%";
 
     public static string Duration(TimeSpan time)
     {

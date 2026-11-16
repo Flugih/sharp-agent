@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace SharpAgent.Core;
 
 public static class DotEnv
@@ -25,32 +23,35 @@ public static class DotEnv
 
     public static void Save(string path, IReadOnlyDictionary<string, string?> values)
     {
-        var lines = File.Exists(path) ? File.ReadAllLines(path, Encoding.UTF8).ToList() : new List<string>();
+        var lines = File.Exists(path) ? File.ReadAllLines(path, Encoding.UTF8).ToList() : [];
         var pending = new Dictionary<string, string?>(values, StringComparer.OrdinalIgnoreCase);
-
         foreach (bool commentedPass in new[] { false, true })
-        {
-            for (int i = 0; i < lines.Count && pending.Count > 0; i++)
+            for (int n = 0; n < lines.Count && pending.Count > 0; n++)
             {
+                int i = commentedPass ? n : lines.Count - 1 - n;
                 var t = lines[i].Trim();
                 bool commented = t.StartsWith('#');
-                if (commented != commentedPass) continue;
-                if (!TrySplit(commented ? t.TrimStart('#').Trim() : t, out var key, out _)) continue;
-                if (!pending.TryGetValue(key, out var value)) continue;
-                if (commented && string.IsNullOrEmpty(value)) continue;
-
+                if (commented != commentedPass || !TrySplit(commented ? t.TrimStart('#').Trim() : t, out var key, out _) ||
+                    !pending.TryGetValue(key, out var value) || commented && string.IsNullOrEmpty(value)) continue;
                 lines[i] = $"{key}={Quote(value)}";
                 pending.Remove(key);
             }
-        }
-
         foreach (var (key, value) in pending)
             if (!string.IsNullOrEmpty(value)) lines.Add($"{key}={Quote(value)}");
-
-        File.WriteAllLines(path, lines, new UTF8Encoding(false));
+        var temp = path + ".tmp";
+        try
+        {
+            File.WriteAllLines(temp, lines, new UTF8Encoding(false));
+            File.Move(temp, path, true);
+        }
+        catch
+        {
+            File.Delete(temp);
+            throw;
+        }
     }
 
-    private static bool TrySplit(string line, out string key, out string value)
+    static bool TrySplit(string line, out string key, out string value)
     {
         if (line.StartsWith("export ", StringComparison.Ordinal)) line = line[7..].TrimStart();
         int eq = line.IndexOf('=');
@@ -59,10 +60,10 @@ public static class DotEnv
         return eq > 0;
     }
 
-    private static string Quote(string? value)
+    static string Quote(string? value)
     {
         value ??= "";
-        bool needsQuotes = value.Contains(" #") || value != value.Trim() || value.StartsWith('"') || value.StartsWith('\'');
-        return needsQuotes ? $"'{value}'" : value;
+        if (value.Contains('\n') || value.Contains('\r')) return '"' + value.Replace("\"", "\\\"").ReplaceLineEndings("\\n") + '"';
+        return value.Contains(" #") || value != value.Trim() || value.StartsWith('"') || value.StartsWith('\'') ? $"'{value}'" : value;
     }
 }

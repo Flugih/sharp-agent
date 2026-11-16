@@ -1,13 +1,4 @@
-using System.Net;
-using System.Windows;
-using System.Windows.Automation;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
-using System.Windows.Media;
-using SharpAgent.Api;
-using SharpAgent.Core;
-using SharpAgent.Ui;
 using Glyphs = SharpAgent.Ui.Glyphs;
 
 namespace SharpAgent;
@@ -18,26 +9,14 @@ public partial class MainWindow
     private string? _selectedModel;
     private bool _loadingModelCatalog;
 
-    private static string ProviderName(AgentProvider provider) => provider switch
-    {
-        AgentProvider.ChatGpt => "ChatGPT",
-        AgentProvider.Groq => "Groq",
-        _ => "Tooken Club",
-    };
+    private static string ProviderName(AgentProvider provider) =>
+        provider switch { AgentProvider.ChatGpt => "ChatGPT", AgentProvider.Groq => "Groq", _ => "Tooken Club" };
 
-    private static string[] DefaultModelsOf(AgentProvider provider) => provider switch
-    {
-        AgentProvider.ChatGpt => ChatGptModels,
-        AgentProvider.Groq => GroqModels,
-        _ => DefaultModels,
-    };
+    private static string[] DefaultModelsOf(AgentProvider provider) =>
+        provider switch { AgentProvider.ChatGpt => ChatGptModels, AgentProvider.Groq => GroqModels, _ => DefaultModels };
 
-    private bool IsReady(AgentProvider provider) => provider switch
-    {
-        AgentProvider.ChatGpt => _chatGpt.PlanAllowed,
-        AgentProvider.Groq => _config.HasGroqKey,
-        _ => _config.HasApiKey,
-    };
+    private bool IsReady(AgentProvider provider) =>
+        provider switch { AgentProvider.ChatGpt => _chatGpt.PlanAllowed, AgentProvider.Groq => _config.HasGroqKey, _ => _config.HasApiKey };
 
     private string NotReadyText() => _config.Provider switch
     {
@@ -64,12 +43,10 @@ public partial class MainWindow
         else if (provider == AgentProvider.Groq && _provider is ChatApiClient groq) groq.LimitsChanged += OnLimitsChanged;
         _agent.Api = _provider;
         _agent.Provider = provider;
-        var images = _tooken;
-        _toolContext.GenerateImage = images == null
-            ? null
-            : (prompt, size, ct) => images.GenerateImageAsync(_config.ImageModel ?? AppConfig.DefaultImageModel, prompt, size, ct);
-
-        _models = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
+        _toolContext.GenerateImage = _tooken is { } images
+            ? (prompt, size, ct) => images.GenerateImageAsync(_config.ImageModel ?? AppConfig.DefaultImageModel, prompt, size, ct)
+            : null;
+        _models = new(StringComparer.OrdinalIgnoreCase);
         _modelLists.Remove(provider);
         _modelNames.Remove(provider);
         if (ModelCatalogKey(provider) is { } catalogKey &&
@@ -83,26 +60,19 @@ public partial class MainWindow
         _loadingModelCatalog = _provider != null;
         _selectedModel = _config.Model;
         ModelButton.ToolTip = $"Модель {ProviderName(provider)}, которая отвечает в чате. Щелчок — выбрать модель" +
-                              (Enum.GetValues<AgentProvider>().Count(IsReady) > 1 ? " или провайдера" : "") +
-                              (_provider is ChatGptClient ? ".\nЗапросы расходуют вашу подписку ChatGPT" : "");
+            (Enum.GetValues<AgentProvider>().Count(IsReady) > 1 ? " или провайдера" : "") + (_provider is ChatGptClient ? ".\nЗапросы расходуют вашу подписку ChatGPT" : "");
         UpdateModelEffort();
-
         HideBanner("plan");
         if (_provider != null) HideBanner("key");
-        else if (provider == AgentProvider.ChatGpt && _chatGpt.Connected)
-            ShowBanner("key", Glyphs.Warning, "Подписка ChatGPT не подключена",
-                "Вы вошли, но не разрешили Sharp Agent использовать подписку. Разрешите это в настройках " +
-                "или выберите там другого провайдера — Tooken Club или Groq.",
-                "Разрешить", ShowSettings);
-        else if (provider == AgentProvider.ChatGpt)
-            ShowBanner("key", Glyphs.Warning, "Нужен вход в ChatGPT",
-                "Войдите на сайте OpenAI и разрешите Sharp Agent использовать подписку.",
-                "Войти", ShowSettings);
         else
-            ShowBanner("key", Glyphs.Warning, provider == AgentProvider.Groq ? "Нужен API-ключ Groq" : "Нужен API-ключ tooken.club",
-                "Введите API-ключ, чтобы агент мог отвечать.",
-                "Указать ключ", ShowSettings);
-
+        {
+            var (title, text, action) = provider != AgentProvider.ChatGpt
+                ? (provider == AgentProvider.Groq ? "Нужен API-ключ Groq" : "Нужен API-ключ tooken.club", "Введите API-ключ, чтобы агент мог отвечать.", "Указать ключ")
+                : _chatGpt.Connected ? ("Подписка ChatGPT не подключена",
+                    "Вы вошли, но не разрешили Sharp Agent использовать подписку. Разрешите это в настройках или выберите там другого провайдера — Tooken Club или Groq.", "Разрешить")
+                : ("Нужен вход в ChatGPT", "Войдите на сайте OpenAI и разрешите Sharp Agent использовать подписку.", "Войти");
+            ShowBanner("key", Glyphs.Warning, title, text, action, ShowSettings);
+        }
         _usage.Reset();
         _usageUnavailable = false;
         _usageError = null;
@@ -118,21 +88,19 @@ public partial class MainWindow
         UpdateBalanceIndicator();
         if (FlyoutShows(UsageCard)) BuildUsagePanel();
         if ((_provider as ChatGptClient)?.LimitMessage is { } limit)
-            ShowBanner("plan", Glyphs.Warning, "Ограничение подписки ChatGPT", limit, "Управлять использованием",
-                () => FileActions.OpenUrl(ChatGptClient.UsageUrl), warning: true);
+            ShowBanner("plan", Glyphs.Warning, "Ограничение подписки ChatGPT", limit, "Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl), warning: true);
         else HideBanner("plan");
     }
 
-    private void ShowPlanWelcome()
+    private void ShowPlanWelcome() => DarkDialog.Show(this, "Вы используете подписку ChatGPT", new TextBlock
     {
-        var text = new TextBlock { FontSize = 14, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap };
-        text.Inlines.Add(new Run("Запросы в Sharp Agent будут расходовать вашу подписку ChatGPT. Сколько из неё уходит на Sharp Agent " +
-                                 "и какие у него лимиты, смотрите и меняйте в настройках ChatGPT. "));
-        var link = new Hyperlink(new Run("Управлять использованием")) { ToolTip = "Открыть настройки использования ChatGPT" };
-        link.Click += (_, _) => FileActions.OpenUrl(ChatGptClient.UsageUrl);
-        text.Inlines.Add(link);
-        DarkDialog.Show(this, "Вы используете подписку ChatGPT", text, closeText: "Понятно");
-    }
+        FontSize = 14, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap,
+        Inlines =
+        {
+            new Run("Запросы в Sharp Agent будут расходовать вашу подписку ChatGPT. Сколько из неё уходит на Sharp Agent и какие у него лимиты, смотрите и меняйте в настройках ChatGPT. "),
+            MakeLink("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl), "Открыть настройки использования ChatGPT"),
+        },
+    }, closeText: "Понятно");
 
     private async Task LoadModelListAsync(IChatProvider api)
     {
@@ -146,7 +114,7 @@ public partial class MainWindow
             ApplyModelCatalog(provider, models);
             if (key != null)
             {
-                (_state.ModelCatalogs ??= new())[provider] = new ModelCatalogCache(key, models);
+                (_state.ModelCatalogs ??= new())[provider] = new(key, models);
                 _state.Save();
             }
             if (_cts == null) EnsureChatModel();
@@ -155,21 +123,16 @@ public partial class MainWindow
         catch (ApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
             if (!ReferenceEquals(api, _provider)) return;
-            if (provider == AgentProvider.ChatGpt && !IsReady(provider) && _cts == null)
-            {
-                ApplyProvider();
-                return;
-            }
-            ShowBanner("key", Glyphs.Warning, provider switch
+            if (provider == AgentProvider.ChatGpt && !IsReady(provider) && _cts == null) ApplyProvider();
+            else
+                ShowBanner("key", Glyphs.Warning, provider switch
                 {
                     AgentProvider.ChatGpt => "ChatGPT не принял вход",
                     AgentProvider.Groq => "Groq не принял API-ключ",
                     _ => "Сервер не принял API-ключ",
                 }, ex.Message.Split('\n')[0], "Открыть настройки", ShowSettings, warning: true);
         }
-        catch
-        {
-        }
+        catch { }
         finally
         {
             if (ReferenceEquals(api, _provider))
@@ -184,24 +147,23 @@ public partial class MainWindow
     {
         AgentProvider.Tooken when _config.HasApiKey => UsageTracker.KeyId(_config.ApiKey!, _config.BaseUrl),
         AgentProvider.Groq when _config.HasGroqKey => UsageTracker.KeyId(_config.GroqApiKey!, Groq.BaseUrl),
-        AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client =>
-            UsageTracker.KeyId(client, "https://api.openai.com/v1/models"),
+        AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client => UsageTracker.KeyId(client, "https://api.openai.com/v1/models"),
         _ => null,
     };
 
     private void ApplyModelCatalog(AgentProvider provider, List<ModelInfo> models)
     {
         RememberModelList(provider, models);
-        _models = new Dictionary<string, ModelInfo>(StringComparer.OrdinalIgnoreCase);
+        _models = new(StringComparer.OrdinalIgnoreCase);
         foreach (var model in models) _models[model.Id] = model;
-        ModelButton.Tag = _modelLists.GetValueOrDefault(provider) ?? (IEnumerable<string>)DefaultModelsOf(provider);
+        ModelButton.Tag = _modelLists[provider];
     }
 
     private void RememberModelList(AgentProvider provider, List<ModelInfo> models)
     {
         if (models.Count == 0) return;
         _modelLists[provider] = models.Where(m => m.Chat).Select(m => m.Id).ToList();
-        var names = _modelNames[provider] = new Dictionary<string, string>(StringComparer.Ordinal);
+        var names = _modelNames[provider] = new(StringComparer.Ordinal);
         foreach (var model in models)
             if (model.Name is { Length: > 0 } name) names[model.Id] = name;
         if (provider == AgentProvider.Tooken) _imageModels = models.Where(m => m.Images).Select(m => m.Id).ToList();
@@ -209,8 +171,7 @@ public partial class MainWindow
 
     private string CurrentModel() => _selectedModel ?? _config.Model;
 
-    private string ModelDisplayName(string model) =>
-        _modelNames.GetValueOrDefault(_config.Provider)?.GetValueOrDefault(model) ?? model;
+    private string ModelDisplayName(string model) => _modelNames.GetValueOrDefault(_config.Provider)?.GetValueOrDefault(model) ?? model;
 
     private void ModelButton_Click(object sender, RoutedEventArgs e)
     {
@@ -222,13 +183,12 @@ public partial class MainWindow
             UpdateContextBanner();
         });
         var ready = Enum.GetValues<AgentProvider>().Where(IsReady).ToList();
-        if (ready.Count > 1 || (ready.Count == 1 && ready[0] != _config.Provider))
+        if (ready.Exists(p => p != _config.Provider))
         {
             menu.Items.Insert(0, new Separator());
             foreach (var provider in Enumerable.Reverse(ready))
             {
-                var item = FileActions.Item(ProviderName(provider), provider == _config.Provider ? Glyphs.Check : null,
-                    () => SwitchProvider(provider));
+                var item = FileActions.Item(ProviderName(provider), provider == _config.Provider ? Glyphs.Check : null, () => SwitchProvider(provider));
                 item.FontWeight = FontWeights.SemiBold;
                 AutomationProperties.SetName(item, "Провайдер " + ProviderName(provider));
                 menu.Items.Insert(0, item);
@@ -236,26 +196,25 @@ public partial class MainWindow
         }
         if (_provider is ChatGptClient)
         {
-            menu.Items.Add(new Separator());
             var note = FileActions.Item("Используется подписка ChatGPT", Glyphs.Info, () => { });
             note.IsEnabled = false;
+            menu.Items.Add(new Separator());
             menu.Items.Add(note);
             menu.Items.Add(FileActions.Item("Управлять использованием", Glyphs.Open, () => FileActions.OpenUrl(ChatGptClient.UsageUrl)));
         }
         if (EffortLevelsOf(CurrentModel()) is { Length: > 0 } levels)
         {
-            var modelItems = menu.Items.OfType<UIElement>().ToArray();
-            foreach (var item in modelItems) item.Visibility = Visibility.Collapsed;
-            var divider = new Separator { Visibility = Visibility.Collapsed };
+            var divider = new Separator();
+            var hidden = menu.Items.OfType<UIElement>().Append(divider).ToArray();
+            foreach (var item in hidden) item.Visibility = Visibility.Collapsed;
             menu.Style = Theme.Style("EffortPickerMenu");
             menu.MinWidth = 0;
             menu.Items.Insert(0, divider);
             menu.Items.Insert(0, EffortMenuItem(levels, () =>
             {
-                var visibility = divider.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-                divider.Visibility = visibility;
-                foreach (var item in modelItems) item.Visibility = visibility;
-                return visibility == Visibility.Visible;
+                bool show = !IsShown(divider);
+                foreach (var item in hidden) item.Visibility = VisibleIf(show);
+                return show;
             }));
         }
         menu.IsOpen = true;
@@ -263,15 +222,17 @@ public partial class MainWindow
 
     private void SwitchProvider(AgentProvider provider)
     {
-        if (provider == _config.Provider) return;
-        if (SaveEnv(new Dictionary<string, string?> { ["AGENT_PROVIDER"] = provider.ToString().ToLowerInvariant() }) is { } error)
-        {
-            ShowToast("Не удалось сохранить выбор в .env: " + error, ToastKind.Error);
-            return;
-        }
+        if (provider == _config.Provider || !SaveEnvChoice("AGENT_PROVIDER", provider.ToString().ToLowerInvariant())) return;
         CloseFlyout();
         ApplyProvider();
         UpdateContextBanner();
+    }
+
+    private bool SaveEnvChoice(string key, string value)
+    {
+        if (SaveEnv(new() { [key] = value }) is not { } error) return true;
+        ShowToast("Не удалось сохранить выбор в .env: " + error, ToastKind.Error);
+        return false;
     }
 
     private ContextMenu ModelMenu(Button picker, AgentProvider provider, Action<string> choose)
@@ -280,18 +241,15 @@ public partial class MainWindow
         var names = _modelNames.GetValueOrDefault(provider);
         var current = picker == ModelButton ? CurrentModel() : picker.Content as string;
         foreach (var model in picker.Tag as IEnumerable<string> ?? [])
-            menu.Items.Add(FileActions.Item((names?.GetValueOrDefault(model) ?? model).Replace("_", "__"),
-                model == current ? Glyphs.Check : null, () => choose(model)));
+            menu.Items.Add(FileActions.Item((names?.GetValueOrDefault(model) ?? model).Replace("_", "__"), model == current ? Glyphs.Check : null, () => choose(model)));
         return menu;
     }
 
-    private void PickModel(Button picker, AgentProvider provider, Action<string> choose) =>
-        ModelMenu(picker, provider, choose).IsOpen = true;
+    private void PickModel(Button picker, AgentProvider provider) => ModelMenu(picker, provider, model => picker.Content = model).IsOpen = true;
 
-    private string[] EffortLevelsOf(string model) =>
-        _models.TryGetValue(model, out var info)
-            ? (info.Efforts ?? []).Where(EffortNames.ContainsKey).OrderBy(level => Array.IndexOf(AppConfig.EffortLevels, level)).Distinct().ToArray()
-            : _config.Provider == AgentProvider.Groq ? Groq.EffortsOf(model) : [];
+    private string[] EffortLevelsOf(string model) => _models.TryGetValue(model, out var info)
+        ? (info.Efforts ?? []).Where(EffortNames.ContainsKey).OrderBy(level => Array.IndexOf(AppConfig.EffortLevels, level)).Distinct().ToArray()
+        : _config.Provider == AgentProvider.Groq ? Groq.EffortsOf(model) : [];
 
     private string? EffectiveEffort(string[] levels)
     {
@@ -302,79 +260,48 @@ public partial class MainWindow
 
     private void UpdateModelEffort()
     {
-        var levels = EffortLevelsOf(CurrentModel());
-        var effort = EffectiveEffort(levels);
-        _agent.ReasoningEffort = effort;
-        var label = ModelDisplayName(CurrentModel());
-        ModelNameText.Text = label;
-        var pending = _loadingModelCatalog && !_models.ContainsKey(CurrentModel()) ? _config.ReasoningEffort : null;
+        var model = CurrentModel();
+        var levels = EffortLevelsOf(model);
+        var effort = _agent.ReasoningEffort = EffectiveEffort(levels);
+        var label = ModelNameText.Text = ModelDisplayName(model);
+        var pending = _loadingModelCatalog && !_models.ContainsKey(model) ? _config.ReasoningEffort : null;
         bool showEffort = levels.Length > 0 || pending != null;
-        ModelEffortText.Visibility = showEffort ? Visibility.Visible : Visibility.Collapsed;
-        ModelEffortText.Text = effort != null ? EffortNames[effort].Label :
-            pending != null ? EffortNames[pending].Label + "…" : "Обычное";
-        AutomationProperties.SetName(ModelButton, !showEffort ? $"Модель {label}" :
-            $"Модель {label}, рассуждение: {ModelEffortText.Text}");
+        ModelEffortText.Visibility = VisibleIf(showEffort);
+        ModelEffortText.Text = effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное";
+        AutomationProperties.SetName(ModelButton, showEffort ? $"Модель {label}, рассуждение: {ModelEffortText.Text}" : $"Модель {label}");
     }
 
     private MenuItem EffortMenuItem(string[] levels, Func<bool> toggleModels)
     {
-        var values = new string?[] { null }.Concat(levels).ToArray();
+        string?[] values = [null, .. levels];
         int committed = Array.IndexOf(values, EffectiveEffort(levels));
-        var model = CurrentModel();
-        var caption = new TextBlock
-        {
-            Text = ModelDisplayName(model),
-            FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.TextSoft, MaxWidth = 135,
-        };
-        var heading = new TextBlock
-        {
-            FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 2),
-        };
+        var modelName = ModelDisplayName(CurrentModel());
+        var heading = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 2) };
         heading.SetResourceReference(ForegroundProperty, "AccentText");
         var chevron = new TextBlock
         {
-            Text = Glyphs.ChevronRight, FontFamily = Theme.Icons, FontSize = 8, Foreground = Theme.TextMuted,
-            Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            Text = Glyphs.ChevronRight, FontFamily = Theme.Icons, FontSize = 8, Foreground = Theme.TextMuted, Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
         };
-        var modelLine = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
-        modelLine.Children.Add(caption);
-        modelLine.Children.Add(chevron);
-        var label = new StackPanel();
-        label.Children.Add(heading);
-        label.Children.Add(modelLine);
+        var caption = new TextBlock { Text = modelName, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.TextSoft, MaxWidth = 135 };
         var choose = new Button
         {
-            Style = Theme.Style("RowButton"), Content = label, MinWidth = 102, Height = 40,
-            Padding = new Thickness(8, 0, 8, 0), HorizontalAlignment = HorizontalAlignment.Center,
+            Style = Theme.Style("RowButton"),
+            Content = new StackPanel
+            {
+                Children = { heading, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Children = { caption, chevron } } },
+            },
+            MinWidth = 102, Height = 40, Padding = new Thickness(8, 0, 8, 0), HorizontalAlignment = HorizontalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Center, ToolTip = "Выбрать модель",
         };
-        AutomationProperties.SetName(choose, "Выбрать модель · " + caption.Text);
+        AutomationProperties.SetName(choose, "Выбрать модель · " + modelName);
         choose.Click += (_, _) => chevron.Text = toggleModels() ? Glyphs.ChevronDown : Glyphs.ChevronRight;
-
-        var slider = new EffortSlider
-        {
-            Style = Theme.Style("EffortSlider"), Maximum = values.Length - 1, Value = committed,
-            Margin = new Thickness(0, 10, 0, 0),
-        };
+        var slider = new EffortSlider { Style = Theme.Style("EffortSlider"), Maximum = values.Length - 1, Value = committed, Margin = new Thickness(0, 10, 0, 0) };
         var reset = Theme.IconButton(Glyphs.Refresh, "Сбросить силу рассуждения", 24, 14);
         reset.HorizontalAlignment = HorizontalAlignment.Right;
         reset.VerticalAlignment = VerticalAlignment.Top;
         reset.RenderTransform = new ScaleTransform(-1, 1);
         reset.RenderTransformOrigin = new Point(0.5, 0.5);
         reset.Click += (_, _) => slider.Value = 0;
-        var top = new Grid { Margin = new Thickness(-6, 0, -4, 0) };
-        top.Children.Add(new TextBlock
-        {
-            Text = Glyphs.Lightning, FontFamily = Theme.Icons, FontSize = 13, Foreground = Theme.TextMuted,
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(4, 6, 0, 0),
-        });
-        top.Children.Add(choose);
-        top.Children.Add(reset);
-        var card = new StackPanel { Margin = new Thickness(12, 6, 12, 10) };
-        card.Children.Add(top);
-        card.Children.Add(slider);
-
         bool dragging = false, restoring = false;
         void ShowValue()
         {
@@ -385,29 +312,23 @@ public partial class MainWindow
             AutomationProperties.SetName(slider, "Сила рассуждения · " + name);
             reset.IsEnabled = value != null;
         }
-
         void RestoreValue()
         {
             restoring = true;
             slider.Value = committed;
             restoring = false;
         }
-
         void Commit()
         {
             int selected = (int)slider.Value;
             if (selected == committed) return;
-            var key = AppConfig.KeyOf(_config.Provider, "REASONING_EFFORT");
-            if (SaveEnv(new Dictionary<string, string?> { [key] = values[selected] ?? "" }) is { } error)
+            if (SaveEnvChoice(AppConfig.KeyOf(_config.Provider, "REASONING_EFFORT"), values[selected] ?? ""))
             {
-                RestoreValue();
-                ShowToast("Не удалось сохранить выбор в .env: " + error, ToastKind.Error);
-                return;
+                committed = selected;
+                UpdateModelEffort();
             }
-            committed = selected;
-            UpdateModelEffort();
+            else RestoreValue();
         }
-
         slider.ValueChanged += (_, _) =>
         {
             ShowValue();
@@ -421,7 +342,20 @@ public partial class MainWindow
             else Commit();
         }));
         ShowValue();
-        return new MenuItem { Header = card, Style = Theme.Style("EffortHeader") };
+        var lightning = new TextBlock
+        {
+            Text = Glyphs.Lightning, FontFamily = Theme.Icons, FontSize = 13, Foreground = Theme.TextMuted,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(4, 6, 0, 0),
+        };
+        return new MenuItem
+        {
+            Header = new StackPanel
+            {
+                Margin = new Thickness(12, 6, 12, 10),
+                Children = { new Grid { Margin = new Thickness(-6, 0, -4, 0), Children = { lightning, choose, reset } }, slider },
+            },
+            Style = Theme.Style("EffortHeader"),
+        };
     }
 
     private bool DrawsOnly(string model) => _models.TryGetValue(model, out var info) && !info.Chat;
@@ -432,32 +366,26 @@ public partial class MainWindow
         var provider = _config.Provider;
         if (provider != AgentProvider.Tooken)
         {
-            var known = _modelLists.GetValueOrDefault(provider) ?? [];
-            if (known.Count == 0 || known.Contains(model)) return;
-            var fallback = known.Contains(AppConfig.DefaultModelOf(provider)) ? AppConfig.DefaultModelOf(provider) : known[0];
+            if (_modelLists.GetValueOrDefault(provider) is not { Count: > 0 } known || known.Contains(model)) return;
+            var fallback = AppConfig.DefaultModelOf(provider);
+            if (!known.Contains(fallback)) fallback = known[0];
             _selectedModel = fallback;
             RememberModel(fallback);
             ShowToast($"Модели {model} нет у {ProviderName(provider)}, выбрана {fallback}.");
             return;
         }
-
         if (!DrawsOnly(model)) return;
-        var chat = DrawsOnly(AppConfig.DefaultModel) || !_models.ContainsKey(AppConfig.DefaultModel)
-            ? _models.Values.Where(m => m.Chat).Select(m => m.Id).FirstOrDefault()
-            : AppConfig.DefaultModel;
+        var chat = _models.GetValueOrDefault(AppConfig.DefaultModel)?.Chat == true ? AppConfig.DefaultModel : _models.Values.FirstOrDefault(m => m.Chat)?.Id;
         if (chat == null) return;
-
         _selectedModel = chat;
         var values = new Dictionary<string, string?> { ["TOOKEN_MODEL"] = chat };
         if (_config.ImageModel == null && _models[model].Images) values["TOOKEN_IMAGE_MODEL"] = model;
         SaveEnv(values);
-        ShowToast($"{model} рисует картинки, но не ведёт чат, поэтому для разговора выбрана {chat}. " +
-                  "Попросите нарисовать — агент сделает это сам.");
+        ShowToast($"{model} рисует картинки, но не ведёт чат, поэтому для разговора выбрана {chat}. Попросите нарисовать — агент сделает это сам.");
     }
 
     private void RememberModel(string model)
     {
-        if (!string.Equals(model, _config.Model, StringComparison.Ordinal))
-            SaveEnv(new Dictionary<string, string?> { [AppConfig.KeyOf(_config.Provider, "MODEL")] = model });
+        if (model != _config.Model) SaveEnv(new() { [AppConfig.KeyOf(_config.Provider, "MODEL")] = model });
     }
 }

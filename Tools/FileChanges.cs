@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-
 namespace SharpAgent.Tools;
 
 internal sealed record FileChange(string Path, string? BeforeHash, string AfterHash, string? Backup)
@@ -10,7 +8,9 @@ internal sealed record FileChange(string Path, string? BeforeHash, string AfterH
 internal static class FileChanges
 {
     internal sealed record Pending(string Path, byte[]? Before);
-    private const int MaxSnapshotBytes = 4 * 1024 * 1024, MaxDiffBytes = 1024 * 1024;
+    const int MaxSnapshotBytes = 4 * 1024 * 1024, MaxDiffBytes = 1024 * 1024;
+
+    static bool Expected(Exception ex) => ex is IOException or UnauthorizedAccessException or ToolException;
 
     public static Pending? Capture(ToolContext context, string tool, ToolArgs args)
     {
@@ -20,7 +20,7 @@ internal static class FileChanges
             {
                 "write_file" or "edit_file" => context.Resolve(args.Required("path")),
                 "run_plugin" => PluginTools.TargetOf(args, context),
-                "copy_path" => CopyTarget(context, args),
+                "copy_path" => FileTools.ResolveSourceAndTarget(args, context) is var (source, copy) && File.Exists(source) ? copy : null,
                 _ => null,
             };
             if (target == null) return null;
@@ -28,16 +28,7 @@ internal static class FileChanges
             var before = ReadSnapshot(path);
             return before == null && File.Exists(path) ? null : new Pending(path, before);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
-        {
-            return null;
-        }
-    }
-
-    private static string? CopyTarget(ToolContext context, ToolArgs args)
-    {
-        var (source, target) = FileTools.ResolveSourceAndTarget(args, context);
-        return File.Exists(source) ? target : null;
+        catch (Exception ex) when (Expected(ex)) { return null; }
     }
 
     public static (FileChange? Change, FileDiff? Diff) Complete(ToolContext context, Pending? pending, string? image)
@@ -45,25 +36,21 @@ internal static class FileChanges
         try
         {
             if (pending == null && image != null) pending = new Pending(SafePath(context, image), null);
-            if (pending == null || !PathHelper.SamePath(SafePath(context, pending.Path), pending.Path) ||
-                ReadSnapshot(pending.Path) is not { } after) return (null, null);
-            string? beforeHash = pending.Before != null ? Hash(pending.Before) : null;
+            if (pending == null || !Unmoved(context, pending.Path) || ReadSnapshot(pending.Path) is not { } after) return default;
+            var beforeHash = pending.Before != null ? Hash(pending.Before) : null;
             var afterHash = Hash(after);
-            if (beforeHash == afterHash) return (null, null);
+            if (beforeHash == afterHash) return default;
             var backup = pending.Before != null ? SaveBackup(context.LogsFolder, pending.Before) : null;
             return (new FileChange(pending.Path, beforeHash, afterHash, backup), Compare(pending.Before, after));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
-        {
-            return (null, null);
-        }
+        catch (Exception ex) when (Expected(ex)) { return default; }
     }
 
     public static string? BackupPath(string? logsFolder, string? backup) =>
         logsFolder != null && Guid.TryParseExact(backup, "N", out var id)
             ? Path.GetFullPath(Path.Combine(logsFolder, "..", "changes", id.ToString("N") + ".bak")) : null;
 
-    private static string? SaveBackup(string? logsFolder, byte[] bytes)
+    static string? SaveBackup(string? logsFolder, byte[] bytes)
     {
         var id = Guid.NewGuid().ToString("N");
         if (BackupPath(logsFolder, id) is not { } path) return null;
@@ -73,30 +60,18 @@ internal static class FileChanges
             File.WriteAllBytes(path, bytes);
             return id;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (Exception ex) when (Expected(ex)) { return null; }
     }
 
     public static FileDiff? NetDiff(ToolContext context, FileChange change)
     {
-        try
-        {
-            if (!PathHelper.SamePath(SafePath(context, change.Path), change.Path) ||
-                ReadSnapshot(change.Path) is not { } after || Hash(after) != change.AfterHash) return null;
-            return Compare(ReadBackup(change, context.LogsFolder), after);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
-        {
-            return null;
-        }
+        try { return Current(context, change) is { } after ? Compare(ReadBackup(change, context.LogsFolder), after) : null; }
+        catch (Exception ex) when (Expected(ex)) { return null; }
     }
 
     public static void EnsureRestorable(ToolContext context, FileChange change)
     {
-        if (PathHelper.IsProtected(change.Path) || !PathHelper.SamePath(SafePath(context, change.Path), change.Path) ||
-            ReadSnapshot(change.Path) is not { } current || Hash(current) != change.AfterHash)
+        if (PathHelper.IsProtected(change.Path) || Current(context, change) == null)
             throw new ToolException($"Файл изменился после ответа: {Path.GetFileName(change.Path)}. Откройте его и проверьте текущую версию.");
         ReadBackup(change, context.LogsFolder);
     }
@@ -104,11 +79,7 @@ internal static class FileChanges
     public static void Restore(ToolContext context, FileChange change)
     {
         EnsureRestorable(context, change);
-        if (ReadBackup(change, context.LogsFolder) is not { } before)
-        {
-            RecycleBin.Send(change.Path);
-            return;
-        }
+        if (ReadBackup(change, context.LogsFolder) is not { } before) { RecycleBin.Send(change.Path); return; }
         var staging = Path.Combine(Path.GetDirectoryName(change.Path)!, $".sharp-agent-{Guid.NewGuid():N}.tmp");
         try
         {
@@ -119,11 +90,16 @@ internal static class FileChanges
         finally
         {
             try { File.Delete(staging); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            catch (Exception ex) when (Expected(ex)) { }
         }
     }
 
-    private static byte[]? ReadBackup(FileChange change, string? logsFolder)
+    static byte[]? Current(ToolContext context, FileChange change) =>
+        Unmoved(context, change.Path) && ReadSnapshot(change.Path) is { } bytes && Hash(bytes) == change.AfterHash ? bytes : null;
+
+    static bool Unmoved(ToolContext context, string path) => PathHelper.SamePath(SafePath(context, path), path);
+
+    static byte[]? ReadBackup(FileChange change, string? logsFolder)
     {
         if (change.Created) return null;
         if (BackupPath(logsFolder, change.Backup) is { } path && PathHelper.SamePath(path, PathHelper.FinalPath(path)) &&
@@ -131,7 +107,7 @@ internal static class FileChanges
         throw new ToolException($"Резервная копия недоступна: {Path.GetFileName(change.Path)}.");
     }
 
-    private static string SafePath(ToolContext context, string raw)
+    static string SafePath(ToolContext context, string raw)
     {
         var path = PathHelper.FinalPath(context.Resolve(raw));
         context.GuardSecrets(path);
@@ -139,7 +115,7 @@ internal static class FileChanges
         return path;
     }
 
-    private static byte[]? ReadSnapshot(string path)
+    static byte[]? ReadSnapshot(string path)
     {
         try
         {
@@ -149,26 +125,17 @@ internal static class FileChanges
             file.ReadExactly(bytes);
             return bytes;
         }
-        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
-        {
-            return null;
-        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return null; }
     }
 
-    private static FileDiff? Compare(byte[]? before, byte[] after)
+    static FileDiff? Compare(byte[]? before, byte[] after)
     {
         if (before?.Length > MaxDiffBytes || after.Length > MaxDiffBytes) return null;
-        try
-        {
-            return TextDiff.Compare(before != null ? TextFileIO.Decode(before).Text : "", TextFileIO.Decode(after).Text);
-        }
-        catch (ToolException)
-        {
-            return null;
-        }
+        try { return TextDiff.Compare(before != null ? TextFileIO.Decode(before).Text : "", TextFileIO.Decode(after).Text); }
+        catch (ToolException) { return null; }
     }
 
-    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+    static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
     public static string? CurrentHash(string path)
     {
@@ -177,9 +144,6 @@ internal static class FileChanges
             using var file = File.OpenRead(path);
             return file.Length <= MaxSnapshotBytes ? Convert.ToHexString(SHA256.HashData(file)) : null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (Exception ex) when (Expected(ex)) { return null; }
     }
 }

@@ -1,7 +1,3 @@
-using System.Text;
-using System.Text.Json;
-using SharpAgent.Api;
-
 namespace SharpAgent.Core;
 
 public sealed class WindowPlacement
@@ -33,12 +29,8 @@ public sealed record ModelCatalogCache(string Connection, List<ModelInfo> Models
 
 public sealed class UiState
 {
-    private static readonly JsonSerializerOptions Options = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-    };
+    static readonly JsonSerializerOptions Options =
+        new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
 
     public WindowPlacement? Window { get; set; }
     public bool SidebarCollapsed { get; set; }
@@ -53,13 +45,21 @@ public sealed class UiState
     {
         try
         {
-            if (File.Exists(AppPaths.StatePath))
-                return JsonSerializer.Deserialize<UiState>(File.ReadAllText(AppPaths.StatePath, Encoding.UTF8), Options) ?? new UiState();
+            if (File.Exists(AppPaths.StatePath) &&
+                JsonSerializer.Deserialize<UiState>(File.ReadAllText(AppPaths.StatePath, Encoding.UTF8), Options) is { } state)
+            {
+                if (state.Usage is { } usage)
+                {
+                    usage.Days ??= new();
+                    var rates = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var (model, rate) in usage.Rates ?? new()) rates[model] = rate;
+                    usage.Rates = rates;
+                }
+                return state;
+            }
         }
-        catch
-        {
-        }
-        return new UiState();
+        catch { }
+        return new();
     }
 
     public bool Save()
@@ -68,12 +68,9 @@ public sealed class UiState
         {
             var temp = AppPaths.StatePath + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(this, Options), new UTF8Encoding(false));
-            File.Move(temp, AppPaths.StatePath, overwrite: true);
+            File.Move(temp, AppPaths.StatePath, true);
             return true;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 }

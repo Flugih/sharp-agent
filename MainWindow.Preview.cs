@@ -1,46 +1,43 @@
-using System.Windows;
-using System.Windows.Automation;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
-using SharpAgent.Agent;
-using SharpAgent.Tools;
-using SharpAgent.Ui;
+using System.Windows.Xps.Packaging;
 
 namespace SharpAgent;
 
 public partial class MainWindow
 {
-    private const int MaxPreviewLines = 5000, MaxPictureWidth = 2400, InlineDiffLines = 40;
-    private const long MaxPreviewBytes = 2 * 1024 * 1024;
-    private const double ChatMinWidth = 460, PaneMinWidth = 300;
+    const int MaxPreviewLines = 5000, InlineDiffLines = 40;
+    const double ChatMinWidth = 460, PaneMinWidth = 300;
 
-    private string? _previewPath;
-    private FileDiff? _previewDiff;
-    private string? _picturePath;
-    private double _previewWidth;
+    static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".cs", ".xaml", ".csproj", ".sln", ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".xml", ".html", ".css", ".sql",
+        ".ps1", ".bat", ".cmd", ".sh", ".yaml", ".yml", ".ini", ".toml", ".java", ".kt", ".c", ".h", ".cpp", ".go", ".rs", ".php",
+    };
 
-    private void OpenInApp(string path)
+    string? _previewPath, _picturePath;
+    FileDiff? _previewDiff;
+    double _previewWidth;
+    CancellationTokenSource? _officeLoad;
+    OfficePreview? _office;
+    XpsDocument? _officeXps;
+
+    void OpenInApp(string path)
     {
         if (Attachment.IsImagePath(path)) ShowPicture(path);
         else ShowPreview(path);
     }
 
-    private void ShowPicture(string path)
+    void ShowPicture(string path)
     {
         _picturePath = path;
         PictureName.Text = ChatLinks.DisplayName(path);
         PictureImage.Source = null;
         PictureOverlay.Visibility = Visibility.Visible;
-        if (Theme.AnimationsEnabled)
-            PictureOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
+        if (Theme.AnimationsEnabled) PictureOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
         _ = LoadPictureAsync(path);
     }
 
-    private async Task LoadPictureAsync(string path)
+    async Task LoadPictureAsync(string path)
     {
         try
         {
@@ -49,7 +46,7 @@ public partial class MainWindow
                 int width;
                 using (var stream = File.OpenRead(path))
                     width = BitmapFrame.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).PixelWidth;
-                return DecodeImageAsync(path, Math.Min(width, MaxPictureWidth));
+                return DecodeImageAsync(path, Math.Min(width, 2400));
             });
             if (_picturePath == path) PictureImage.Source = picture;
         }
@@ -61,82 +58,62 @@ public partial class MainWindow
         }
     }
 
-    private void ClosePicture()
+    void ClosePicture()
     {
         PictureOverlay.Visibility = Visibility.Collapsed;
         PictureImage.Source = null;
         _picturePath = null;
     }
 
-    private void PictureOverlay_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (ReferenceEquals(e.OriginalSource, PictureOverlay)) ClosePicture();
-    }
+    void PictureOverlay_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if (ReferenceEquals(e.OriginalSource, PictureOverlay)) ClosePicture(); }
 
-    private void PictureClose_Click(object sender, RoutedEventArgs e) => ClosePicture();
+    void PictureClose_Click(object sender, RoutedEventArgs e) => ClosePicture();
 
-    private void PictureOpen_Click(object sender, RoutedEventArgs e)
-    {
-        if (_picturePath != null) FileActions.Open(this, _picturePath);
-    }
+    void PictureOpen_Click(object sender, RoutedEventArgs e) { if (_picturePath != null) FileActions.Open(this, _picturePath); }
 
-    private void PictureReveal_Click(object sender, RoutedEventArgs e)
-    {
-        if (_picturePath != null) FileActions.Reveal(_picturePath);
-    }
+    void PictureReveal_Click(object sender, RoutedEventArgs e) { if (_picturePath != null) FileActions.Reveal(_picturePath); }
 
-    private void ShowPreview(string path, FileDiff? diff = null, string? title = null, bool review = false)
+    void ShowPreview(string path, FileDiff? diff = null, string? title = null, bool review = false)
     {
         _previewPath = path;
         _previewDiff = diff;
         PreviewTitle.Text = title ?? ChatLinks.DisplayName(path);
-        PreviewPath.Text = path;
-        PreviewPath.ToolTip = path;
-        PreviewChangePicker.Visibility = review ? Visibility.Visible : Visibility.Collapsed;
+        PreviewPath.ToolTip = PreviewPath.Text = path;
+        PreviewChangePicker.Visibility = VisibleIf(review);
         if (!review) PreviewChangePicker.ContextMenu = null;
-        PreviewTabs.Visibility = diff != null ? Visibility.Visible : Visibility.Collapsed;
+        PreviewTabs.Visibility = VisibleIf(diff != null);
         var tab = diff != null ? PreviewDiffTab : PreviewFileTab;
         if (tab.IsChecked == true) RenderPreviewBody();
         else tab.IsChecked = true;
-        if (PreviewPane.Visibility == Visibility.Visible) return;
+        if (IsShown(PreviewPane)) return;
         PreviewPane.Visibility = Visibility.Visible;
         ApplyPreviewLayout();
     }
 
-    private void RenderPreviewBody()
+    void RenderPreviewBody()
     {
-        if (_previewPath == null) return;
+        if (_previewPath is not { } path) return;
         CloseOfficePreview();
-        if ((PreviewDiffTab.IsChecked != true || _previewDiff == null) && OfficePreview.IsOfficeFile(_previewPath))
-        {
-            _ = ShowOfficePreviewAsync(_previewPath);
-            return;
-        }
-        PreviewBody.Content = PreviewDiffTab.IsChecked == true && _previewDiff != null
-            ? new ScrollViewer { Content = DiffView(_previewDiff, int.MaxValue), VerticalScrollBarVisibility = ScrollBarVisibility.Auto }
-            : PreviewChangePicker.Visibility == Visibility.Visible && Attachment.IsImagePath(_previewPath)
-                ? ImagePreview(_previewPath) : FileView(_previewPath);
+        var diff = PreviewDiffTab.IsChecked == true ? _previewDiff : null;
+        if (diff == null && OfficePreview.IsOfficeFile(path)) _ = ShowOfficePreviewAsync(path);
+        else PreviewBody.Content = diff != null
+            ? new ScrollViewer { Content = DiffView(diff, int.MaxValue), VerticalScrollBarVisibility = ScrollBarVisibility.Auto }
+            : IsShown(PreviewChangePicker) && Attachment.IsImagePath(path) ? ImagePreview(path) : FileView(path);
     }
 
-    private void PreviewTab_Checked(object sender, RoutedEventArgs e) => RenderPreviewBody();
+    void PreviewTab_Checked(object sender, RoutedEventArgs e) => RenderPreviewBody();
 
-    private void PreviewClose_Click(object sender, RoutedEventArgs e) => ClosePreview();
+    void PreviewClose_Click(object sender, RoutedEventArgs e) => ClosePreview();
 
-    private void PreviewOpen_Click(object sender, RoutedEventArgs e)
+    void PreviewOpen_Click(object sender, RoutedEventArgs e) { if (_previewPath != null) FileActions.Open(this, _previewPath); }
+
+    void PreviewReveal_Click(object sender, RoutedEventArgs e) { if (_previewPath != null) FileActions.Reveal(_previewPath); }
+
+    void PreviewSplitter_DragCompleted(object sender, DragCompletedEventArgs e) => _previewWidth = PreviewColumn.ActualWidth;
+
+    void ClosePreview()
     {
-        if (_previewPath != null) FileActions.Open(this, _previewPath);
-    }
-
-    private void PreviewReveal_Click(object sender, RoutedEventArgs e)
-    {
-        if (_previewPath != null) FileActions.Reveal(_previewPath);
-    }
-
-    private void PreviewSplitter_DragCompleted(object sender, DragCompletedEventArgs e) => _previewWidth = PreviewColumn.ActualWidth;
-
-    private void ClosePreview()
-    {
-        if (PreviewPane.Visibility != Visibility.Visible) return;
+        if (!IsShown(PreviewPane)) return;
         PreviewPane.Visibility = Visibility.Collapsed;
         PreviewBody.Content = null;
         PreviewChangePicker.Visibility = Visibility.Collapsed;
@@ -147,42 +124,30 @@ public partial class MainWindow
         ApplyPreviewLayout();
     }
 
-    private double MainWidth => WorkArea.ActualWidth;
+    double MainWidth => WorkArea.ActualWidth;
 
-    private bool PreviewDocks => MainWidth >= ChatMinWidth + PaneMinWidth;
+    bool PreviewDocks => MainWidth >= ChatMinWidth + PaneMinWidth;
 
-    private void ApplyPreviewLayout()
+    void ApplyPreviewLayout()
     {
-        bool open = PreviewPane.Visibility == Visibility.Visible, docked = open && PreviewDocks;
-        RightPane.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        bool open = IsShown(PreviewPane), docked = open && PreviewDocks, overlay = open && !docked;
+        RightPane.Visibility = VisibleIf(open);
         if (_previewWidth == 0) _previewWidth = Math.Clamp(MainWidth * 0.45, 340, 760);
         PreviewColumn.MinWidth = docked ? PaneMinWidth : 0;
         PreviewColumn.MaxWidth = docked ? MainWidth - ChatMinWidth : 0;
         PreviewColumn.Width = new GridLength(docked ? Math.Clamp(_previewWidth, PaneMinWidth, PreviewColumn.MaxWidth) : 0);
-        Grid.SetColumn(RightPane, open && !docked ? 0 : 1);
-        Grid.SetColumnSpan(RightPane, open && !docked ? 2 : 1);
-        PreviewSplitter.Visibility = docked ? Visibility.Visible : Visibility.Collapsed;
+        Grid.SetColumn(RightPane, overlay ? 0 : 1);
+        Grid.SetColumnSpan(RightPane, overlay ? 2 : 1);
+        PreviewSplitter.Visibility = VisibleIf(docked);
         UpdateLayoutWidths();
     }
 
-    private static FrameworkElement FileView(string path)
-    {
-        if (!File.Exists(path)) return PreviewNote("Файла больше нет: его переместили или удалили.");
-        string? text;
-        try
-        {
-            text = TextFileIO.TryRead(path, MaxPreviewBytes);
-        }
-        catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException)
-        {
-            return PreviewNote(ex.Message);
-        }
-        return text == null
-            ? PreviewNote("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.")
-            : CodeView(text);
-    }
+    static FrameworkElement FileView(string path) =>
+        !File.Exists(path) ? PreviewNote("Файла больше нет: его переместили или удалили.")
+        : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text)
+        : PreviewNote("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.");
 
-    private static FrameworkElement CodeView(string text)
+    static FrameworkElement CodeView(string text)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
         if (lines.Length > 1 && lines[^1].Length == 0) lines = lines[..^1];
@@ -193,117 +158,76 @@ public partial class MainWindow
             lines = [.. lines[..half], $"… пропущено строк: {lines.Length - 2 * half} — весь текст: «Открыть в программе» вверху …", .. lines[^half..]];
             lineNumbers = [.. lineNumbers[..half], "", .. lineNumbers[^half..]];
         }
-
-        var numbers = new TextBlock
-        {
-            Text = string.Join("\n", lineNumbers),
-            FontFamily = Theme.Mono, FontSize = 12.5, Foreground = Theme.TextMuted, TextAlignment = TextAlignment.Right,
-            Padding = new Thickness(0, 0, 12, 24),
-        };
         var gutter = new ScrollViewer
         {
-            Content = numbers, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false, IsHitTestVisible = false,
+            Content = new TextBlock
+            {
+                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12.5, Foreground = Theme.TextMuted,
+                TextAlignment = TextAlignment.Right, Padding = new Thickness(0, 0, 12, 24),
+            },
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false, IsHitTestVisible = false,
         };
         var body = new TextBox
         {
-            Text = string.Join("\n", lines),
-            IsReadOnly = true,
-            IsReadOnlyCaretVisible = false,
-            BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            Foreground = Theme.Text,
-            SelectionBrush = Theme.Accent,
-            FontFamily = Theme.Mono,
-            FontSize = 12.5,
-            Padding = new Thickness(0),
-            FocusVisualStyle = null,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
+            Text = string.Join("\n", lines), IsReadOnly = true, IsReadOnlyCaretVisible = false, BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent, Foreground = Theme.Text, SelectionBrush = Theme.Accent, FontFamily = Theme.Mono, FontSize = 12.5,
+            Padding = new Thickness(0), FocusVisualStyle = null, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
         };
-        body.AddHandler(ScrollViewer.ScrollChangedEvent,
-            new ScrollChangedEventHandler((_, e) => gutter.ScrollToVerticalOffset(e.VerticalOffset)));
-
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        body.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, e) => gutter.ScrollToVerticalOffset(e.VerticalOffset)));
         Grid.SetColumn(body, 1);
-        grid.Children.Add(gutter);
-        grid.Children.Add(body);
-        return grid;
+        return new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() }, Children = { gutter, body } };
     }
 
-    private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".cs", ".xaml", ".csproj", ".sln", ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".xml", ".html", ".css", ".sql",
-        ".ps1", ".bat", ".cmd", ".sh", ".yaml", ".yml", ".ini", ".toml", ".java", ".kt", ".c", ".h", ".cpp", ".go", ".rs", ".php",
-    };
-
-    private Button FileCard(string path, FileDiff? diff, bool created)
+    Button FileCard(string path, FileDiff? diff, bool created)
     {
         bool changed = diff != null && !created;
         var title = CardTitle(path, keepExtension: false);
         var extension = Path.GetExtension(path).TrimStart('.').ToUpperInvariant();
-        var kind = KindOf(path);
-        var subtitle = extension.Length > 0 ? $"{kind} · {extension}" : kind;
-
+        var subtitle = extension.Length > 0 ? $"{KindOf(path)} · {extension}" : KindOf(path);
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         texts.Children.Add(new TextBlock { Text = title, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis });
-        texts.Children.Add(new TextBlock
+        texts.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = Theme.TextMuted, Margin = new Thickness(0, 2, 0, 0) });
+        var action = new Button
         {
-            Text = subtitle, FontSize = 12.5, Foreground = Theme.TextMuted, Margin = new Thickness(0, 2, 0, 0),
-        });
-
-        var action = new Button { Content = "Открыть", Height = 30, Margin = new Thickness(12, 0, 0, 0),
-            ToolTip = "Открыть в программе по умолчанию", Background = Brushes.Transparent };
+            Content = "Открыть", Height = 30, Margin = new Thickness(12, 0, 0, 0), ToolTip = "Открыть в программе по умолчанию",
+            Background = Brushes.Transparent,
+        };
         AutomationProperties.SetName(action, $"Открыть {title} в программе по умолчанию");
         action.Click += (_, e) =>
         {
             e.Handled = true;
             FileActions.Open(this, path);
         };
-
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(texts, 1);
         Grid.SetColumn(action, 2);
-        grid.Children.Add(CardPage(path, changed));
-        grid.Children.Add(texts);
-        grid.Children.Add(action);
-
         var card = new Button
         {
-            Style = Theme.Style("FileCard"),
-            Background = Theme.Surface2,
-            BorderBrush = Theme.Get("ControlBorder"),
-            Content = grid,
+            Style = Theme.Style("FileCard"), Background = Theme.Surface2, BorderBrush = Theme.Get("ControlBorder"),
+            Content = new Grid
+            {
+                ColumnDefinitions = { new() { Width = GridLength.Auto }, new(), new() { Width = GridLength.Auto } },
+                Children = { CardPage(path, changed), texts, action },
+            },
             ToolTip = $"{path}\nЩелчок — {(changed ? "показать изменения" : "посмотреть")}, правая кнопка — другие действия",
             ContextMenu = FileActions.BuildMenu(this, path),
         };
         AutomationProperties.SetName(card, $"{title}, {subtitle}");
-        card.Click += (_, _) =>
-        {
-            if (changed) ShowPreview(path, diff);
-            else OpenInApp(path);
-        };
+        card.Click += (_, _) => { if (changed) ShowPreview(path, diff); else OpenInApp(path); };
         FileActions.EnableDragOut(card, path);
         return card;
     }
 
-    private string CardTitle(string path, bool keepExtension)
+    string CardTitle(string path, bool keepExtension)
     {
         var workDir = _toolContext.WorkingDirectory;
-        var title = PathHelper.IsInside(path, workDir) && !PathHelper.SamePath(path, workDir)
-            ? Path.GetRelativePath(workDir, path)
-            : Path.GetFileName(path);
+        var title = PathHelper.IsInside(path, workDir) && !PathHelper.SamePath(path, workDir) ? Path.GetRelativePath(workDir, path) : Path.GetFileName(path);
         if (keepExtension) return title;
         var bare = Path.ChangeExtension(title, null);
         return Path.GetFileName(bare).Length > 0 ? bare : title;
     }
 
-    private static string KindOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    static string KindOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".docx" or ".doc" or ".rtf" or ".odt" or ".pdf" => "Документ",
         ".xlsx" or ".xls" or ".csv" or ".tsv" or ".ods" => "Таблица",
@@ -314,25 +238,17 @@ public partial class MainWindow
         _ => "Файл",
     };
 
-    private static Border CardPage(string path, bool changed)
+    static Border CardPage(string path, bool changed)
     {
         bool picture = !changed && Attachment.IsImagePath(path);
         var page = new Border
         {
-            Width = 34,
-            Height = 42,
-            CornerRadius = new CornerRadius(5),
-            Margin = new Thickness(2, 0, 16, 0),
-            Background = Theme.Surface2,
-            BorderBrush = Theme.LineStrong,
-            BorderThickness = new Thickness(1),
-            RenderTransformOrigin = new Point(0.5, 0.5),
+            Width = 34, Height = 42, CornerRadius = new CornerRadius(5), Margin = new Thickness(2, 0, 16, 0), Background = Theme.Surface2,
+            BorderBrush = Theme.LineStrong, BorderThickness = new Thickness(1), RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = new RotateTransform(-5),
             Child = new TextBlock
             {
-                Text = changed || CodeExtensions.Contains(Path.GetExtension(path)) ? Glyphs.Code
-                    : picture ? Glyphs.Picture
-                    : Glyphs.Document,
+                Text = changed || CodeExtensions.Contains(Path.GetExtension(path)) ? Glyphs.Code : picture ? Glyphs.Picture : Glyphs.Document,
                 FontFamily = Theme.Icons, FontSize = 14, Foreground = Theme.TextMuted,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             },
@@ -341,24 +257,22 @@ public partial class MainWindow
         return page;
     }
 
-    private static async Task ShowPageImageAsync(Border page, string path)
+    static async Task ShowPageImageAsync(Border page, string path)
     {
         try
         {
             page.Background = new ImageBrush(await DecodeImageAsync(path, 96)) { Stretch = Stretch.UniformToFill };
             page.Child = null;
         }
-        catch
-        {
-        }
+        catch { }
     }
 
-    private static TextBlock PreviewNote(string text) => new()
+    static TextBlock PreviewNote(string text) => new()
     {
         Text = text, FontSize = 13, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 8, 0),
     };
 
-    private static StackPanel DiffView(FileDiff diff, int limit)
+    static StackPanel DiffView(FileDiff diff, int limit)
     {
         var rows = new StackPanel();
         int oldLine = 0, newLine = 0, shown = 0;
@@ -386,28 +300,192 @@ public partial class MainWindow
         return rows;
     }
 
-    private static Border DiffRow(char kind, string oldNumber, string newNumber, string text, Brush? foreground = null)
+    static Border DiffRow(char kind, string oldNumber, string newNumber, string text, Brush? foreground = null) => new()
     {
-        var row = new DockPanel();
-        var numbers = new TextBlock
+        Background = kind switch { '+' => Theme.Get("DiffAdd"), '-' => Theme.Get("DiffRemove"), _ => Brushes.Transparent },
+        Padding = new Thickness(4, 1, 8, 1),
+        Child = new DockPanel
         {
-            Text = $"{oldNumber,5} {newNumber,5} {(kind == ' ' ? ' ' : kind == '-' ? '−' : '+')}",
-            FontFamily = Theme.Mono, FontSize = 12.5,
-            Foreground = kind switch { '+' => Theme.Success, '-' => Theme.DangerText, _ => Theme.TextMuted },
-            Margin = new Thickness(0, 0, 10, 0),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = $"{oldNumber,5} {newNumber,5} {(kind == ' ' ? ' ' : kind == '-' ? '−' : '+')}", FontFamily = Theme.Mono, FontSize = 12.5,
+                    Foreground = kind switch { '+' => Theme.Success, '-' => Theme.DangerText, _ => Theme.TextMuted }, Margin = new Thickness(0, 0, 10, 0),
+                },
+                new TextBlock
+                {
+                    Text = text, FontFamily = Theme.Mono, FontSize = 12.5, TextWrapping = TextWrapping.Wrap,
+                    Foreground = foreground ?? (kind == ' ' ? Theme.TextSoft : Theme.Text),
+                },
+            },
+        },
+    };
+
+    async Task ShowOfficePreviewAsync(string path)
+    {
+        var load = _officeLoad = new CancellationTokenSource();
+        PreviewBody.Content = PreviewNote("Готовлю визуальный предпросмотр…");
+        try
+        {
+            var preview = await OfficePreview.OpenAsync(path, load.Token);
+            if (!ReferenceEquals(_officeLoad, load))
+            {
+                preview.Dispose();
+                return;
+            }
+            _office = preview;
+            PreviewBody.Content = OfficePagesView(preview, path);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (ReferenceEquals(_officeLoad, load))
+                PreviewBody.Content = ExternalOfficeView(path, ex is IOException ? ex.Message : "Не удалось отобразить документ. Откройте его во внешней программе.");
+        }
+        finally
+        {
+            if (ReferenceEquals(_officeLoad, load)) _officeLoad = null;
+            load.Dispose();
+        }
+    }
+
+    FrameworkElement OfficePagesView(OfficePreview preview, string path)
+    {
+        var content = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
+        var previous = Theme.IconButton("\uE76B", "Предыдущая страница");
+        var next = Theme.IconButton(Glyphs.ChevronRight, "Следующая страница");
+        var counter = new TextBlock { Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center, Width = 66, TextAlignment = TextAlignment.Center };
+        var sheet = new Button
+        {
+            Style = Theme.Style("ModelPicker"), ToolTip = "Выбрать лист", HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 215,
+            Margin = new Thickness(0, 0, 8, 0),
         };
-        DockPanel.SetDock(numbers, Dock.Left);
-        row.Children.Add(numbers);
-        row.Children.Add(new TextBlock
+        AutomationProperties.SetName(sheet, "Выбрать лист");
+        var group = preview.Groups[0];
+        bool fit = group.Name.Length == 0;
+        string ZoomHint() => fit ? "Показать в исходном размере" : "Подогнать под панель";
+        var zoom = Theme.IconButton(Glyphs.Search, ZoomHint());
+        var navigation = new StackPanel
         {
-            Text = text, FontFamily = Theme.Mono, FontSize = 12.5, TextWrapping = TextWrapping.Wrap,
-            Foreground = foreground ?? (kind == ' ' ? Theme.TextSoft : Theme.Text),
-        });
-        return new Border
-        {
-            Background = kind switch { '+' => Theme.Get("DiffAdd"), '-' => Theme.Get("DiffRemove"), _ => Brushes.Transparent },
-            Padding = new Thickness(4, 1, 8, 1),
-            Child = row,
+            Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { zoom, previous, counter, next },
         };
+        DockPanel.SetDock(navigation, Dock.Right);
+        var toolbar = new DockPanel { Margin = new Thickness(0, 0, 4, 8), Children = { navigation } };
+        if (!fit) toolbar.Children.Add(sheet);
+        DockPanel.SetDock(toolbar, Dock.Top);
+        var root = new DockPanel { Children = { toolbar, content } };
+        System.Windows.Documents.DocumentPaginator? paginator = null;
+        int page = 0, count = 0;
+        void ShowPage()
+        {
+            try
+            {
+                previous.IsEnabled = page > 0;
+                next.IsEnabled = page + 1 < count;
+                counter.Text = count > 0 ? $"{page + 1} / {count}" : "";
+                if (count == 0)
+                {
+                    content.Content = ExternalOfficeView(path, "У этого листа нет страниц для показа.");
+                    return;
+                }
+                FrameworkElement visual;
+                if (paginator == null)
+                {
+                    var bitmap = LoadFrozenBitmap(group.Files[page]);
+                    visual = new Image { Source = bitmap, Width = bitmap.Width, Height = bitmap.Height };
+                }
+                else
+                {
+                    using var first = paginator.GetPage(page);
+                    var size = first.Size;
+                    visual = new DocumentPageView { DocumentPaginator = paginator, PageNumber = page, Width = size.Width, Height = size.Height };
+                }
+                content.Content = fit
+                    ? new Viewbox
+                    {
+                        Child = visual, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly,
+                        VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Center,
+                    }
+                    : new ScrollViewer
+                    {
+                        Content = visual, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        HorizontalContentAlignment = HorizontalAlignment.Left, VerticalContentAlignment = VerticalAlignment.Top,
+                    };
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                content.Content = ExternalOfficeView(path, "Не удалось отобразить страницу. Откройте документ во внешней программе.");
+            }
+        }
+        void SelectGroup(OfficePages selected)
+        {
+            content.Content = null;
+            _officeXps?.Close();
+            _officeXps = null;
+            paginator = null;
+            group = selected;
+            page = 0;
+            sheet.Content = selected.Name;
+            count = selected.Files.Length;
+            try
+            {
+                if (count > 0 && Path.GetExtension(selected.Files[0]) == ".xps")
+                {
+                    _officeXps = new XpsDocument(selected.Files[0], FileAccess.Read);
+                    paginator = _officeXps.GetFixedDocumentSequence().DocumentPaginator;
+                    if (!paginator.IsPageCountValid) paginator.ComputePageCount();
+                    count = paginator.PageCount;
+                }
+                ShowPage();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                next.IsEnabled = previous.IsEnabled = false;
+                content.Content = ExternalOfficeView(path, "Не удалось прочитать страницы. Откройте документ во внешней программе.");
+            }
+        }
+        previous.Click += (_, _) => { if (page > 0) { page--; ShowPage(); } };
+        next.Click += (_, _) => { if (page + 1 < count) { page++; ShowPage(); } };
+        zoom.Click += (_, _) =>
+        {
+            fit = !fit;
+            var hint = ZoomHint();
+            zoom.ToolTip = hint;
+            AutomationProperties.SetName(zoom, hint);
+            ShowPage();
+        };
+        sheet.Click += (_, _) =>
+        {
+            var menu = new ContextMenu { PlacementTarget = sheet, MaxHeight = 280 };
+            foreach (var item in preview.Groups)
+                menu.Items.Add(FileActions.Item(item.Name.Replace("_", "__"), item == group ? Glyphs.Check : null, () => SelectGroup(item)));
+            menu.IsOpen = true;
+        };
+        SelectGroup(group);
+        return root;
+    }
+
+    FrameworkElement ExternalOfficeView(string path, string message)
+    {
+        var open = new Button
+        {
+            Content = "Открыть во внешней программе", ToolTip = "Открыть документ в приложении Windows",
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 9, 0, 0),
+        };
+        AutomationProperties.SetName(open, "Открыть во внешней программе");
+        open.Click += (_, _) => FileActions.Open(this, path);
+        return new StackPanel { Children = { PreviewNote(message), open } };
+    }
+
+    void CloseOfficePreview()
+    {
+        _officeLoad?.Cancel();
+        _officeLoad = null;
+        if (_office == null) return;
+        PreviewBody.Content = null;
+        _officeXps?.Close();
+        _officeXps = null;
+        _office.Dispose();
+        _office = null;
     }
 }

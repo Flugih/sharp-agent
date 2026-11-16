@@ -1,6 +1,3 @@
-using System.Text;
-using System.Text.RegularExpressions;
-
 namespace SharpAgent.Tools;
 
 public static partial class CommandLog
@@ -10,11 +7,11 @@ public static partial class CommandLog
     public const string GapPrefix = "… пропущено ";
     public const int KeepDays = 14;
 
-    private const string IdPrefix = "Журнал: ";
-    private const string NoOutput = "(нет вывода)";
-    private const int WholeLines = 60, WholeChars = 6_000, HeadLines = 15, TailLines = 25, ShownChars = 300;
-    private const int ImportantLines = 40, ImportantChars = 4_000, BriefChars = 160;
-    private const int DefaultPage = 200, MaxPage = 1_000, MaxPageChars = 50_000;
+    const string IdPrefix = "Журнал: ";
+    const string NoOutput = "(нет вывода)";
+    const int WholeLines = 60, WholeChars = 6_000, HeadLines = 15, TailLines = 25, ShownChars = 300;
+    const int ImportantLines = 40, ImportantChars = 4_000, BriefChars = 160;
+    const int DefaultPage = 200, MaxPage = 1_000, MaxPageChars = 50_000;
 
     public static IEnumerable<AgentTool> All() =>
     [
@@ -22,9 +19,9 @@ public static partial class CommandLog
         {
             Name = "read_log",
             Description = "Дочитать вывод уже выполненной команды (run_command, run_plugin) по номеру журнала из строки " +
-                          "«Журнал: …» её результата — без повторного запуска. Журнал хранит первые и последние 256 КБ каждого " +
-                          "потока вывода. Возвращает пронумерованные строки и offset, с которого читать дальше; обрезанную строку " +
-                          $"целиком (до {MaxPageChars} символов) покажут её offset и limit=1.",
+                "«Журнал: …» её результата — без повторного запуска. Журнал хранит первые и последние 256 КБ каждого " +
+                "потока вывода. Возвращает пронумерованные строки и offset, с которого читать дальше; обрезанную строку " +
+                $"целиком (до {MaxPageChars} символов) покажут её offset и limit=1.",
             Parameters = Schema.Object(
                 new Prop("log_id", "string", "Номер журнала из результата команды.", Required: true),
                 new Prop("offset", "integer", "С какой строки читать (нумерация с 1). По умолчанию 1."),
@@ -39,24 +36,20 @@ public static partial class CommandLog
         var lines = output.Split('\n');
         bool whole = output.Length <= WholeChars && lines.Length <= WholeLines;
         var text = new StringBuilder(status).Append('\n');
-        if (id != null)
-            text.Append(IdPrefix).Append(id).Append(whole ? "" : $", строк {lines.Length} — подробности: read_log").Append('\n');
+        if (id != null) text.Append(IdPrefix).Append(id).Append(whole ? "" : $", строк {lines.Length} — подробности: read_log").Append('\n');
         if (output.Length == 0) return text.Append(NoOutput).ToString();
         if (whole) return text.Append(output).ToString();
         if (lines.Length <= HeadLines + TailLines) return AppendLines(text, lines, 0, lines.Length).ToString().TrimEnd();
-
         int tail = lines.Length - TailLines;
-        var (important, dropped) = Important(lines, HeadLines, tail, ImportantLines, ImportantChars);
+        var (important, dropped) = Important(lines, HeadLines, tail, ImportantChars);
         if (important.Count > 0)
         {
             text.Append("Важные строки:\n");
             foreach (var i in important) text.Append(i + 1).Append(": ").Append(Clip(lines[i].Trim(), ShownChars)).Append('\n');
             if (dropped > 0) text.Append($"… и ещё {dropped} — смотри read_log\n");
         }
-        text.Append($"Начало (строки 1–{HeadLines}):\n");
-        AppendLines(text, lines, 0, HeadLines);
-        text.Append($"Конец (строки {tail + 1}–{lines.Length}):\n");
-        return AppendLines(text, lines, tail, lines.Length).ToString().TrimEnd();
+        AppendLines(text.Append($"Начало (строки 1–{HeadLines}):\n"), lines, 0, HeadLines);
+        return AppendLines(text.Append($"Конец (строки {tail + 1}–{lines.Length}):\n"), lines, tail, lines.Length).ToString().TrimEnd();
     }
 
     public static string Brief(string output)
@@ -68,16 +61,15 @@ public static partial class CommandLog
         string? verdict = null;
         for (int i = lines.Length - 1; i >= body && verdict == null; i--)
             if (Summary().IsMatch(lines[i])) verdict = lines[i].Trim();
-        if (ToolRegistry.CommandFailed(output))
-            verdict ??= lines.Skip(body).FirstOrDefault(line => Problem().IsMatch(line))?.Trim();
+        if (ToolRegistry.CommandFailed(output)) verdict ??= lines.Skip(body).FirstOrDefault(line => Problem().IsMatch(line))?.Trim();
         return result + (verdict != null ? "; " + Clip(verdict, BriefChars) : "") + (id != null ? $" (журнал {id})" : "");
     }
 
     public static string Details(string output, int maxChars)
     {
         var lines = output.Split('\n');
-        var (important, _) = Important(lines, IdOf(output) != null ? 2 : 1, lines.Length, ImportantLines, maxChars);
-        return string.Join("\n", important.Select(i => Clip(lines[i].Trim(), ShownChars)));
+        return string.Join("\n", Important(lines, IdOf(output) != null ? 2 : 1, lines.Length, maxChars).Picked
+            .Select(i => Clip(lines[i].Trim(), ShownChars)));
     }
 
     public static string? ResultOf(string output)
@@ -100,34 +92,23 @@ public static partial class CommandLog
 
     public static string? Read(string folder, string id)
     {
-        try
-        {
-            return PathOf(folder, id) is { } path && File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        try { return PathOf(folder, id) is { } path && File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
     public static void Prune(string folder)
     {
         try
         {
-            if (!Directory.Exists(folder)) return;
             var expired = DateTime.Now.AddDays(-KeepDays);
             foreach (var file in new DirectoryInfo(folder).EnumerateFiles("*.log"))
-            {
                 try { if (file.LastWriteTime < expired) file.Delete(); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
-    private static string? Save(string folder, string text)
+    static string? Save(string folder, string text)
     {
         try
         {
@@ -136,19 +117,14 @@ public static partial class CommandLog
             File.WriteAllText(Path.Combine(folder, id + ".log"), text, new UTF8Encoding(false));
             return id;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    private static string ReadLog(ToolArgs a, ToolContext c, CancellationToken ct)
+    static string ReadLog(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var id = a.Required("log_id").Trim();
-        var text = c.LogsFolder != null ? Read(c.LogsFolder, id) : null;
-        if (text == null)
+        var text = (c.LogsFolder != null ? Read(c.LogsFolder, id) : null) ??
             throw new ToolException($"Журнал «{id}» не найден: журналы хранятся {KeepDays} дней. Если вывод ещё нужен, выполни команду заново.");
-
         var lines = text.Split('\n');
         int offset = Math.Max(1, a.Int("offset", 1));
         if (offset > lines.Length) throw new ToolException($"offset={offset} больше числа строк в журнале ({lines.Length}).");
@@ -162,10 +138,10 @@ public static partial class CommandLog
             end = i;
         }
         return $"Журнал {id}: строки {offset}–{end} из {lines.Length}\n{body}" +
-               (end < lines.Length ? $"Дальше: offset={end + 1}" : "Это конец журнала.");
+            (end < lines.Length ? $"Дальше: offset={end + 1}" : "Это конец журнала.");
     }
 
-    private static (List<int> Picked, int Dropped) Important(string[] lines, int from, int to, int maxLines, int maxChars)
+    static (List<int> Picked, int Dropped) Important(string[] lines, int from, int to, int maxChars)
     {
         var picked = new List<int>();
         var seen = new HashSet<string>();
@@ -178,8 +154,7 @@ public static partial class CommandLog
             context = problem ? 2 : Math.Max(0, context - 1);
             if (!wanted || line.Length == 0 || !seen.Add(line)) continue;
             int size = Math.Min(line.Length, ShownChars) + 8;
-            bool gap = line.StartsWith(GapPrefix, StringComparison.Ordinal);
-            if (!gap && (picked.Count >= maxLines || chars + size > maxChars))
+            if (!line.StartsWith(GapPrefix, StringComparison.Ordinal) && (picked.Count >= ImportantLines || chars + size > maxChars))
             {
                 dropped++;
                 continue;
@@ -190,13 +165,13 @@ public static partial class CommandLog
         return (picked, dropped);
     }
 
-    private static StringBuilder AppendLines(StringBuilder text, string[] lines, int from, int to)
+    static StringBuilder AppendLines(StringBuilder text, string[] lines, int from, int to)
     {
         for (int i = from; i < to; i++) text.Append(Clip(lines[i], ShownChars)).Append('\n');
         return text;
     }
 
-    private static string Clip(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+    static string Clip(string text, int max) => text.Length <= max ? text : text[..max] + "…";
 
     [GeneratedRegex("error|exception|fail|fatal|traceback|panic|warn|denied|not recognized|cannot|could not|unable to|●|✕|✗|" +
                     "ошибк|исключени|не удалось|не уда[её]тся|невозможно|не может|не распознан|не является внутренней|" +

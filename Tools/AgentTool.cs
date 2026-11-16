@@ -1,5 +1,4 @@
-using System.Text.Json.Nodes;
-using SharpAgent.Core;
+using static SharpAgent.Tools.PathHelper;
 
 namespace SharpAgent.Tools;
 
@@ -9,76 +8,60 @@ public sealed record ConfirmRequest(string Title, string Subject, string Action,
 
 public sealed class ToolContext
 {
-    public string WorkingDirectory { get; set; } =
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-    private string? _appFolder;
-
-    public string? AppFolder
-    {
-        get => _appFolder;
-        set => _appFolder = value != null ? PathHelper.FinalPath(value) : null;
-    }
-
+    string? _appFolder;
+    public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    public string? AppFolder { get => _appFolder; set => _appFolder = value != null ? FinalPath(value) : null; }
     public string? LogsFolder { get; set; }
-
     public string? SandboxRoot { get; set; }
-
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
+    public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
+    public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
 
-    public string TempFolder => AppFolder != null ? Path.Combine(AppFolder, "temp") : Path.GetTempPath();
+    string App(string name) => Path.Combine(AppFolder!, name);
 
-    public string? PluginsFolder => AppFolder != null ? Path.Combine(AppFolder, "plugins") : null;
+    static readonly AsyncLocal<bool> NetworkAllowed = new();
 
-    private string? EnvFile => AppFolder != null ? Path.Combine(AppFolder, ".env") : null;
+    internal static void AllowNetwork() => NetworkAllowed.Value = true;
 
-    private string? AuthFolder => AppFolder != null ? Path.Combine(AppFolder, "auth") : null;
+    internal bool IsForeignShare(string full) =>
+        full.StartsWith(@"\\") && !IsInside(full, WorkingDirectory) && (AppFolder == null || !IsInside(full, AppFolder));
 
     public string Resolve(string? path)
     {
         var full = PathHelper.Resolve(path, WorkingDirectory);
-        if (SandboxRoot != null && !PathHelper.IsInside(full, SandboxRoot))
+        if (SandboxRoot is { } root && !(IsInside(full, root) && IsInside(FinalPath(full), FinalPath(root))))
             throw new ToolException($"Включён режим песочницы: работать можно только внутри папки {SandboxRoot}. " +
-                                    $"Путь «{full}» находится за её пределами.");
-        return full;
+                $"Путь «{full}» находится за её пределами.");
+        return IsForeignShare(full) && !NetworkAllowed.Value
+            ? throw new ToolException($"Сетевой путь «{full}» доступен агенту только с разрешения пользователя.") : full;
     }
 
     public bool IsSecret(string fullPath)
     {
-        if (EnvFile == null) return false;
-        fullPath = PathHelper.FinalPath(fullPath);
-        return PathHelper.IsInside(EnvFile, fullPath) ||
-               PathHelper.IsInside(AuthFolder!, fullPath) ||
-               PathHelper.IsInside(fullPath, AuthFolder!) ||
-               PathHelper.IsInside(fullPath, Path.Combine(AppFolder!, "history", "changes")) ||
-               (PathHelper.IsInside(fullPath, AppFolder!) &&
-                Path.GetFileName(fullPath).Equals(".env", StringComparison.OrdinalIgnoreCase));
+        if (AppFolder == null) return false;
+        fullPath = FinalPath(fullPath);
+        return IsInside(App(".env"), fullPath) || IsInside(App("auth"), fullPath) || IsInside(fullPath, App("auth")) ||
+               IsInside(fullPath, App(@"history\changes")) ||
+               IsInside(fullPath, AppFolder) && Path.GetFileName(fullPath).Equals(".env", StringComparison.OrdinalIgnoreCase);
     }
 
     public void GuardSecrets(string fullPath)
     {
         if (IsSecret(fullPath))
             throw new ToolException("Здесь лежат секреты программы (файл .env с ключами или вход в ChatGPT в папке auth) — " +
-                                    "читать или копировать их агенту нельзя.");
+                "читать или копировать их агенту нельзя.");
     }
 
     public void GuardAppFiles(string fullPath)
     {
         if (AppFolder == null) return;
-        fullPath = PathHelper.FinalPath(fullPath);
-        bool isAppFile =
-            PathHelper.SamePath(fullPath, EnvFile!) ||
-            PathHelper.IsInside(fullPath, AuthFolder!) ||
-            PathHelper.IsInside(fullPath, Path.Combine(AppFolder, "history")) ||
-            PathHelper.IsInside(fullPath, TempFolder) ||
-            PathHelper.IsInside(fullPath, PluginsFolder!) ||
-            PathHelper.SamePath(fullPath, Path.Combine(AppFolder, "state.json")) ||
-            PathHelper.SamePath(fullPath, Path.Combine(AppFolder, "errors.log")) ||
-            (Environment.ProcessPath != null && PathHelper.SamePath(fullPath, PathHelper.FinalPath(Environment.ProcessPath))) ||
-            PathHelper.IsInside(AppFolder, fullPath);
-        if (isAppFile)
+        fullPath = FinalPath(fullPath);
+        if (SamePath(fullPath, App(".env")) || IsInside(fullPath, App("auth")) || IsInside(fullPath, App("history")) ||
+            IsInside(fullPath, TempFolder) || IsInside(fullPath, PluginsFolder!) || SamePath(fullPath, App("state.json")) ||
+            SamePath(fullPath, App("errors.log")) ||
+            Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)) || IsInside(AppFolder, fullPath))
             throw new ToolException("Это служебные файлы самой программы Sharp Agent (.env, auth, history, temp, plugins, state.json, exe " +
-                                    "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");
+                "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");
     }
 }
 
@@ -88,62 +71,30 @@ public sealed class AgentTool
     public required string Description { get; init; }
     public required JsonObject Parameters { get; init; }
     public required Func<ToolArgs, ToolContext, CancellationToken, Task<string>> Handler { get; init; }
-
     public Func<ToolArgs, ToolContext, ConfirmRequest?>? Confirmation { get; init; }
 
     public static Func<ToolArgs, ToolContext, CancellationToken, Task<string>> Sync(
-        Func<ToolArgs, ToolContext, CancellationToken, string> handler) =>
-        (args, ctx, ct) =>
-        {
-            try
-            {
-                return Task.FromResult(handler(args, ctx, ct));
-            }
-            catch (Exception ex)
-            {
-                return Task.FromException<string>(ex);
-            }
-        };
+        Func<ToolArgs, ToolContext, CancellationToken, string> handler) => (args, ctx, ct) => Task.FromResult(handler(args, ctx, ct));
 }
 
 public sealed class ToolArgs(JsonObject obj)
 {
-    public string Required(string name, bool allowEmpty = false)
-    {
-        var value = JsonUtil.Str(obj[name]);
-        if (value == null || (!allowEmpty && value.Length == 0))
-            throw new ToolException($"Не указан обязательный параметр '{name}'.");
-        return value;
-    }
+    public string Required(string name, bool allowEmpty = false) =>
+        JsonUtil.Str(obj[name]) is { } value && (allowEmpty || value.Length > 0) ? value
+            : throw new ToolException($"Не указан обязательный параметр '{name}'.");
 
-    public string? Optional(string name)
-    {
-        var value = JsonUtil.Str(obj[name]);
-        return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
+    public string? Optional(string name) => JsonUtil.Str(obj[name]) is var value && !string.IsNullOrWhiteSpace(value) ? value : null;
 
-    public JsonObject Object(string name) => obj[name] as JsonObject ?? new JsonObject();
+    public JsonObject Object(string name) => obj[name] as JsonObject ?? [];
 
-    public bool Bool(string name, bool defaultValue = false)
-    {
-        if (obj[name] is JsonValue v)
-        {
-            if (v.TryGetValue<bool>(out var b)) return b;
-            if (v.TryGetValue<string>(out var s) && bool.TryParse(s, out b)) return b;
-        }
-        return defaultValue;
-    }
+    public bool Bool(string name, bool defaultValue = false) => obj[name] is not JsonValue v ? defaultValue
+        : v.TryGetValue<bool>(out var b) ? b
+        : v.TryGetValue<string>(out var s) && bool.TryParse(s, out b) ? b : defaultValue;
 
-    public int Int(string name, int defaultValue)
-    {
-        if (obj[name] is JsonValue v)
-        {
-            if (v.TryGetValue<int>(out var i)) return i;
-            if (v.TryGetValue<double>(out var d)) return (int)d;
-            if (v.TryGetValue<string>(out var s) && int.TryParse(s, out i)) return i;
-        }
-        return defaultValue;
-    }
+    public int Int(string name, int defaultValue) => obj[name] is not JsonValue v ? defaultValue
+        : v.TryGetValue<int>(out var i) ? i
+        : v.TryGetValue<double>(out var d) ? (int)d
+        : v.TryGetValue<string>(out var s) && int.TryParse(s, out i) ? i : defaultValue;
 }
 
 public sealed record Prop(string Name, string Type, string Description, bool Required = false, string[]? Enum = null);
@@ -152,18 +103,15 @@ public static class Schema
 {
     public static JsonObject Object(params Prop[] props)
     {
-        var properties = new JsonObject();
-        var required = new JsonArray();
+        JsonObject properties = [], schema = new() { ["type"] = "object", ["properties"] = properties };
+        JsonArray required = [];
         foreach (var p in props)
         {
             var prop = new JsonObject { ["type"] = p.Type, ["description"] = p.Description };
-            if (p.Enum != null)
-                prop["enum"] = new JsonArray(p.Enum.Select(e => (JsonNode?)JsonValue.Create(e)).ToArray());
+            if (p.Enum != null) prop["enum"] = new JsonArray([.. p.Enum.Select(e => (JsonNode?)e)]);
             properties[p.Name] = prop;
-            if (p.Required) required.Add(JsonValue.Create(p.Name));
+            if (p.Required) required.Add((JsonNode?)p.Name);
         }
-
-        var schema = new JsonObject { ["type"] = "object", ["properties"] = properties };
         if (required.Count > 0) schema["required"] = required;
         return schema;
     }

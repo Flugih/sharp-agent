@@ -1,31 +1,25 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using SharpAgent.Core;
-using SharpAgent.Tools;
+using static SharpAgent.Agent.AgentRunner;
 
 namespace SharpAgent.Agent;
 
 public static class HistoryCompressor
 {
-    private const int CharsPerToken = 3, MessageTokens = 12, AttachmentTokens = 40;
-    private const int FailureChars = 1_500, ErrorChars = 600, HarderHeadChars = 3_000, HarderTailChars = 1_000;
-
-    private const string Header =
+    const int CharsPerToken = 3, MessageTokens = 12, AttachmentTokens = 40;
+    const int FailureChars = 1_500, ErrorChars = 600, HarderHeadChars = 3_000, HarderTailChars = 1_000;
+    const string Header =
         "[Сводка программы: давние шаги свёрнуты, чтобы сэкономить память модели. Это журнал твоих прошлых действий, " +
         "а не новая просьба; если нужны подробности, получи их заново инструментами.]";
-    private const string NextHeader = "[Сводка программы, продолжение]";
+    const string NextHeader = "[Сводка программы, продолжение]";
 
-    private sealed record Unit(int Start, int End, bool User);
-
-    private sealed record Call(string Name, JsonObject Args, string Output);
+    sealed record Unit(int Start, int End, bool User);
+    sealed record Call(string Name, JsonObject Args, string Output);
 
     public static int Estimate(JsonNode? node)
     {
-        if (node is not JsonObject message) return (node?.ToJsonString(JsonUtil.Compact).Length ?? 0) / CharsPerToken;
-        int chars = (AgentRunner.ExtractText(message["content"])?.Length ?? 0) +
-                    (JsonUtil.Str((message[AgentRunner.MetaField] as JsonObject)?["commentary"])?.Length ?? 0) +
-                    message.Where(p => p.Key is not ("role" or "content" or AgentRunner.MetaField or AgentRunner.AttachmentsField))
-                        .Sum(p => p.Value?.ToJsonString(JsonUtil.Compact).Length ?? 0);
+        if (node is not JsonObject message) return (node?.ToJsonString(Compact).Length ?? 0) / CharsPerToken;
+        int chars = (ExtractText(message["content"])?.Length ?? 0) + (Str(MetaOf(message)?["commentary"])?.Length ?? 0) +
+                    message.Where(p => p.Key is not ("role" or "content" or MetaField or AttachmentsField))
+                        .Sum(p => p.Value?.ToJsonString(Compact).Length ?? 0);
         return chars / CharsPerToken + MessageTokens + Attachment.ListFrom(message).Count * AttachmentTokens;
     }
 
@@ -38,7 +32,6 @@ public static class HistoryCompressor
         var units = Split(history);
         var steps = units.Where(unit => !unit.User).ToList();
         var lines = steps.ToDictionary(step => step, step => Lines(history, step, harder));
-
         int total = units.Where(unit => unit.User).Sum(unit => Size(history, unit)) + steps.Sum(step => LineTokens(lines[step]));
         int keepFrom = steps.Count;
         for (int k = steps.Count - 1; k >= 0; k--)
@@ -48,28 +41,26 @@ public static class HistoryCompressor
             total += delta;
             keepFrom = k;
         }
-
         AddLatestFailure(history, steps, keepFrom, lines);
         return Assemble(history, units, keepFrom, lines, harder);
     }
 
-    private static List<Unit> Split(IReadOnlyList<JsonNode> history)
+    static List<Unit> Split(IReadOnlyList<JsonNode> history)
     {
         var units = new List<Unit>();
         for (int i = 0; i < history.Count; i++)
         {
             bool user = Role(history[i]) == "user";
             int end = i;
-            if (!user)
-                while (end + 1 < history.Count && Role(history[end + 1]) == "tool") end++;
-            units.Add(new Unit(i, end, user));
+            while (!user && end + 1 < history.Count && Role(history[end + 1]) == "tool") end++;
+            units.Add(new(i, end, user));
             i = end;
         }
         return units;
     }
 
-    private static List<JsonNode> Assemble(IReadOnlyList<JsonNode> history, List<Unit> units, int keepFrom,
-        Dictionary<Unit, List<string>> lines, bool harder)
+    static List<JsonNode> Assemble(IReadOnlyList<JsonNode> history, List<Unit> units, int keepFrom, Dictionary<Unit, List<string>> lines,
+        bool harder)
     {
         var result = new List<JsonNode>();
         var pending = new List<string>();
@@ -85,7 +76,6 @@ public static class HistoryCompressor
         {
             if (pending.Count > 0) result.Add(new JsonObject { ["role"] = "assistant", ["content"] = TakeSummary() });
         }
-
         int step = 0;
         foreach (var unit in units)
         {
@@ -100,10 +90,10 @@ public static class HistoryCompressor
                 pending.AddRange(lines[unit]);
                 continue;
             }
-            if (pending.Count > 0 && history[unit.Start] is JsonObject first && Role(first) == "assistant")
+            if (pending.Count > 0 && Role(history[unit.Start]) == "assistant")
             {
-                var merged = (JsonObject)first.DeepClone();
-                var text = AgentRunner.ExtractText(merged["content"]);
+                var merged = (JsonObject)history[unit.Start].DeepClone();
+                var text = ExtractText(merged["content"]);
                 merged["content"] = TakeSummary() + (string.IsNullOrWhiteSpace(text) ? "" : "\n\n" + text);
                 result.Add(merged);
             }
@@ -118,9 +108,9 @@ public static class HistoryCompressor
         return result;
     }
 
-    private static JsonNode Shorten(JsonNode tool)
+    static JsonNode Shorten(JsonNode tool)
     {
-        if (JsonUtil.Str(tool["content"]) is not { Length: > HarderHeadChars + HarderTailChars } content) return tool;
+        if (Str(tool["content"]) is not { Length: > HarderHeadChars + HarderTailChars } content) return tool;
         int head = content.LastIndexOf('\n', HarderHeadChars) is > HarderHeadChars / 2 and var end ? end : HarderHeadChars;
         int tail = content.IndexOf('\n', content.Length - HarderTailChars, HarderTailChars - 1) is >= 0 and var start
             ? start + 1
@@ -139,7 +129,7 @@ public static class HistoryCompressor
         };
     }
 
-    private static string Summary(string header, List<string> lines, bool harder)
+    static string Summary(string header, List<string> lines, bool harder)
     {
         var rows = new List<(string Line, int Count)>();
         foreach (var line in lines)
@@ -153,28 +143,25 @@ public static class HistoryCompressor
         return header + "\n" + string.Join("\n", shown);
     }
 
-    private static List<string> Lines(IReadOnlyList<JsonNode> history, Unit step, bool harder)
+    static List<string> Lines(IReadOnlyList<JsonNode> history, Unit step, bool harder)
     {
         var lines = Calls(history, step).Select(call => $"- {call.Name}{Subject(call.Name, call.Args)} → {Result(call)}").ToList();
         if (history[step.Start] is JsonObject message && Role(message) == "assistant" && message["tool_calls"] == null &&
-            AgentRunner.ExtractText(message["content"]) is { } text && !string.IsNullOrWhiteSpace(text))
+            ExtractText(message["content"]) is { } text && !string.IsNullOrWhiteSpace(text))
             lines.Add("- Ответ: " + Clip(OneLine(text), harder ? 200 : 600));
         return lines;
     }
 
-    private static void AddLatestFailure(IReadOnlyList<JsonNode> history, List<Unit> steps, int keepFrom,
-        Dictionary<Unit, List<string>> lines)
+    static void AddLatestFailure(IReadOnlyList<JsonNode> history, List<Unit> steps, int keepFrom, Dictionary<Unit, List<string>> lines)
     {
         var latest = new Dictionary<string, (int Step, Call Call)>();
         for (int k = 0; k < steps.Count; k++)
             foreach (var call in Calls(history, steps[k]))
                 latest[call.Name + Subject(call.Name, call.Args)] = (k, call);
-
         (int Step, Call? Call) failure = (-1, null);
         foreach (var (step, call) in latest.Values)
             if (step > failure.Step && Failed(call)) failure = (step, call);
         if (failure.Call is not { } failed || failure.Step >= keepFrom) return;
-
         var details = failed.Name is "run_command" or "run_plugin" && !ToolRegistry.IsErrorOutput(failed.Output)
             ? CommandLog.Details(failed.Output, FailureChars)
             : Clip(string.Join("\n", failed.Output.Split('\n').Take(3)), ErrorChars);
@@ -185,29 +172,28 @@ public static class HistoryCompressor
                                  details.Replace("\n", "\n  "));
     }
 
-    private static bool Failed(Call call) =>
+    static bool Failed(Call call) =>
         call.Output.StartsWith("Ошибка", StringComparison.Ordinal) ||
-        (call.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(call.Output));
+        call.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(call.Output);
 
-    private static IEnumerable<Call> Calls(IReadOnlyList<JsonNode> history, Unit step)
+    static IEnumerable<Call> Calls(IReadOnlyList<JsonNode> history, Unit step)
     {
         if (history[step.Start] is not JsonObject assistant || assistant["tool_calls"] is not JsonArray calls) yield break;
         var outputs = new Dictionary<string, string>();
         for (int i = step.Start + 1; i <= step.End; i++)
             if (history[i] is JsonObject tool)
-                outputs[JsonUtil.Str(tool["tool_call_id"]) ?? ""] = (JsonUtil.Str(tool["content"]) ?? "").Replace(AgentRunner.RepeatReply, "");
-
+                outputs[Str(tool["tool_call_id"]) ?? ""] = (Str(tool["content"]) ?? "").Replace(RepeatReply, "");
         foreach (var call in calls.OfType<JsonObject>())
         {
             var function = call["function"] as JsonObject;
-            yield return new Call(JsonUtil.Str(function?["name"]) ?? "?", ParseArgs(JsonUtil.Str(function?["arguments"])),
-                outputs.GetValueOrDefault(JsonUtil.Str(call["id"]) ?? "", ""));
+            yield return new(Str(function?["name"]) ?? "?", ParseArgs(Str(function?["arguments"])),
+                outputs.GetValueOrDefault(Str(call["id"]) ?? "", ""));
         }
     }
 
-    private static string Subject(string tool, JsonObject args)
+    static string Subject(string tool, JsonObject args)
     {
-        string? Get(string key) => JsonUtil.Str(args[key]) is { Length: > 0 } value ? value : null;
+        string? Get(string key) => Str(args[key]) is { Length: > 0 } value ? value : null;
         var subject = tool switch
         {
             "run_command" => Get("command") is { } command ? "`" + Clip(OneLine(command), 120) + "`" : null,
@@ -226,7 +212,7 @@ public static class HistoryCompressor
         return subject == null ? "" : " " + subject;
     }
 
-    private static string Result(Call call)
+    static string Result(Call call)
     {
         var output = call.Output;
         var first = output.Split('\n', 2)[0].Trim();
@@ -248,20 +234,18 @@ public static class HistoryCompressor
         };
     }
 
-    private static int Count(string output) => output.Split('\n').Count(line => line.Trim().Length > 0);
+    static int Count(string output) => output.Split('\n').Count(line => line.Trim().Length > 0);
 
-    private static int Size(IReadOnlyList<JsonNode> history, Unit unit)
+    static int Size(IReadOnlyList<JsonNode> history, Unit unit)
     {
         int size = 0;
         for (int i = unit.Start; i <= unit.End; i++) size += Estimate(history[i]);
         return size;
     }
 
-    private static int LineTokens(List<string> lines) => lines.Sum(line => line.Length / CharsPerToken + 1);
+    static int LineTokens(List<string> lines) => lines.Sum(line => line.Length / CharsPerToken + 1);
 
-    private static string? Role(JsonNode? node) => node is JsonObject message ? JsonUtil.Str(message["role"]) : null;
-
-    private static JsonObject ParseArgs(string? json)
+    static JsonObject ParseArgs(string? json)
     {
         try
         {
@@ -273,7 +257,5 @@ public static class HistoryCompressor
         }
     }
 
-    private static string OneLine(string? text) => (text ?? "").ReplaceLineEndings(" ").Trim();
-
-    private static string Clip(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+    static string OneLine(string? text) => (text ?? "").ReplaceLineEndings(" ").Trim();
 }

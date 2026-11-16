@@ -1,240 +1,178 @@
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Windows;
 using System.Windows.Documents;
 
 namespace SharpAgent.Ui;
 
-public sealed class MarkdownContext
-{
-    public required PathRefs Paths { get; init; }
-    public required Func<string, string, Inline> FileLink { get; init; }
-    public required Func<string, string, Inline> WebLink { get; init; }
-    public required Func<string, string?, Block> CodeBlock { get; init; }
-}
+public sealed record MarkdownContext(PathRefs Paths, Func<string, string, Inline> FileLink, Func<string, string, Inline> WebLink,
+    Func<string, string?, Block> CodeBlock);
 
 public sealed class MarkdownRenderer(MarkdownContext context)
 {
-    private static readonly Regex HeadingRx = new(@"^(#{1,6})\s+(.+?)\s*#*$", RegexOptions.Compiled);
-    private static readonly Regex BulletRx = new(@"^[-*+•]\s+(.*)$", RegexOptions.Compiled);
-    private static readonly Regex NumberedRx = new(@"^(\d{1,4})[.)]\s+(.*)$", RegexOptions.Compiled);
-    private static readonly Regex RuleRx = new(@"^((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$", RegexOptions.Compiled);
-    private static readonly Regex TableSeparatorRx = new(@"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$", RegexOptions.Compiled);
-    private static readonly char[] UrlEnd = [' ', '\t', '<', '>', '"', '`', '\u00A0'];
-    private static readonly char[] UrlTrailing = ['.', ',', ';', ':', '!', '?', '»', '"', '\'', '…'];
+    static readonly Regex HeadingRx = new(@"^(#{1,6})\s+(.+)$", RegexOptions.Compiled),
+        BulletRx = new(@"^[-*+•]\s+(.*)$", RegexOptions.Compiled),
+        NumberedRx = new(@"^(\d{1,4})[.)]\s+(.*)$", RegexOptions.Compiled),
+        RuleRx = new(@"^((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$", RegexOptions.Compiled),
+        TableSeparatorRx = new(@"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$", RegexOptions.Compiled);
 
     public FlowDocument Render(string markdown)
     {
         var doc = new FlowDocument
         {
-            PagePadding = new Thickness(0),
-            FontFamily = Theme.Ui,
-            FontSize = 14,
-            LineHeight = 21,
-            Foreground = Theme.Text,
-            TextAlignment = TextAlignment.Left,
+            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 21, Foreground = Theme.Text, TextAlignment = TextAlignment.Left,
         };
-
+        var blocks = doc.Blocks;
         var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
-        Paragraph? paragraph = null;
-        int i = 0;
-        while (i < lines.Length)
+        Paragraph? open = null;
+        bool quoted = false;
+        for (int i = 0, next; i < lines.Length; i = next)
         {
             var t = lines[i].Trim();
-            int next = i + 1;
-            if (IsFence(t)) next = ParseFence(lines, i, doc.Blocks, t, 0);
+            next = i + 1;
+            if (IsFence(t)) next = ParseFence(lines, i, blocks, t, 0);
             else if (HeadingRx.Match(t) is { Success: true } heading)
-                doc.Blocks.Add(HeadingBlock(heading.Groups[2].Value, heading.Groups[1].Length));
-            else if (RuleRx.IsMatch(t)) doc.Blocks.Add(RuleBlock());
-            else if (IsListItem(t)) next = ParseList(lines, i, doc.Blocks);
-            else if (t.StartsWith('|') && i + 1 < lines.Length && TableSeparatorRx.IsMatch(lines[i + 1].Trim()))
-                next = ParseTable(lines, i, doc.Blocks);
-            else if (t.StartsWith('>')) next = ParseQuote(lines, i, doc.Blocks);
+            {
+                int level = heading.Groups[1].Length;
+                var text = heading.Groups[2].Value;
+                blocks.Add(WithText(new Paragraph
+                {
+                    FontSize = level switch { 1 => 20, 2 => 16, _ => 14 }, FontWeight = FontWeights.SemiBold, Margin = new(0, level <= 2 ? 12 : 8, 0, 8),
+                }, text.TrimEnd('#').TrimEnd() is { Length: > 0 } title ? title : text[..1]));
+            }
+            else if (RuleRx.IsMatch(t))
+                blocks.Add(new Paragraph { BorderBrush = Theme.LineStrong, BorderThickness = new(0, 0, 0, 1), Margin = new(0, 4, 0, 16), FontSize = 2, LineHeight = 2 });
+            else if (IsListItem(t)) next = ParseList(lines, i, blocks);
+            else if (t.StartsWith('|') && next < lines.Length && TableSeparatorRx.IsMatch(lines[next].Trim())) next = ParseTable(lines, i, blocks);
             else if (t.Length > 0)
             {
-                if (paragraph == null) doc.Blocks.Add(paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 12) });
-                else paragraph.Inlines.Add(new LineBreak());
-                AddInlines(paragraph.Inlines, t);
-                i++;
+                bool quote = t.StartsWith('>');
+                if (open == null || quoted != quote)
+                    blocks.Add(open = quote
+                        ? new Paragraph
+                        {
+                            Foreground = Theme.TextMuted, BorderBrush = Theme.LineStrong, BorderThickness = new(2, 0, 0, 0), Padding = new(12, 0, 0, 0),
+                            Margin = new(0, 0, 0, 12),
+                        }
+                        : new Paragraph { Margin = new(0, 0, 0, 12) });
+                else open.Inlines.Add(new LineBreak());
+                quoted = quote;
+                AddInlines(open.Inlines, quote ? t.TrimStart('>').Trim() : t);
                 continue;
             }
-            paragraph = null;
-            i = next;
+            open = null;
         }
-
-        if (doc.Blocks.LastBlock is { } last) last.Margin = last.Margin with { Bottom = 0 };
+        if (blocks.LastBlock is { } last) last.Margin = last.Margin with { Bottom = 0 };
         return doc;
     }
 
-    private Paragraph HeadingBlock(string text, int level)
+    Paragraph WithText(Paragraph paragraph, string text)
     {
-        var p = new Paragraph
-        {
-            FontSize = level switch { 1 => 20, 2 => 16, _ => 14 },
-            FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, level <= 2 ? 12 : 8, 0, 8),
-        };
-        AddInlines(p.Inlines, text);
-        return p;
+        AddInlines(paragraph.Inlines, text);
+        return paragraph;
     }
 
-    private int ParseFence(string[] lines, int start, BlockCollection target, string opener, int indent)
+    int ParseFence(string[] lines, int start, BlockCollection target, string opener, int indent)
     {
         var fence = opener[..3];
         var language = opener[3..].Trim().Split(' ', '\t')[0];
-        var code = new List<string>();
-        int i = start + 1;
-        while (i < lines.Length && !lines[i].Trim().StartsWith(fence)) code.Add(Unindent(lines[i++], indent));
+        var code = lines.Skip(start + 1).TakeWhile(line => !line.Trim().StartsWith(fence)).Select(line => Unindent(line, indent)).ToList();
         target.Add(context.CodeBlock(string.Join("\n", code), language.Length > 0 ? language : null));
-        return i + 1;
+        return start + code.Count + 2;
     }
 
-    private int ParseQuote(string[] lines, int start, BlockCollection target)
+    static bool IsFence(string trimmed) => trimmed.StartsWith("~~~") || (trimmed.StartsWith("```") && !trimmed.TrimStart('`').Contains('`'));
+
+    static bool IsListItem(string trimmed) => BulletRx.IsMatch(trimmed) || NumberedRx.IsMatch(trimmed);
+
+    static int Indent(string line) => line.TakeWhile(c => c is ' ' or '\t').Sum(c => c == '\t' ? 4 : 1);
+
+    static string Unindent(string line, int indent)
     {
-        var p = new Paragraph
-        {
-            Foreground = Theme.TextMuted,
-            BorderBrush = Theme.LineStrong,
-            BorderThickness = new Thickness(2, 0, 0, 0),
-            Padding = new Thickness(12, 0, 0, 0),
-            Margin = new Thickness(0, 0, 0, 12),
-        };
-        int i = start;
-        while (i < lines.Length && lines[i].Trim().StartsWith('>'))
-        {
-            if (i > start) p.Inlines.Add(new LineBreak());
-            AddInlines(p.Inlines, lines[i++].Trim().TrimStart('>').Trim());
-        }
-        target.Add(p);
-        return i;
-    }
-
-    private static Paragraph RuleBlock() => new()
-    {
-        BorderBrush = Theme.LineStrong,
-        BorderThickness = new Thickness(0, 0, 0, 1),
-        Margin = new Thickness(0, 4, 0, 16),
-        FontSize = 2,
-        LineHeight = 2,
-    };
-
-    private static bool IsFence(string trimmed) =>
-        trimmed.StartsWith("~~~") || (trimmed.StartsWith("```") && !trimmed.TrimStart('`').Contains('`'));
-
-    private static bool IsListItem(string trimmed) => BulletRx.IsMatch(trimmed) || NumberedRx.IsMatch(trimmed);
-
-    private static int Indent(string line) => line.TakeWhile(c => c is ' ' or '\t').Sum(c => c == '\t' ? 4 : 1);
-
-    private static string Unindent(string line, int indent)
-    {
-        int cut = 0;
-        while (cut < line.Length && line[cut] is ' ' or '\t' && Indent(line[..(cut + 1)]) <= indent) cut++;
+        int cut = 0, width = 0;
+        while (cut < line.Length && line[cut] is ' ' or '\t' && (width += line[cut] == '\t' ? 4 : 1) <= indent) cut++;
         return line[cut..];
     }
 
-    private int ParseList(string[] lines, int start, BlockCollection target)
+    int ParseList(string[] lines, int start, BlockCollection target)
     {
-        int baseIndent = Indent(lines[start]);
+        int baseIndent = Indent(lines[start]), i = start;
         var first = NumberedRx.Match(lines[start].Trim());
         bool ordered = first.Success;
-        var list = new List
-        {
-            MarkerStyle = ordered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc,
-            Margin = new Thickness(0, 0, 0, 12),
-            Padding = new Thickness(24, 0, 0, 0),
-        };
+        var list = new List { MarkerStyle = ordered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = new(0, 0, 0, 12), Padding = new(24, 0, 0, 0) };
         if (ordered && int.TryParse(first.Groups[1].Value, out var startIndex)) list.StartIndex = Math.Max(1, startIndex);
-
-        int i = start;
         while (i < lines.Length)
         {
-            var line = lines[i];
-            var t = line.Trim();
+            var t = lines[i].Trim();
+            int indent = Indent(lines[i]);
+            var last = list.ListItems.LastListItem;
             if (t.Length == 0)
             {
-                var following = i + 1 < lines.Length ? lines[i + 1] : "";
-                if ((IsListItem(following.Trim()) && Indent(following) >= baseIndent) ||
-                    (IsFence(following.Trim()) && Indent(following) > baseIndent))
-                {
-                    i++;
-                    continue;
-                }
-                break;
-            }
-
-            int indent = Indent(line);
-            var last = list.ListItems.LastListItem;
-            if (!IsListItem(t))
-            {
-                if (indent <= baseIndent || last == null) break;
-                if (IsFence(t))
-                {
-                    i = ParseFence(lines, i, last.Blocks, t, indent);
-                    continue;
-                }
-                if (last.Blocks.LastBlock is List) break;
-                if (last.Blocks.LastBlock is Paragraph previous) previous.Inlines.Add(new LineBreak());
-                else last.Blocks.Add(previous = new Paragraph { Margin = new Thickness(0, 0, 0, 4) });
-                AddInlines(previous.Inlines, t);
+                var following = lines.ElementAtOrDefault(i + 1) ?? "";
+                if (!(IsListItem(following.Trim()) && Indent(following) >= baseIndent || IsFence(following.Trim()) && Indent(following) > baseIndent)) break;
                 i++;
-                continue;
             }
-            if (indent < baseIndent) break;
-            if (indent >= baseIndent + 2 && last != null)
+            else if (!IsListItem(t))
             {
-                i = ParseList(lines, i, last.Blocks);
-                continue;
+                if (indent <= baseIndent || last == null || !IsFence(t) && last.Blocks.LastBlock is List) break;
+                if (IsFence(t)) i = ParseFence(lines, i, last.Blocks, t, indent);
+                else
+                {
+                    if (last.Blocks.LastBlock is Paragraph previous) previous.Inlines.Add(new LineBreak());
+                    else last.Blocks.Add(previous = new Paragraph { Margin = new(0, 0, 0, 4) });
+                    AddInlines(previous.Inlines, t);
+                    i++;
+                }
             }
-
-            var numbered = NumberedRx.Match(t);
-            if (numbered.Success != ordered) break;
-            var content = numbered.Success ? numbered.Groups[2].Value : BulletRx.Match(t).Groups[1].Value;
-
-            if (content.StartsWith("[ ] ", StringComparison.Ordinal)) content = "☐ " + content[4..];
-            else if (content.StartsWith("[x] ", StringComparison.OrdinalIgnoreCase)) content = "☑ " + content[4..];
-
-            var p = new Paragraph { Margin = new Thickness(0, 0, 0, 4) };
-            var item = new ListItem(p);
-            list.ListItems.Add(item);
-            if (IsFence(content))
+            else if (indent < baseIndent) break;
+            else if (indent >= baseIndent + 2 && last != null) i = ParseList(lines, i, last.Blocks);
+            else
             {
-                i = ParseFence(lines, i, item.Blocks, content, indent + t.Length - content.Length);
-                continue;
+                var numbered = NumberedRx.Match(t);
+                if (numbered.Success != ordered) break;
+                var content = numbered.Success ? numbered.Groups[2].Value : BulletRx.Match(t).Groups[1].Value;
+                if (content.StartsWith("[ ] ", StringComparison.Ordinal)) content = "☐ " + content[4..];
+                else if (content.StartsWith("[x] ", StringComparison.OrdinalIgnoreCase)) content = "☑ " + content[4..];
+                var p = new Paragraph { Margin = new(0, 0, 0, 4) };
+                var item = new ListItem(p);
+                list.ListItems.Add(item);
+                if (IsFence(content)) i = ParseFence(lines, i, item.Blocks, content, indent + t.Length - content.Length);
+                else
+                {
+                    AddInlines(p.Inlines, content);
+                    i++;
+                }
             }
-            AddInlines(p.Inlines, content);
-            i++;
         }
-
         target.Add(list);
         return i;
     }
 
-    private int ParseTable(string[] lines, int start, BlockCollection target)
+    int ParseTable(string[] lines, int start, BlockCollection target)
     {
-        var header = SplitRow(lines[start]);
-        int i = start + 2;
-        var rows = new List<string[]>();
-        while (i < lines.Length && lines[i].Trim().StartsWith('|')) rows.Add(SplitRow(lines[i++]));
-        int columns = rows.Prepend(header).Max(r => r.Length);
-
-        var table = new Table
-        {
-            CellSpacing = 0,
-            Margin = new Thickness(0, 0, 0, 12),
-            BorderBrush = Theme.LineStrong,
-            BorderThickness = new Thickness(1, 1, 0, 0),
-        };
+        var rows = lines.Skip(start + 2).TakeWhile(line => line.Trim().StartsWith('|')).Select(SplitRow).Prepend(SplitRow(lines[start])).ToList();
+        int columns = rows.Max(row => row.Length);
+        var table = new Table { CellSpacing = 0, Margin = new(0, 0, 0, 12), BorderBrush = Theme.LineStrong, BorderThickness = new(1, 1, 0, 0) };
         for (int c = 0; c < columns; c++) table.Columns.Add(new TableColumn());
-
         var group = new TableRowGroup();
-        group.Rows.Add(MakeRow(header, columns, isHeader: true));
-        foreach (var row in rows) group.Rows.Add(MakeRow(row, columns, isHeader: false));
+        for (int r = 0; r < rows.Count; r++)
+        {
+            var row = new TableRow();
+            if (r == 0) row.Background = Theme.Surface2;
+            for (int c = 0; c < columns; c++)
+            {
+                var p = new Paragraph { Margin = new(0), FontSize = 13 };
+                if (r == 0) p.FontWeight = FontWeights.SemiBold;
+                row.Cells.Add(new TableCell(WithText(p, rows[r].ElementAtOrDefault(c) ?? ""))
+                {
+                    Padding = new(8, 4, 8, 4), BorderBrush = Theme.LineStrong, BorderThickness = new(0, 0, 1, 1),
+                });
+            }
+            group.Rows.Add(row);
+        }
         table.RowGroups.Add(group);
         target.Add(table);
-        return i;
+        return start + rows.Count + 1;
     }
 
-    private static string[] SplitRow(string line)
+    static string[] SplitRow(string line)
     {
         var t = line.Trim();
         if (t.StartsWith('|')) t = t[1..];
@@ -242,232 +180,117 @@ public sealed class MarkdownRenderer(MarkdownContext context)
         return t.Split('|', StringSplitOptions.TrimEntries);
     }
 
-    private TableRow MakeRow(string[] cells, int columns, bool isHeader)
+    void AddInlines(InlineCollection inlines, string text)
     {
-        var row = new TableRow();
-        if (isHeader) row.Background = Theme.Surface2;
-        for (int c = 0; c < columns; c++)
+        int from = 0, i = 0, end;
+        void Add(Inline? inline, int next)
         {
-            var p = new Paragraph { Margin = new Thickness(0), FontSize = 13 };
-            if (isHeader) p.FontWeight = FontWeights.SemiBold;
-            AddInlines(p.Inlines, c < cells.Length ? cells[c] : "");
-            row.Cells.Add(new TableCell(p)
-            {
-                Padding = new Thickness(8, 4, 8, 4),
-                BorderBrush = Theme.LineStrong,
-                BorderThickness = new Thickness(0, 0, 1, 1),
-            });
+            if (i > from) inlines.Add(new Run(text[from..i]));
+            if (inline != null) inlines.Add(inline);
+            from = i = next;
         }
-        return row;
-    }
-
-    private void AddInlines(InlineCollection inlines, string text)
-    {
-        var plain = new StringBuilder();
-        void Flush()
+        Span Nested(Span span, int start, int stop)
         {
-            if (plain.Length == 0) return;
-            inlines.Add(new Run(plain.ToString()));
-            plain.Clear();
+            AddInlines(span.Inlines, text[start..stop]);
+            return span;
         }
-
-        int i = 0;
         while (i < text.Length)
         {
             char c = text[i];
-
-            if (c == '`')
+            if (c == '`' && (end = text.IndexOf('`', i + 1)) > i + 1) Add(Code(text[(i + 1)..end]), end + 1);
+            else if ((c == '[' || c == '!' && i + 1 < text.Length && text[i + 1] == '[') &&
+                     ParseLink(text, c == '!' ? i + 1 : i) is (var label, var target, var next) && LooksLikeLinkTarget(target))
             {
-                int close = text.IndexOf('`', i + 1);
-                if (close > i + 1)
-                {
-                    Flush();
-                    AddCode(inlines, text[(i + 1)..close]);
-                    i = close + 1;
-                    continue;
-                }
+                var link = Link(label, target);
+                Add(link, next);
+                if (link == null) AddInlines(inlines, label);
             }
-            else if (c == '[' || (c == '!' && i + 1 < text.Length && text[i + 1] == '['))
+            else if (c is '*' or '_' && i + 1 < text.Length && text[i + 1] == c &&
+                     (end = text.IndexOf(new string(c, 2), i + 2, StringComparison.Ordinal)) > i + 2 && !char.IsWhiteSpace(text[i + 2]))
+                Add(Nested(new Span { FontWeight = FontWeights.SemiBold }, i + 2, end), end + 2);
+            else if (c is '*' or '_' && (end = EmphasisEnd(text, i)) > 0) Add(Nested(new Span { FontStyle = FontStyles.Italic }, i + 1, end), end + 1);
+            else if (c == 'h' && StartsWordAt(text, i) && (end = UrlLength(text, i)) > 0)
             {
-                int open = c == '!' ? i + 1 : i;
-                if (TryParseLink(text, open, out var label, out var target, out int next) && LooksLikeLinkTarget(target))
-                {
-                    Flush();
-                    AddLink(inlines, label, target);
-                    i = next;
-                    continue;
-                }
+                var url = text.Substring(i, end);
+                Add(context.WebLink(url, url), i + end);
             }
-            else if ((c == '*' || c == '_') && i + 1 < text.Length && text[i + 1] == c)
+            else if (char.IsAsciiLetter(c) && i + 2 < text.Length && text[i + 1] == ':' && text[i + 2] is '\\' or '/' && StartsWordAt(text, i))
             {
-                int close = text.IndexOf(new string(c, 2), i + 2, StringComparison.Ordinal);
-                if (close > i + 2 && !char.IsWhiteSpace(text[i + 2]))
-                {
-                    Flush();
-                    var bold = new Span { FontWeight = FontWeights.SemiBold };
-                    AddInlines(bold.Inlines, text[(i + 2)..close]);
-                    inlines.Add(bold);
-                    i = close + 2;
-                    continue;
-                }
+                if (context.Paths.MatchBarePath(text, i) is { } hit) Add(context.FileLink(hit.FullPath, text.Substring(i, hit.Length)), i + hit.Length);
+                else i += Math.Max(1, PathRefs.PlainTokenLength(text, i));
             }
-            else if (c == '*' || c == '_')
-            {
-                int close = EmphasisEnd(text, i);
-                if (close > 0)
-                {
-                    Flush();
-                    var italic = new Span { FontStyle = FontStyles.Italic };
-                    AddInlines(italic.Inlines, text[(i + 1)..close]);
-                    inlines.Add(italic);
-                    i = close + 1;
-                    continue;
-                }
-            }
-            else if (c == 'h' && StartsWordAt(text, i) && UrlLength(text, i) is > 0 and var urlLength)
-            {
-                Flush();
-                var url = text.Substring(i, urlLength);
-                inlines.Add(context.WebLink(url, url));
-                i += urlLength;
-                continue;
-            }
-            else if (char.IsAsciiLetter(c) && i + 2 < text.Length && text[i + 1] == ':' &&
-                     (text[i + 2] == '\\' || text[i + 2] == '/') && StartsWordAt(text, i))
-            {
-                if (context.Paths.MatchBarePath(text, i) is { } hit)
-                {
-                    Flush();
-                    inlines.Add(context.FileLink(hit.FullPath, text.Substring(i, hit.Length)));
-                    i += hit.Length;
-                    continue;
-                }
-                int length = Math.Max(1, PathRefs.PlainTokenLength(text, i));
-                plain.Append(text, i, length);
-                i += length;
-                continue;
-            }
-
-            plain.Append(c);
-            i++;
+            else i++;
         }
-        Flush();
+        Add(null, i);
     }
 
-    private void AddCode(InlineCollection inlines, string code)
+    Inline? FileLinkTo(string candidate, string text) =>
+        context.Paths.Resolve(candidate, allowRelative: true) is { } path ? context.FileLink(path, text) : null;
+
+    Inline Code(string code) =>
+        FileLinkTo(code, code.Trim()) ?? new Run(" " + code + " ") { FontFamily = Theme.Mono, FontSize = 13, Background = Theme.Surface3, Foreground = Theme.Text };
+
+    Inline? Link(string label, string target) => IsWebUrl(target) ? context.WebLink(target, label)
+        : FileLinkTo(Starts(target, "file:") && Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.IsFile && !uri.IsUnc ? uri.LocalPath
+            : target.Contains('%') ? Uri.UnescapeDataString(target) : target, label);
+
+    static bool LooksLikeLinkTarget(string target) =>
+        target.AsSpan().ContainsAny(@"\/:") || target[0] is '#' or '~' or '%' || Path.GetExtension(target).Length is > 1 and <= 11;
+
+    static bool Starts(string text, string prefix) => text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+
+    static bool IsWebUrl(string target) => Starts(target, "http://") || Starts(target, "https://") || Starts(target, "mailto:");
+
+    static (string Label, string Target, int Next)? ParseLink(string text, int open)
     {
-        if (context.Paths.Resolve(code, allowRelative: true) is { } path)
-        {
-            inlines.Add(context.FileLink(path, code.Trim()));
-            return;
-        }
-        inlines.Add(new Run(" " + code + " ")
-        {
-            FontFamily = Theme.Mono,
-            FontSize = 13,
-            Background = Theme.Surface3,
-            Foreground = Theme.Text,
-        });
-    }
-
-    private void AddLink(InlineCollection inlines, string label, string target)
-    {
-        if (IsWebUrl(target))
-        {
-            inlines.Add(context.WebLink(target, label));
-            return;
-        }
-
-        var local = target;
-        if (target.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
-            Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.IsFile && !uri.IsUnc)
-            local = uri.LocalPath;
-        else if (target.Contains('%'))
-            local = Uri.UnescapeDataString(target);
-
-        if (context.Paths.Resolve(local, allowRelative: true) is { } path) inlines.Add(context.FileLink(path, label));
-        else AddInlines(inlines, label);
-    }
-
-    private static bool LooksLikeLinkTarget(string target) =>
-        IsWebUrl(target) || target.Contains('\\') || target.Contains('/') || target.Contains(':') ||
-        target.StartsWith('#') || target.StartsWith('~') || target.StartsWith('%') ||
-        Path.GetExtension(target).Length is > 1 and <= 11;
-
-    private static bool IsWebUrl(string target) =>
-        target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-        target.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-        target.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase);
-
-    private static bool TryParseLink(string text, int open, out string label, out string target, out int next)
-    {
-        label = target = "";
-        next = open;
-        int close = text.IndexOf(']', open + 1);
-        if (close <= open + 1 || close + 1 >= text.Length || text[close + 1] != '(') return false;
-
-        int start = close + 2;
+        int close = text.IndexOf(']', open + 1), start = close + 2, end, next;
+        if (close <= open + 1 || close + 1 >= text.Length || text[close + 1] != '(') return null;
+        string target;
         if (start < text.Length && text[start] == '<')
         {
-            int end = text.IndexOf('>', start + 1);
-            if (end < 0) return false;
-            int after = end + 1;
-            while (after < text.Length && text[after] == ' ') after++;
-            if (after >= text.Length || text[after] != ')') return false;
+            if ((end = text.IndexOf('>', start + 1)) < 0) return null;
+            next = end + 1;
+            while (next < text.Length && text[next] == ' ') next++;
+            if (next >= text.Length || text[next] != ')') return null;
             target = text[(start + 1)..end].Trim();
-            next = after + 1;
         }
         else
         {
-            int depth = 1, pos = start;
-            for (; pos < text.Length; pos++)
-            {
-                if (text[pos] == '(') depth++;
-                else if (text[pos] == ')' && --depth == 0) break;
-            }
-            if (pos >= text.Length) return false;
-            target = text[start..pos].Trim();
-            next = pos + 1;
-
+            int depth = 1;
+            for (next = start; next < text.Length; next++)
+                if (text[next] == '(') depth++;
+                else if (text[next] == ')' && --depth == 0) break;
+            if (next >= text.Length) return null;
+            target = text[start..next].Trim();
             if (IsWebUrl(target) && target.IndexOf(' ') is > 0 and var space) target = target[..space];
         }
-
-        label = text[(open + 1)..close];
-        return target.Length > 0 && label.Trim().Length > 0;
+        var label = text[(open + 1)..close];
+        return target.Length > 0 && label.Trim().Length > 0 ? (label, target, next + 1) : null;
     }
 
-    private static int EmphasisEnd(string text, int open)
+    static int EmphasisEnd(string text, int open)
     {
         char mark = text[open];
-        if (open > 0 && (char.IsLetterOrDigit(text[open - 1]) || text[open - 1] == mark)) return 0;
-        if (open + 1 >= text.Length || char.IsWhiteSpace(text[open + 1]) || text[open + 1] == mark) return 0;
-
+        if (Joins(text, open - 1, mark) || open + 1 >= text.Length || char.IsWhiteSpace(text[open + 1]) || text[open + 1] == mark) return 0;
         int close = text.IndexOf(mark, open + 1);
-        if (close <= open + 1 || char.IsWhiteSpace(text[close - 1])) return 0;
-        if (close + 1 < text.Length && (char.IsLetterOrDigit(text[close + 1]) || text[close + 1] == mark)) return 0;
-        return close;
+        return close < 0 || char.IsWhiteSpace(text[close - 1]) || Joins(text, close + 1, mark) ? 0 : close;
     }
 
-    private static bool StartsWordAt(string text, int index) =>
+    static bool Joins(string text, int index, char mark) =>
+        index >= 0 && index < text.Length && (char.IsLetterOrDigit(text[index]) || text[index] == mark);
+
+    static bool StartsWordAt(string text, int index) =>
         index == 0 || !(char.IsLetterOrDigit(text[index - 1]) || text[index - 1] is '/' or '\\' or '.' or ':' or '@' or '-' or '_');
 
-    private static int UrlLength(string text, int start)
+    static int UrlLength(string text, int start)
     {
-        int scheme = string.CompareOrdinal(text, start, "https://", 0, 8) == 0 ? 8
-            : string.CompareOrdinal(text, start, "http://", 0, 7) == 0 ? 7
-            : 0;
+        var rest = text.AsSpan(start);
+        int scheme = rest.StartsWith("https://") ? 8 : rest.StartsWith("http://") ? 7 : 0;
         if (scheme == 0) return 0;
-
-        int end = text.IndexOfAny(UrlEnd, start);
-        if (end < 0) end = text.Length;
-        while (end > start + scheme)
-        {
-            char last = text[end - 1];
-            bool punctuation = Array.IndexOf(UrlTrailing, last) >= 0;
-            bool strayBracket = last is ')' or ']' && text.IndexOf(last == ')' ? '(' : '[', start, end - start) < 0;
-            if (!punctuation && !strayBracket) break;
+        int end = rest.IndexOfAny(" \t<>\"`\u00A0") is >= 0 and var stop ? start + stop : text.Length;
+        while (end > start + scheme && text[end - 1] is var last &&
+               (".,;:!?»\"'…".Contains(last) || last is ')' or ']' && text.IndexOf(last == ')' ? '(' : '[', start, end - start) < 0))
             end--;
-        }
         return end - start > scheme ? end - start : 0;
     }
 }

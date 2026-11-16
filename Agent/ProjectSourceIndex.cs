@@ -1,23 +1,16 @@
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-using SharpAgent.Core;
-using SharpAgent.Tools;
-
 namespace SharpAgent.Agent;
 
-internal sealed record IndexedSource(long Size, long Ticks, string Hash, bool Roslyn, SourceSyntax Syntax);
+sealed record IndexedSource(long Size, long Ticks, string Hash, bool Roslyn, SourceSyntax Syntax);
 
-internal static partial class ProjectSourceIndex
+static partial class ProjectSourceIndex
 {
-    private const int MaxFiles = 6_000, MaxFileBytes = 384_000, MaxChangedBytes = 32_000_000;
-    private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
+    const int MaxFiles = 6_000, MaxFileBytes = 384_000, MaxChangedBytes = 32_000_000;
+    static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".cs", ".fs", ".vb", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".java", ".kt", ".go", ".rs",
         ".c", ".cpp", ".h", ".hpp", ".swift", ".rb", ".php", ".ps1", ".sql", ".vue", ".svelte", ".xaml",
     };
-    private static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase)
+    static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
         "bin", "obj", "node_modules", "dist", "build", "target", "vendor", "packages", "__pycache__",
         "coverage", "auth", "history", "temp", "attachments", "publish",
@@ -43,9 +36,9 @@ internal static partial class ProjectSourceIndex
             try
             {
                 long ticks = file.LastWriteTimeUtc.Ticks, size = file.Length;
-                var old = previous.GetValueOrDefault(name);
                 bool preferRoslyn = version.Length > 0 && name.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
-                if (old != null && old.Size == size && old.Ticks == ticks && (!preferRoslyn || old.Roslyn))
+                var old = previous.GetValueOrDefault(name) is { } cached && (!preferRoslyn || cached.Roslyn) ? cached : null;
+                if (old != null && old.Size == size && old.Ticks == ticks)
                 {
                     index[name] = old;
                     continue;
@@ -55,25 +48,18 @@ internal static partial class ProjectSourceIndex
                 if (bytes.Length > MaxFileBytes) continue;
                 changedBytes += bytes.Length;
                 var hash = Convert.ToHexString(SHA256.HashData(bytes));
-                if (old != null && old.Hash == hash && (!preferRoslyn || old.Roslyn))
-                {
-                    index[name] = old with { Size = size, Ticks = ticks };
-                }
+                if (old != null && old.Hash == hash) index[name] = old with { Size = size, Ticks = ticks };
                 else
                 {
-                    using var reader = new StreamReader(new MemoryStream(bytes), detectEncodingFromByteOrderMarks: true);
-                    var text = reader.ReadToEnd();
+                    var text = new StreamReader(new MemoryStream(bytes), true).ReadToEnd();
                     if (text.Contains('\0')) continue;
                     if (preferRoslyn) csharp[name] = text;
                     index[name] = new(size, ticks, hash, false, preferRoslyn ? new([], []) : LocalSyntax(text));
                 }
                 changed = true;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
-
         var parsed = await LocalDeveloperTools.ParseCSharpAsync(folder, csharp, ct);
         foreach (var (name, source) in csharp)
             index[name] = parsed.TryGetValue(name, out var syntax)
@@ -86,9 +72,9 @@ internal static partial class ProjectSourceIndex
     public static bool SafeSource(ToolContext context, string root, string relative, out FileInfo file, bool allowMissing = false)
     {
         file = null!;
-        var parts = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
-        if (Path.IsPathRooted(relative) || parts.Any(part => part == ".." || part.StartsWith('.') || SkippedDirectories.Contains(part)) ||
-            SensitiveName().IsMatch(Path.GetFileName(relative))) return false;
+        if (Path.IsPathRooted(relative) || SensitiveName().IsMatch(Path.GetFileName(relative)) ||
+            relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]).Any(p => p.StartsWith('.') || SkippedDirectories.Contains(p)))
+            return false;
         try
         {
             var path = context.Resolve(Path.Combine(root, relative));
@@ -100,16 +86,12 @@ internal static partial class ProjectSourceIndex
                 ? file.Length <= MaxFileBytes && (file.Attributes & FileAttributes.ReparsePoint) == 0
                 : allowMissing && !Directory.Exists(canonical);
         }
-        catch (Exception ex) when (ex is IOException or ToolException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            return false;
-        }
+        catch (Exception ex) when (ex is IOException or ToolException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
     }
 
     public static IEnumerable<string> Walk(string root, CancellationToken ct)
     {
-        var pending = new Stack<string>();
-        pending.Push(root);
+        Stack<string> pending = new([root]);
         int visited = 0;
         while (pending.TryPop(out var folder) && visited++ < 1800)
         {
@@ -117,47 +99,40 @@ internal static partial class ProjectSourceIndex
             foreach (var entry in DirectoryEntries(folder))
             {
                 if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 || entry.Name.StartsWith('.')) continue;
-                if (entry is DirectoryInfo directory && !SkippedDirectories.Contains(entry.Name))
-                    pending.Push(directory.FullName);
-                else if (entry is FileInfo && IsSource(entry.Name))
-                    yield return Path.GetRelativePath(root, entry.FullName);
+                if (entry is DirectoryInfo directory && !SkippedDirectories.Contains(entry.Name)) pending.Push(directory.FullName);
+                else if (entry is FileInfo && IsSource(entry.Name)) yield return Path.GetRelativePath(root, entry.FullName);
             }
         }
     }
 
-    private static FileSystemInfo[] DirectoryEntries(string folder)
+    static FileSystemInfo[] DirectoryEntries(string folder)
     {
         try { return new DirectoryInfo(folder).EnumerateFileSystemInfos().Take(12_000).ToArray(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
     }
 
-    private static SourceSyntax LocalSyntax(string text)
+    static SourceSyntax LocalSyntax(string text)
     {
         var lines = text.ReplaceLineEndings("\n").Split('\n');
         var declarations = new List<(string Name, int Line, string Signature, bool Body)>();
         for (int i = 0; i < lines.Length && declarations.Count < 600; i++)
         {
             var line = lines[i].Trim();
-            if (line.Length > 600) continue;
-            var match = Declaration().Match(line);
-            if (match.Success)
-            {
-                var name = match.Groups["name"].Value;
-                if (name is "if" or "for" or "while" or "switch" or "catch" or "return" or "new") continue;
+            if (line.Length <= 600 && Declaration().Match(line) is { Success: true } match &&
+                match.Groups["name"].Value is not ("if" or "for" or "while" or "switch" or "catch" or "return" or "new") and var name)
                 declarations.Add((name, i, line[..Math.Min(280, line.Length)], !match.Groups["type"].Success));
-            }
         }
         return new(declarations.Select((declaration, i) =>
         {
             int end = declaration.Body ? Math.Min(declaration.Line + 39,
                 i + 1 < declarations.Count ? declarations[i + 1].Line - 1 : lines.Length - 1) : declaration.Line;
-            var body = string.Join("\n", lines[declaration.Line..(end + 1)]);
-            var references = Identifier().Matches(body).Select(match => match.Value).Distinct().Take(40).ToArray();
+            var references = Identifier().Matches(string.Join("\n", lines[declaration.Line..(end + 1)]))
+                .Select(m => m.Value).Distinct().Take(40).ToArray();
             return new SourceSymbol(declaration.Name, declaration.Line + 1, end + 1, declaration.Signature, references);
         }).ToArray(), []);
     }
 
-    private static Dictionary<string, IndexedSource> Load(string cache)
+    static Dictionary<string, IndexedSource> Load(string cache)
     {
         try
         {
@@ -165,26 +140,23 @@ internal static partial class ProjectSourceIndex
                 JsonSerializer.Deserialize<Dictionary<string, IndexedSource>>(File.ReadAllText(cache)) is { } index)
                 return new(index, StringComparer.OrdinalIgnoreCase);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
         return new(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static void Save(string path, Dictionary<string, IndexedSource> index)
+    static void Save(string path, Dictionary<string, IndexedSource> index)
     {
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             using (var file = File.Create(temp)) JsonSerializer.Serialize(file, index);
-            File.Move(temp, path, overwrite: true);
+            File.Move(temp, path, true);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         finally
         {
-            try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            try { File.Delete(temp); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
 

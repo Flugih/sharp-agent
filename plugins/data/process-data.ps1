@@ -19,17 +19,13 @@ $rows = @(switch ([IO.Path]::GetExtension($Source).ToLowerInvariant()) {
     '.json' { ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Source, $utf8)) }
     default { throw 'Choose CSV or JSON input.' }
 })
-if ($rows.Count -eq 0 -or @($rows | Where-Object { $_ -isnot [PSCustomObject] }).Count -gt 0) {
-    throw 'Input must contain CSV rows or JSON records.'
-}
+if ($rows.Count -eq 0 -or @($rows | Where-Object { $_ -isnot [PSCustomObject] }).Count) { throw 'Input must contain CSV rows or JSON records.' }
 
 function Find-Number($Value) {
     $parsed = 0.0
-    if ($null -eq $Value) { return $null }
-    $text = [Convert]::ToString($Value, $invariant)
-    if ([double]::TryParse($text.Trim().Replace(',', '.'), [Globalization.NumberStyles]::Float, $invariant, [ref]$parsed) -and
-        -not [double]::IsNaN($parsed) -and -not [double]::IsInfinity($parsed)) { return $parsed }
-    $null
+    if ($null -ne $Value -and [double]::TryParse([Convert]::ToString($Value, $invariant).Trim().Replace(',', '.'),
+        [Globalization.NumberStyles]::Float, $invariant, [ref]$parsed) -and -not [double]::IsNaN($parsed) -and
+        -not [double]::IsInfinity($parsed)) { $parsed }
 }
 
 try {
@@ -67,11 +63,10 @@ try {
             if ($extension -eq '.json') {
                 [IO.File]::WriteAllText($stage, (ConvertTo-Json -InputObject $report), $utf8)
             } elseif ($extension -eq '.md') {
-                $lines = @('# Column statistics', '', '| Metric | Value |', '| --- | --- |')
-                $lines += foreach ($pair in $report.GetEnumerator()) {
-                    '| ' + $pair.Key + ' | ' + [Convert]::ToString($pair.Value, $invariant).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ') + ' |'
-                }
-                [IO.File]::WriteAllLines($stage, [string[]]$lines, $utf8)
+                [IO.File]::WriteAllLines($stage, [string[]](@('# Column statistics', '', '| Metric | Value |', '| --- | --- |') +
+                    @(foreach ($pair in $report.GetEnumerator()) {
+                        '| ' + $pair.Key + ' | ' + [Convert]::ToString($pair.Value, $invariant).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ') + ' |'
+                    })), $utf8)
             } else { throw 'Choose a Markdown or JSON target for the report.' }
         } else {
             if ($extension -ne '.png') { throw 'Choose a PNG target for the chart.' }
@@ -85,7 +80,7 @@ try {
                 $area.AxisX.LabelStyle.Angle = -45
                 $area.AxisX.MajorGrid.Enabled = $false
                 $series = $chart.Series.Add($Column)
-                $series.ChartType = [Windows.Forms.DataVisualization.Charting.SeriesChartType]::Column
+                $series.ChartType = 'Column'
                 $series.Color = [Drawing.Color]::FromArgb(38, 116, 220)
                 foreach ($point in $points) { [void]$series.Points.AddXY($point.Label, $point.Value) }
                 [void]$chart.Titles.Add($Column)

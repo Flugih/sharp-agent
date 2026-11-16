@@ -11,8 +11,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'shared.ps1')
 
 function Export-WordPdf([string]$Path, [string]$Output) {
-    $word = $null
-    $doc = $null
+    $word = $doc = $null
     $alreadyRunning = [bool](Get-Process WINWORD -ErrorAction SilentlyContinue)
     try {
         try { $word = New-Object -ComObject Word.Application } catch { throw 'Install Microsoft Word to convert DOCX to PDF.' }
@@ -44,8 +43,8 @@ if ([IO.Path]::GetExtension($targetPath) -ne $expected) { throw ('Choose a ' + $
 if ($FirstPage -gt 0 -and $LastPage -gt 0 -and $FirstPage -gt $LastPage) { throw 'FirstPage must precede LastPage.' }
 $sourceItem = Get-Item -LiteralPath $Source
 $range = @()
-if ($FirstPage -gt 0) { $range += @('-f', $FirstPage) }
-if ($LastPage -gt 0) { $range += @('-l', $LastPage) }
+if ($FirstPage -gt 0) { $range += '-f', $FirstPage }
+if ($LastPage -gt 0) { $range += '-l', $LastPage }
 $stage = New-PluginStage $targetPath
 $scratch = $null
 try {

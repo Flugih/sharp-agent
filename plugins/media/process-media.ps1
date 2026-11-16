@@ -12,26 +12,23 @@ $ErrorActionPreference = 'Stop'
 $targetPath = Get-PluginTarget $Target $Overwrite
 $sourceItem = Get-Item -LiteralPath $Source
 $audio = '^\.(wav|mp3|m4a|flac|ogg|opus|aac)$'
-$video = '^\.(mp4|mkv|webm|mov|avi|m4v|mpg|mpeg|ts)$'
-if ($sourceItem.PSIsContainer -or ($sourceItem.Extension -notmatch $audio -and $sourceItem.Extension -notmatch $video)) {
-    throw 'Choose a local audio or video file.'
-}
+$media = $audio + '|^\.(mp4|mkv|webm|mov|avi|m4v|mpg|mpeg|ts)$'
+if ($sourceItem.PSIsContainer -or $sourceItem.Extension -notmatch $media) { throw 'Choose a local audio or video file.' }
 $extension = [IO.Path]::GetExtension($targetPath)
-if (($Mode -eq 'transcribe' -and $extension -ne '.txt') -or
-    ($Mode -eq 'audio' -and $extension -notmatch $audio) -or
-    ($Mode -eq 'convert' -and $extension -notmatch $audio -and $extension -notmatch $video)) {
+if (($Mode -eq 'transcribe' -and $extension -ne '.txt') -or ($Mode -eq 'audio' -and $extension -notmatch $audio) -or
+    ($Mode -eq 'convert' -and $extension -notmatch $media)) {
     throw 'The output extension does not match the selected operation.'
 }
-
 $ffmpeg = Get-PluginProgram 'ffmpeg'
 $stage = New-PluginStage $targetPath
 $scratch = $null
+$invariant = [Globalization.CultureInfo]::InvariantCulture
 $options = @('-nostdin', '-hide_banner', '-loglevel', 'error', '-n', '-protocol_whitelist', 'file,pipe',
     '-format_whitelist', 'mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,wav,mp3,aac,flac,ogg')
-if ([double]::Parse($Start, [Globalization.CultureInfo]::InvariantCulture) -gt 0) { $options += @('-ss', $Start) }
-$options += @('-i', $sourceItem.FullName)
-if ([double]::Parse($Duration, [Globalization.CultureInfo]::InvariantCulture) -gt 0) { $options += @('-t', $Duration) }
-if ($Mode -ne 'convert' -or $extension -match $audio) { $options += @('-map', '0:a:0', '-vn') }
+if ([double]::Parse($Start, $invariant) -gt 0) { $options += '-ss', $Start }
+$options += '-i', $sourceItem.FullName
+if ([double]::Parse($Duration, $invariant) -gt 0) { $options += '-t', $Duration }
+if ($Mode -ne 'convert' -or $extension -match $audio) { $options += '-map', '0:a:0', '-vn' }
 try {
     if ($Mode -eq 'transcribe') {
         $whisper = Get-PluginProgram 'whisper-cli'
@@ -41,8 +38,7 @@ try {
         $wav = Join-Path $scratch 'speech.wav'
         & $ffmpeg @options -ac 1 -ar 16000 -c:a pcm_s16le $wav
         if ($LASTEXITCODE -ne 0) { throw 'FFmpeg could not decode the audio track.' }
-        $base = [IO.Path]::ChangeExtension($stage, $null)
-        & $whisper -m $model -f $wav -l $Language -nt -otxt -of $base
+        & $whisper -m $model -f $wav -l $Language -nt -otxt -of ([IO.Path]::ChangeExtension($stage, [NullString]::Value))
         if ($LASTEXITCODE -ne 0) { throw 'Speech recognition failed. Check the model and try a shorter excerpt.' }
     } else {
         & $ffmpeg @options $stage

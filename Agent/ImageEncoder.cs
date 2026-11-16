@@ -1,21 +1,15 @@
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace SharpAgent.Agent;
 
 public static class ImageEncoder
 {
-    private const int MaxSide = 1568;
-    private const long MaxPassThroughBytes = 1_200_000;
-    private const long MaxSourceBytes = 40L * 1024 * 1024;
+    const int MaxSide = 1568;
+    const long MaxPassThroughBytes = 1_200_000, MaxSourceBytes = 40L * 1024 * 1024;
 
-    private static readonly Dictionary<string, string> PassThroughTypes = new(StringComparer.OrdinalIgnoreCase)
+    static readonly Dictionary<string, string> PassThroughTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        [".png"] = "image/png",
-        [".jpg"] = "image/jpeg",
-        [".jpeg"] = "image/jpeg",
-        [".gif"] = "image/gif",
-        [".webp"] = "image/webp",
+        [".png"] = "image/png", [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".gif"] = "image/gif", [".webp"] = "image/webp",
     };
 
     public static string? ToDataUrl(string path)
@@ -26,36 +20,26 @@ public static class ImageEncoder
             if (!info.Exists || info.Length == 0 || info.Length > MaxSourceBytes) return null;
             var bytes = File.ReadAllBytes(path);
             var frame = Decode(bytes);
-
-            bool fitsAsIs = frame == null ||
-                            (Math.Max(frame.PixelWidth, frame.PixelHeight) <= MaxSide && Orientation(frame) == 1);
-            if (PassThroughTypes.TryGetValue(Path.GetExtension(path), out var mime) &&
-                bytes.Length <= MaxPassThroughBytes && fitsAsIs)
-                return DataUrl(mime, bytes);
-
-            return frame == null ? null : Reencode(frame);
+            return PassThroughTypes.TryGetValue(Path.GetExtension(path), out var mime) && bytes.Length <= MaxPassThroughBytes &&
+                   (frame == null || Math.Max(frame.PixelWidth, frame.PixelHeight) <= MaxSide && Orientation(frame) == 1)
+                ? DataUrl(mime, bytes)
+                : frame == null ? null : Reencode(frame);
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
-    private static BitmapFrame? Decode(byte[] bytes)
+    static BitmapFrame? Decode(byte[] bytes)
     {
         try
         {
             using var stream = new MemoryStream(bytes);
-            return BitmapDecoder.Create(stream,
-                BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad).Frames[0];
+            return BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile,
+                BitmapCacheOption.OnLoad).Frames[0];
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
-    private static string Reencode(BitmapFrame frame)
+    static string Reencode(BitmapFrame frame)
     {
         BitmapSource source = frame;
         double scale = Math.Min(1.0, (double)MaxSide / Math.Max(frame.PixelWidth, frame.PixelHeight));
@@ -67,20 +51,14 @@ public static class ImageEncoder
             if (rotation != 0) transform.Children.Add(new RotateTransform(rotation));
             source = new TransformedBitmap(source, transform);
         }
-
-        bool hasAlpha = source.Format == PixelFormats.Bgra32 || source.Format == PixelFormats.Pbgra32 ||
-                        source.Format == PixelFormats.Rgba64 || source.Format == PixelFormats.Prgba64;
-        if (hasAlpha)
-        {
-            var png = Encode(new PngBitmapEncoder(), source);
-            if (png.Length <= 3 * MaxPassThroughBytes) return DataUrl("image/png", png);
-        }
-
-        var opaque = new FormatConvertedBitmap(source, PixelFormats.Bgr24, null, 0);
-        return DataUrl("image/jpeg", Encode(new JpegBitmapEncoder { QualityLevel = 88 }, opaque));
+        if (source.Format is var format &&
+            (format == PixelFormats.Bgra32 || format == PixelFormats.Pbgra32 || format == PixelFormats.Rgba64 || format == PixelFormats.Prgba64) &&
+            Encode(new PngBitmapEncoder(), source) is { LongLength: <= 3 * MaxPassThroughBytes } png)
+            return DataUrl("image/png", png);
+        return DataUrl("image/jpeg", Encode(new JpegBitmapEncoder { QualityLevel = 88 }, new FormatConvertedBitmap(source, PixelFormats.Bgr24, null, 0)));
     }
 
-    private static byte[] Encode(BitmapEncoder encoder, BitmapSource source)
+    static byte[] Encode(BitmapEncoder encoder, BitmapSource source)
     {
         encoder.Frames.Add(BitmapFrame.Create(source));
         using var stream = new MemoryStream();
@@ -88,19 +66,11 @@ public static class ImageEncoder
         return stream.ToArray();
     }
 
-    private static string DataUrl(string mime, byte[] bytes) => $"data:{mime};base64,{Convert.ToBase64String(bytes)}";
+    static string DataUrl(string mime, byte[] bytes) => $"data:{mime};base64,{Convert.ToBase64String(bytes)}";
 
-    private static int Orientation(BitmapFrame frame)
+    static int Orientation(BitmapFrame frame)
     {
-        try
-        {
-            return frame.Metadata is BitmapMetadata metadata && metadata.GetQuery("/app1/ifd/{ushort=274}") is ushort value
-                ? value
-                : 1;
-        }
-        catch
-        {
-            return 1;
-        }
+        try { return frame.Metadata is BitmapMetadata metadata && metadata.GetQuery("/app1/ifd/{ushort=274}") is ushort value ? value : 1; }
+        catch { return 1; }
     }
 }

@@ -1,10 +1,3 @@
-using System.Globalization;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using SharpAgent.Core;
-using SharpAgent.Tools;
-
 namespace SharpAgent.Agent;
 
 public sealed record ChatSummary(string Path, string Title, DateTime Updated);
@@ -13,26 +6,18 @@ public sealed record ChatFile(List<JsonNode> Messages, string? Title);
 
 public sealed class ChatStore(string folder, string logsFolder)
 {
-    private const string TimeFormat = "yyyy-MM-dd HH:mm:ss";
+    const string TimeFormat = "yyyy-MM-dd HH:mm:ss";
 
     public string Folder => folder;
-    private string TrashFolder => Path.Combine(folder, "trash");
+    string TrashFolder => Path.Combine(folder, "trash");
 
-    public string NewPath()
-    {
-        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var path = Path.Combine(folder, $"chat_{stamp}.json");
-        for (int n = 2; File.Exists(path); n++) path = Path.Combine(folder, $"chat_{stamp}_{n}.json");
-        return path;
-    }
+    public string NewPath() => Unique(folder, $"chat_{DateTime.Now:yyyyMMdd_HHmmss}", ".json");
 
     public ChatFile Load(string path)
     {
         var root = ReadRoot(path);
-        var messages = root["messages"] is JsonArray array
-            ? array.OfType<JsonObject>().Select(m => (JsonNode)m.DeepClone()).ToList()
-            : [];
-        return new ChatFile(messages, JsonUtil.Str(root["title"]));
+        return new(root["messages"] is JsonArray array ? array.OfType<JsonObject>().Select(m => (JsonNode)m.DeepClone()).ToList() : [],
+            JsonUtil.Str(root["title"]));
     }
 
     public void Save(string path, IEnumerable<JsonNode> messages, string? model, string? title) => Write(path, new JsonObject
@@ -52,23 +37,9 @@ public sealed class ChatStore(string folder, string logsFolder)
         Write(path, root);
     }
 
-    public string Quarantine(string path)
-    {
-        var name = Path.GetFileName(path);
-        var target = Path.Combine(folder, "broken_" + name);
-        for (int n = 2; File.Exists(target); n++) target = Path.Combine(folder, $"broken_{n}_{name}");
-        File.Move(path, target);
-        return target;
-    }
+    public string Quarantine(string path) => Move(path, Unique(folder, "broken", "_" + Path.GetFileName(path)));
 
-    public string? ImportLegacy()
-    {
-        var legacy = Path.Combine(folder, "current.json");
-        if (!File.Exists(legacy)) return null;
-        var path = NewPath();
-        File.Move(legacy, path);
-        return path;
-    }
+    public string? ImportLegacy() => Path.Combine(folder, "current.json") is var legacy && File.Exists(legacy) ? Move(legacy, NewPath()) : null;
 
     public string MoveToTrash(string path) => MoveTo(path, TrashFolder, DateTime.Now);
 
@@ -77,10 +48,8 @@ public sealed class ChatStore(string folder, string logsFolder)
     public void DeleteForever(string path)
     {
         foreach (var artifact in ArtifactsOf(path))
-        {
             try { File.Delete(artifact); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        }
         File.Delete(path);
     }
 
@@ -90,48 +59,42 @@ public sealed class ChatStore(string folder, string logsFolder)
 
     public List<ChatSummary> ListTrash() => Summaries(TrashFolder, deleted: true);
 
-    private static List<ChatSummary> Summaries(string directory, bool deleted)
+    static List<ChatSummary> Summaries(string directory, bool deleted)
     {
         var result = new List<ChatSummary>();
         if (!Directory.Exists(directory)) return result;
         foreach (var file in new DirectoryInfo(directory).EnumerateFiles("chat_*.json"))
-        {
             try
             {
                 if (Summarize(file) is { } chat) result.Add(deleted ? chat with { Updated = file.LastWriteTime } : chat);
             }
-            catch
-            {
-            }
-        }
+            catch { }
         return result;
     }
 
     public static string TitleOf(IEnumerable<JsonNode> messages, string? title) =>
         !string.IsNullOrWhiteSpace(title) ? title.Trim() : AgentRunner.TitleOf(messages) ?? "Без названия";
 
-    private static ChatSummary? Summarize(FileInfo file)
+    static ChatSummary? Summarize(FileInfo file)
     {
         using var stream = file.OpenRead();
         using var document = JsonDocument.Parse(stream);
         var root = document.RootElement;
         if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array) return null;
-
         var firstUser = messages.EnumerateArray()
             .Where(m => m.ValueKind == JsonValueKind.Object && m.TryGetProperty("role", out var role) && role.GetString() == "user")
             .Select(m => JsonNode.Parse(m.GetRawText()))
             .FirstOrDefault();
         if (firstUser == null) return null;
-
         var title = root.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
         var updated = root.TryGetProperty("updated", out var u) && u.ValueKind == JsonValueKind.String &&
                       DateTime.TryParseExact(u.GetString(), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
             ? time
             : file.LastWriteTime;
-        return new ChatSummary(file.FullName, TitleOf([firstUser], title), updated);
+        return new(file.FullName, TitleOf([firstUser], title), updated);
     }
 
-    private IEnumerable<string> ArtifactsOf(string path)
+    IEnumerable<string> ArtifactsOf(string path)
     {
         try
         {
@@ -144,32 +107,38 @@ public sealed class ChatStore(string folder, string logsFolder)
                 })
                 .OfType<string>();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            return [];
-        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return []; }
     }
 
-    private static string MoveTo(string path, string directory, DateTime? touched)
+    static string MoveTo(string path, string directory, DateTime? touched)
     {
         Directory.CreateDirectory(directory);
-        var stem = Path.GetFileNameWithoutExtension(path);
-        var target = Path.Combine(directory, stem + ".json");
-        for (int n = 2; File.Exists(target); n++) target = Path.Combine(directory, $"{stem}_{n}.json");
-        File.Move(path, target);
+        var target = Move(path, Unique(directory, Path.GetFileNameWithoutExtension(path), ".json"));
         if (touched is { } time) File.SetLastWriteTime(target, time);
         return target;
     }
 
-    private static JsonObject ReadRoot(string path) =>
-        JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8)) as JsonObject
-        ?? throw new JsonException("В файле нет переписки.");
+    static string Move(string path, string target)
+    {
+        File.Move(path, target);
+        return target;
+    }
 
-    private static void Write(string path, JsonObject root)
+    static string Unique(string directory, string stem, string tail)
+    {
+        var path = Path.Combine(directory, stem + tail);
+        for (int n = 2; File.Exists(path); n++) path = Path.Combine(directory, $"{stem}_{n}{tail}");
+        return path;
+    }
+
+    static JsonObject ReadRoot(string path) =>
+        JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8)) as JsonObject ?? throw new JsonException("В файле нет переписки.");
+
+    static void Write(string path, JsonObject root)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temp = path + ".tmp";
         File.WriteAllText(temp, root.ToJsonString(JsonUtil.Pretty), new UTF8Encoding(false));
-        File.Move(temp, path, overwrite: true);
+        File.Move(temp, path, true);
     }
 }
