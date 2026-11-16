@@ -16,7 +16,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public const string AttachmentsField = "attachments", MetaField = "meta";
     public const string RepeatReply = "\n\n[Программа: этот же вызов уже несколько раз вернул тот же результат. Не повторяй его — измени запрос, " +
         "сузь папку или переходи к следующему шагу.]";
-    const string ElapsedField = "elapsed_ms", StopField = "stopped";
+    const string ElapsedField = "elapsed_ms", StopField = "stopped", SentAtField = "sent_at";
     const string TruncatedCallReply = "Ошибка: ответ оборвался на лимите токенов, аргументы вызова пришли не полностью — действие не выполнено. " +
         "Повтори его меньшими частями (например, write_file по частям с append=true).";
     const int ImageTokens = 1_000, MaxInputTokens = 80_000;
@@ -24,6 +24,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     readonly bool delegated;
     readonly List<JsonNode> _history = [];
     readonly HashSet<string> _noVisionModels = new(StringComparer.OrdinalIgnoreCase), _noEffortModels = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _toolReasoningModels = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, string?> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, (string Output, int Count)> _repeats = new();
     readonly Dictionary<CommandShell, CommandRestriction> _blockedShells = new();
@@ -48,6 +49,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             _api = value;
             _noVisionModels.Clear();
             _noEffortModels.Clear();
+            _toolReasoningModels.Clear();
             if (_api != null && !delegated) _api.Retrying += OnRetrying;
         }
     }
@@ -64,7 +66,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public Func<string, long?>? ModelContextTokens { get; set; }
     public Func<Task<bool>>? CanSpendAsync { get; set; }
 
-    public event Action<string, TimeSpan?>? AssistantText;
+    public event Action<string, TimeSpan?, DateTimeOffset>? AssistantText;
     public event Action<string?, bool>? AssistantDelta;
     public event Action<ModelProgress>? ProgressReported;
     public event Action<ToolCallEvent>? ToolCallStarted;
@@ -108,14 +110,15 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         Title = clean;
     }
 
-    public async Task RunAsync(string userText, IReadOnlyList<Attachment> attachments, string model, CancellationToken ct)
+    public async Task RunAsync(string userText, IReadOnlyList<Attachment> attachments, string model, CancellationToken ct, DateTimeOffset? sentAt = null)
     {
         var local = attachments.Count == 0 ? LocalCommand(userText) : null;
         if (local == null) EnsureApi();
         _model = model;
         ResetReads();
         _turnClock.Reset();
-        var message = new JsonObject { ["role"] = "user", ["content"] = userText };
+        var message = new JsonObject { ["role"] = "user", ["content"] = userText,
+            [MetaField] = new JsonObject { [SentAtField] = FormatSentAt(sentAt ?? DateTimeOffset.UtcNow) } };
         if (attachments.Count > 0) message[AttachmentsField] = new JsonArray([.. attachments.Select(a => a.ToJson())]);
         _history.Add(message);
         Save();
@@ -178,18 +181,22 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         {
             ct.ThrowIfCancellationRequested();
             if (CanSpendAsync != null && !await CanSpendAsync()) throw new OperationCanceledException();
-            var result = await CompleteAsync(model, step, ct);
+            bool finalWorkerStep = delegated && step == SubagentStepLimit;
+            var result = await CompleteAsync(model, step, finalWorkerStep, ct);
             if (result.FinishReason == "content_filter")
             {
                 ResetModelProgress();
                 throw new ApiException("Модель остановила ответ фильтром содержимого. Переформулируйте запрос.", code: "content_filter");
             }
+            var sentAt = DateTimeOffset.UtcNow;
             var message = result.Message;
             message["role"] = "assistant";
             var progress = result.Progress ?? ProgressOf(message);
             ProgressReported?.Invoke(progress);
             var text = ExtractText(message["content"]);
             var calls = message["tool_calls"] is JsonArray { Count: > 0 } array ? array : null;
+            bool blockedCalls = finalWorkerStep && calls != null;
+            if (blockedCalls) calls = null;
             TimeSpan? elapsed = calls == null ? _turnClock.Elapsed : null;
             if (calls == null) message.Remove("tool_calls");
             else
@@ -197,16 +204,19 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 NormalizeToolCalls(calls);
                 if (string.IsNullOrEmpty(text)) message["content"] = null;
             }
-            var meta = result.Usage is { } usage ? new JsonObject
+            var meta = new JsonObject { ["model"] = model, ["provider"] = Provider.ToString().ToLowerInvariant() };
+            if (result.Usage is { } usage)
             {
-                ["model"] = model, ["provider"] = Provider.ToString().ToLowerInvariant(), ["prompt_tokens"] = usage.PromptTokens,
-                ["completion_tokens"] = usage.CompletionTokens, ["request_id"] = result.RequestId,
-            } : new JsonObject();
+                meta["prompt_tokens"] = usage.PromptTokens;
+                meta["completion_tokens"] = usage.CompletionTokens;
+                meta["request_id"] = result.RequestId;
+            }
             if (elapsed is { } time) meta[ElapsedField] = (long)time.TotalMilliseconds;
             if (result.Progress?.Reasoning is { } reasoning) meta["reasoning"] = reasoning;
             if (progress.Commentary != null) meta["commentary"] = progress.Commentary;
             if (result.Phase != null) meta["phase"] = result.Phase;
-            if (meta.Count > 0) message[MetaField] = meta;
+            meta[SentAtField] = FormatSentAt(sentAt);
+            message[MetaField] = meta;
             bool truncated = calls != null && result.FinishReason == "length";
             var skipped = truncated ? calls!.OfType<JsonObject>().Select(ParseCall).ToList() : [];
             if (calls != null || !string.IsNullOrWhiteSpace(text) || progress.Reasoning != null || progress.Commentary != null)
@@ -216,7 +226,12 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 Save();
             }
             if (result.Usage != null) UsageReported?.Invoke(model, result.Usage);
-            AssistantText?.Invoke(text?.Trim() ?? "", elapsed);
+            AssistantText?.Invoke(text?.Trim() ?? "", elapsed, sentAt);
+            if (blockedCalls)
+            {
+                RecordStop(SubagentStepStop);
+                return;
+            }
             foreach (var call in skipped)
             {
                 ToolCallStarted?.Invoke(call);
@@ -252,13 +267,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     bool AllowImages(string model) => !_noVisionModels.Contains(model) && ModelSupportsVision?.Invoke(model) != false;
 
-    async Task<ChatResult> CompleteAsync(string model, int step, CancellationToken ct)
+    async Task<ChatResult> CompleteAsync(string model, int step, bool finalWorkerStep, CancellationToken ct)
     {
-        var definitions = Definitions();
+        var definitions = finalWorkerStep ? new JsonArray() : Definitions();
         bool withImages = AllowImages(model), droppedImages = false, harder = false;
         while (true)
         {
-            var (messages, images, compressed) = await BuildRequestAsync(model, definitions, withImages, harder, ct);
+            var (messages, images, compressed) = await BuildRequestAsync(model, definitions, withImages, harder, finalWorkerStep, ct);
             ThinkingStarted?.Invoke(step, compressed);
             var effort = _noEffortModels.Contains(model) ? null : ReasoningEffort;
             try
@@ -273,7 +288,14 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 }
                 return result;
             }
-            catch (ApiException ex) when (effort != null && LooksLikeEffortRejection(ex))
+            catch (ApiException ex) when (Provider is not (AgentProvider.ChatGpt or AgentProvider.Groq) && definitions.Count > 0 &&
+                !_toolReasoningModels.Contains(model) && RequiresToolReasoning(ex) &&
+                _history.OfType<JsonObject>().Any(m => Role(m) == "assistant" && HasReasoning(m) && FromModel(m, model)))
+            {
+                ResetModelProgress();
+                _toolReasoningModels.Add(model);
+            }
+            catch (ApiException ex) when (effort != null && LooksLikeEffortRejection(ex) && !RequiresToolReasoning(ex))
             {
                 ResetModelProgress();
                 _noEffortModels.Add(model);
@@ -308,7 +330,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     int InputBudget(string model)
     {
-        long budget = Math.Min(MaxInputTokens, _inputCaps.GetValueOrDefault(model, int.MaxValue));
+        long budget = Math.Min(delegated ? SubagentInputTokens : MaxInputTokens, _inputCaps.GetValueOrDefault(model, int.MaxValue));
         if (ModelContextTokens?.Invoke(model) is > 0 and var window) budget = Math.Min(budget, window - Math.Min(MaxTokens ?? 8_000, window / 2));
         return (int)budget;
     }
@@ -334,23 +356,79 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         : ex.StatusCode is BadRequest or NotFound or UnprocessableEntity or UnsupportedMediaType &&
           Mentions(ex.Message, "image", "vision", "multimodal", "content must be a string", "изображен", "картин");
 
+    static bool HasReasoning(JsonObject message) => message["reasoning"] != null || message["reasoning_content"] != null;
+
+    bool FromModel(JsonObject message, string model) => MetaOf(message) is { } meta &&
+        string.Equals(Str(meta["provider"]), Provider.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(Str(meta["model"]), model, StringComparison.OrdinalIgnoreCase);
+
+    static bool RequiresToolReasoning(ApiException ex) => ex.StatusCode is BadRequest or UnprocessableEntity &&
+        (ex.Code is "missing_reasoning_content" or "reasoning_content_required" ||
+        (ex.Parameter is "reasoning" or "reasoning_content" ||
+            Mentions(ex.Message, "reasoning_content", "'reasoning' field", "\"reasoning\" field", "reasoning field", "reasoning property")) &&
+        !Mentions(ex.Message, "not required", "must not", "not allowed") &&
+        Mentions(ex.Message, "missing", "required", "mandatory", "must be passed", "must be provided", "must be present",
+            "pass back", "not provided", "отсутств", "обязател", "требуется"));
+
     async Task<(List<JsonNode> Messages, int Images, bool Compressed)> BuildRequestAsync(string model, JsonArray definitions,
-        bool withImages, bool harder, CancellationToken ct)
+        bool withImages, bool harder, bool finalWorkerStep, CancellationToken ct)
     {
         var system = SystemMessage();
-        var shownImages = withImages
-            ? _history.OfType<JsonObject>().Reverse().Where(m => Role(m) == "user")
-                .SelectMany(m => Attachment.ListFrom(m).Where(a => a.Kind == AttachmentKind.Image).Reverse().Select(a => (m, a.Path)))
-                .Take(8).ToHashSet()
+        int currentUser = _history.FindLastIndex(m => Role(m) == "user");
+        var shownImages = withImages && currentUser >= 0 && _history[currentUser] is JsonObject active
+            ? Attachment.ListFrom(active).Where(a => a.Kind == AttachmentKind.Image).TakeLast(8).Select(a => (active, a.Path)).ToHashSet()
             : [];
         int room = InputBudget(model) - HistoryCompressor.Estimate(system) - HistoryCompressor.Estimate(definitions) -
                    shownImages.Count * ImageTokens;
         var note = RequestTail(harder);
+        if (finalWorkerStep) note += "\n\n[Последний шаг субагента. Подведи итог по собранным данным и укажи, чего не удалось проверить.]";
         var project = await ProjectContextAsync(Math.Clamp(room * 3 / (harder ? 12 : 5), 0, harder ? 2200 : 11_000), ct);
         room -= ((note?.Length ?? 0) + (project?.Length ?? 0)) / 3;
-        var projected = _history.Select(WithVerificationSummary).ToArray();
+        int completedBefore = currentUser;
+        for (int i = _history.Count - 1, retained = 0; i > currentUser; i--)
+            if (Role(_history[i]) == "assistant" && _history[i]["tool_calls"] is JsonArray { Count: > 0 } && ++retained == 2)
+            {
+                completedBefore = i;
+                break;
+            }
+        bool omitReasoning = definitions.Count == 0 || !_toolReasoningModels.Contains(model);
+        bool shortened = false;
+        var projected = new List<JsonNode>(_history.Count);
+        for (int i = 0; i < _history.Count; i++)
+        {
+            var node = WithVerificationSummary(_history[i]);
+            if (i < completedBefore && Role(node) == "tool")
+            {
+                var compact = HistoryCompressor.Shorten(node);
+                shortened |= !ReferenceEquals(node, compact);
+                node = compact;
+            }
+            if (node is JsonObject message && Role(message) == "assistant")
+            {
+                bool sameModel = FromModel(message, model);
+                bool continuation = i > currentUser && message["tool_calls"] is JsonArray { Count: > 0 } && sameModel;
+                bool removeReasoning = HasReasoning(message) && (omitReasoning || !sameModel);
+                bool removeDetails = message["reasoning_details"] != null && !(continuation && Provider is AgentProvider.OpenRouter or AgentProvider.Tooken);
+                bool removeSignatures = !(continuation && Provider is AgentProvider.Gemini or AgentProvider.Tooken) &&
+                    message["tool_calls"] is JsonArray calls && calls.OfType<JsonObject>().Any(call => call["extra_content"] != null);
+                if (removeReasoning || removeDetails || removeSignatures)
+                {
+                    var clean = (JsonObject)message.DeepClone();
+                    if (removeReasoning)
+                    {
+                        clean.Remove("reasoning");
+                        clean.Remove("reasoning_content");
+                    }
+                    if (removeDetails) clean.Remove("reasoning_details");
+                    if (removeSignatures && clean["tool_calls"] is JsonArray cleaned)
+                        foreach (var call in cleaned.OfType<JsonObject>()) call.Remove("extra_content");
+                    node = clean;
+                }
+            }
+            projected.Add(node);
+        }
         bool compress = harder || HistoryCompressor.EstimateAll(projected) > room;
-        IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, room, harder) : projected;
+        IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, room, harder || delegated) : projected;
         var list = new List<JsonNode> { system };
         int shown = 0;
         foreach (var node in source)
@@ -374,12 +452,14 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         }
         AddContext(list, project == null ? null : "\n\n" + project, "user");
         AddContext(list, note, "tool", "user");
-        return (list, shown, compress);
+        if (delegated && HistoryCompressor.EstimateAll(list) + HistoryCompressor.Estimate(definitions) + shown * ImageTokens > InputBudget(model))
+            throw new ApiException("Поручение не помещается в бюджет контекста субагента. Сузьте задачу или передайте меньше вложений.");
+        return (list, shown, compress || shortened);
     }
 
     JsonObject SystemMessage()
     {
-        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{ClarifyAsync != null}";
+        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{SubagentTaskLimit}|{SubagentStepLimit}|{ClarifyAsync != null}";
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {
@@ -393,7 +473,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     async Task<(JsonObject Message, int Images)> ToApiUserMessageAsync(JsonObject message, HashSet<(JsonObject, string)> shownImages,
         CancellationToken ct)
     {
-        var text = (ExtractText(message["content"]) ?? "").TrimEnd();
+        var text = ExtractText(message["content"]) ?? "";
         var content = new JsonArray();
         var attachments = Attachment.ListFrom(message);
         if (attachments.Count > 0)
@@ -482,6 +562,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             foreach (var call in calls.Skip(done)) _history.Add(ToolMessage(call.Id, "Отменено пользователем."));
             if (done < calls.Count) Save();
         }
+        ct.ThrowIfCancellationRequested();
         foreach (var (key, call) in counted)
             if (_repeats.GetValueOrDefault(key) is { Count: >= 4 } repeated)
                 return key.StartsWith("shell:", StringComparison.Ordinal)
@@ -549,6 +630,12 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public static TimeSpan? ElapsedOf(JsonObject message) =>
         MetaOf(message)?[ElapsedField] is { } elapsed ? TimeSpan.FromMilliseconds(Long(elapsed)) : null;
 
+    static string FormatSentAt(DateTimeOffset time) => time.ToString("O", CultureInfo.InvariantCulture);
+
+    internal static DateTimeOffset? SentAtOf(JsonObject message) =>
+        DateTimeOffset.TryParseExact(Str(MetaOf(message)?[SentAtField]), "O", CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
+            ? time : null;
+
     internal static string? StopReasonOf(JsonObject message) => Str(MetaOf(message)?[StopField]);
 
     internal void RecordStop(string text)
@@ -562,7 +649,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     }
 
     public static ModelProgress ProgressOf(JsonObject message) =>
-        new(Str(MetaOf(message)?["reasoning"]) ?? Str(message["reasoning_content"]) ?? Str(message["reasoning"]), Str(MetaOf(message)?["commentary"]));
+        new(Str(MetaOf(message)?["reasoning"]) ?? Str(message["reasoning_content"]) ?? Str(message["reasoning"]) ??
+            ChatCompletionStream.ThinkingOf(message["content"]) ?? ChatCompletionStream.DetailText(message["reasoning_details"] as JsonArray),
+            Str(MetaOf(message)?["commentary"]));
 
     static void NormalizeToolCalls(JsonArray toolCalls)
     {

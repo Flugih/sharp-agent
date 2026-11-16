@@ -14,6 +14,7 @@ public partial class MainWindow
 
     readonly Dictionary<string, SubagentRow> _subagentRows = new();
     SubagentRow? _selectedSubagent;
+    bool _subagentsExpanded;
 
     void OnSubagentChanged(SubagentUpdate update)
     {
@@ -126,19 +127,13 @@ public partial class MainWindow
     {
         _selectedSubagent = row;
         SubagentList.Visibility = VisibleIf(row == null);
-        SubagentBackButton.Visibility = SubagentDetail.Visibility = VisibleIf(row != null);
+        SubagentHeader.Visibility = SubagentBackButton.Visibility = SubagentDetail.Visibility = VisibleIf(row != null);
         SubagentActivity.Content = null;
         if (row != null)
         {
             if (row.Activity.Children.Count == 0) row.Activity.Children.Add(row.Placeholder);
             SubagentActivity.Content = row.Activity;
             UpdateSubagentHeader(row);
-        }
-        else
-        {
-            SubagentTitleText.Text = "Субагенты";
-            SubagentTitleText.ToolTip = null;
-            SubagentModelText.Text = "";
         }
         SubagentsScroll.ScrollToTop();
     }
@@ -152,8 +147,24 @@ public partial class MainWindow
             return;
         }
         SubagentsWorkspace.Visibility = Visibility.Visible;
+        UpdateSubagentsLayout();
+        ApplyPreviewLayout();
         ShowSubagentPage(_selectedSubagent ?? (_subagentRows.Count == 1 ? _subagentRows.Values.First() : null));
         SubagentsCloseButton.Focus();
+    }
+
+    void SubagentsExpand_Click(object sender, RoutedEventArgs e)
+    {
+        _subagentsExpanded = !_subagentsExpanded;
+        UpdateSubagentsLayout();
+        ApplyPreviewLayout();
+    }
+
+    void UpdateSubagentsLayout()
+    {
+        SubagentsExpandButton.Content = _subagentsExpanded ? Glyphs.BackToWindow : Glyphs.FullScreen;
+        SetHint(SubagentsExpandButton, _subagentsExpanded ? "Свернуть в боковую панель" : "Развернуть на всё рабочее пространство");
+        KeyboardNavigation.SetTabNavigation(SubagentsWorkspace, _subagentsExpanded ? KeyboardNavigationMode.Cycle : KeyboardNavigationMode.Continue);
     }
 
     void SubagentBack_Click(object sender, RoutedEventArgs e)
@@ -164,11 +175,14 @@ public partial class MainWindow
 
     void SubagentsClose_Click(object sender, RoutedEventArgs e) => CloseSubagents();
 
-    void CloseSubagents()
+    void CloseSubagents(bool focusChat = true)
     {
         if (!IsShown(SubagentsWorkspace)) return;
         SubagentsWorkspace.Visibility = Visibility.Collapsed;
-        InputBox.Focus();
+        _subagentsExpanded = false;
+        UpdateSubagentsLayout();
+        ApplyPreviewLayout();
+        if (focusChat) InputBox.Focus();
     }
 
     void ClearSubagents()

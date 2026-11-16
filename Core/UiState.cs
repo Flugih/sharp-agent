@@ -35,6 +35,7 @@ public sealed class UiState
     public WindowPlacement? Window { get; set; }
     public bool SidebarCollapsed { get; set; }
     public double? SidebarWidth { get; set; }
+    public double? SubagentsWidth { get; set; }
     public string? CurrentChat { get; set; }
     public string? Draft { get; set; }
     public UsageCache? Usage { get; set; }

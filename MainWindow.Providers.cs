@@ -9,21 +9,27 @@ public partial class MainWindow
     private string? _selectedModel;
     private bool _loadingModelCatalog;
 
-    private static string ProviderName(AgentProvider provider) =>
-        provider switch { AgentProvider.ChatGpt => "ChatGPT", AgentProvider.Groq => "Groq", _ => "Tooken Club" };
+    private static string ProviderName(AgentProvider provider) => provider switch
+    {
+        AgentProvider.ChatGpt => "ChatGPT", AgentProvider.Groq => "Groq", AgentProvider.Gemini => "Google Gemini",
+        AgentProvider.OpenRouter => "OpenRouter", AgentProvider.Mistral => "Mistral AI", _ => "Tooken Club",
+    };
 
     private static string[] DefaultModelsOf(AgentProvider provider) =>
-        provider switch { AgentProvider.ChatGpt => ChatGptModels, AgentProvider.Groq => GroqModels, _ => DefaultModels };
+        provider switch
+        {
+            AgentProvider.ChatGpt => ChatGptModels, AgentProvider.Groq => GroqModels, AgentProvider.Tooken => DefaultModels,
+            _ => [AppConfig.DefaultModelOf(provider)],
+        };
 
     private bool IsReady(AgentProvider provider) =>
-        provider switch { AgentProvider.ChatGpt => _chatGpt.PlanAllowed, AgentProvider.Groq => _config.HasGroqKey, _ => _config.HasApiKey };
+        provider == AgentProvider.ChatGpt ? _chatGpt.PlanAllowed : _config.ApiKeyFor(provider) != null;
 
     private string NotReadyText() => _config.Provider switch
     {
         AgentProvider.ChatGpt when _chatGpt.Connected => "Разрешите Sharp Agent использовать подписку ChatGPT в настройках",
         AgentProvider.ChatGpt => "Сначала войдите в ChatGPT в настройках",
-        AgentProvider.Groq => "Сначала укажите API-ключ Groq в настройках",
-        _ => "Сначала укажите API-ключ tooken.club",
+        _ => "Сначала укажите API-ключ в настройках",
     };
 
     private void ApplyProvider()
@@ -35,8 +41,8 @@ public partial class MainWindow
         _provider = provider switch
         {
             AgentProvider.ChatGpt when _chatGpt.PlanAllowed => new ChatGptClient(_chatGpt),
-            AgentProvider.Groq when _config.HasGroqKey => new ChatApiClient(Groq.BaseUrl, _config.GroqApiKey!, AgentProvider.Groq),
             AgentProvider.Tooken => _tooken,
+            _ when _config.ApiKeyFor(provider) is { } key => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
             _ => null,
         };
         if (_provider is ChatGptClient chat) chat.LimitsChanged += OnLimitsChanged;
@@ -67,9 +73,9 @@ public partial class MainWindow
         else
         {
             var (title, text, action) = provider != AgentProvider.ChatGpt
-                ? (provider == AgentProvider.Groq ? "Нужен API-ключ Groq" : "Нужен API-ключ tooken.club", "Введите API-ключ, чтобы агент мог отвечать.", "Указать ключ")
+                ? ("Нужен API-ключ", "Введите API-ключ, чтобы агент мог отвечать.", "Указать ключ")
                 : _chatGpt.Connected ? ("Подписка ChatGPT не подключена",
-                    "Вы вошли, но не разрешили Sharp Agent использовать подписку. Разрешите это в настройках или выберите там другого провайдера — Tooken Club или Groq.", "Разрешить")
+                    "Разрешите Sharp Agent использовать подписку в настройках или выберите другого провайдера.", "Разрешить")
                 : ("Нужен вход в ChatGPT", "Войдите на сайте OpenAI и разрешите Sharp Agent использовать подписку.", "Войти");
             ShowBanner("key", Glyphs.Warning, title, text, action, ShowSettings);
         }
@@ -146,8 +152,8 @@ public partial class MainWindow
     private string? ModelCatalogKey(AgentProvider provider) => provider switch
     {
         AgentProvider.Tooken when _config.HasApiKey => UsageTracker.KeyId(_config.ApiKey!, _config.BaseUrl),
-        AgentProvider.Groq when _config.HasGroqKey => UsageTracker.KeyId(_config.GroqApiKey!, Groq.BaseUrl),
         AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client => UsageTracker.KeyId(client, "https://api.openai.com/v1/models"),
+        _ when _config.ApiKeyFor(provider) is { } key => UsageTracker.KeyId(key, AppConfig.DefaultBaseUrlOf(provider)),
         _ => null,
     };
 
@@ -222,6 +228,11 @@ public partial class MainWindow
 
     private void SwitchProvider(AgentProvider provider)
     {
+        if (_cts != null)
+        {
+            ShowToast("Остановите агента, чтобы переключить провайдера", ToastKind.Warning);
+            return;
+        }
         if (provider == _config.Provider || !SaveEnvChoice("AGENT_PROVIDER", provider.ToString().ToLowerInvariant())) return;
         CloseFlyout();
         ApplyProvider();

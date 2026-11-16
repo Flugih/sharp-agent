@@ -44,11 +44,7 @@ public partial class App
         _activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, id + "_show");
         ThreadPool.RegisterWaitForSingleObject(_activateSignal, (_, _) => Dispatcher.BeginInvoke(() =>
         {
-            if (MainWindow is not { } window) return;
-            if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
-            window.Activate();
-            window.Topmost = true;
-            window.Topmost = false;
+            if (MainWindow is MainWindow window) window.ActivateChatWindow();
         }), null, Timeout.Infinite, false);
         Theme.ApplySystemAccent(Resources);
         _accentTimer.Tick += (_, _) =>
@@ -87,7 +83,7 @@ public partial class App
             "В программе произошла ошибка. Переписка сохранена, работу можно продолжить.\n\n" + e.Exception.Message +
             (logged ? $"\n\nПодробности записаны в файл:\n{AppPaths.ErrorLogPath}" : ""),
             "Sharp Agent", MessageBoxButton.OK, MessageBoxImage.Warning);
-        if (MainWindow is not { IsVisible: true }) Shutdown();
+        if (MainWindow is not MainWindow window || !window.ActiveChatWindow.IsVisible) Shutdown();
     }
 
     public static bool LogError(Exception exception)

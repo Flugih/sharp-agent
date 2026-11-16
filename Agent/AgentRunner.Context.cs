@@ -34,14 +34,15 @@ partial class AgentRunner
                 CommandLog.Brief(result.Output) + "\n\n" + CommandLog.Details(result.Output, 2200);
         }
         var elapsed = _turnClock.Elapsed;
+        var sentAt = DateTimeOffset.UtcNow;
         text = text.Trim();
         _history.Add(new JsonObject
         {
             ["role"] = "assistant", ["content"] = text,
-            [MetaField] = new JsonObject { [ElapsedField] = (long)elapsed.TotalMilliseconds, ["local_command"] = command },
+            [MetaField] = new JsonObject { [ElapsedField] = (long)elapsed.TotalMilliseconds, ["local_command"] = command, [SentAtField] = FormatSentAt(sentAt) },
         });
         Save();
-        AssistantText?.Invoke(text, elapsed);
+        AssistantText?.Invoke(text, elapsed, sentAt);
     });
 
     static string? PluginName(ToolCallEvent call) => Str(ArgsOf(call)?["name"])?.Trim();

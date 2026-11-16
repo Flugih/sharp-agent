@@ -14,6 +14,8 @@ public sealed record SubagentUpdate(string Id, string Title, string Status, Date
 
 partial class AgentRunner
 {
+    const int SubagentInputTokens = 8_000, SubagentOutputTokens = 1_200, SubagentAttachmentLimit = 3;
+    const string SubagentStepStop = "Достигнут лимит шагов субагента.";
     const string SubagentPrompt = """
         Ты — субагент Sharp Agent. Выполни порученную часть задачи. Пользуйся только доступными инструментами чтения и поиска.
         Не меняй файлы. Отвечай основному агенту на языке пользователя. Кратко сообщи результаты, основания и полные пути
@@ -22,9 +24,14 @@ partial class AgentRunner
 
     static readonly JsonNode AskDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"ask_user","description":"Уточнить существенную неоднозначность прямо у пользователя и дождаться ответа.","parameters":{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}},"required":["question","choices"]}}}""")!;
 
-    static readonly JsonNode DelegateDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки или анализ субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string"}},"required":["title","task"]}}},"required":["tasks"]}}}""")!;
+    static readonly JsonNode DelegateDefinition = JsonNode.Parse("""
+        {"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string","description":"Самодостаточное поручение с нужными требованиями пользователя."},"attachments":{"type":"array","description":"Только точные пути нужных вложений из текущего сообщения пользователя. По умолчанию вложения не передаются.","items":{"type":"string"},"maxItems":3}},"required":["title","task"]}}},"required":["tasks"]}}}
+        """)!;
 
     public bool UseSubagents { get; set; }
+    public int SubagentTaskLimit { get; set; } = AppConfig.DefaultSubagentTaskLimit;
+    public int SubagentStepLimit { get; set; } = AppConfig.DefaultSubagentStepLimit;
+    public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
     public event Action<SubagentUpdate>? SubagentChanged;
 
@@ -42,7 +49,12 @@ partial class AgentRunner
                 name["enum"] = new JsonArray([.. available.Select(value => JsonValue.Create(value))]);
         }
         if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
-        if (UseSubagents) definitions.Add(DelegateDefinition.DeepClone());
+        if (UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
+        {
+            var definition = DelegateDefinition.DeepClone();
+            definition["function"]!["parameters"]!["properties"]!["tasks"]!["maxItems"] = remaining;
+            definitions.Add(definition);
+        }
         return definitions;
     }
 
@@ -53,7 +65,9 @@ partial class AgentRunner
             "Не спрашивай о мелочах и не используй этот инструмент для подтверждения действий.") +
         (UseSubagents
             ? "\nСам решай, нужны ли субагенты, сколько независимых частей выделить и как объединить результаты. " +
-              "Поручай им проверки и анализ через delegate_tasks, передавай каждой задаче нужные пути и контекст. " +
+              "Поручай им проверки и анализ через delegate_tasks. Формулируй самодостаточные поручения, включая нужные требования, " +
+              "и выбирай только относящиеся к поручению вложения по точным путям через attachments. " +
+              $"Лимит на один запрос пользователя — {SubagentTaskLimit} поручений, на поручение — {SubagentStepLimit} шагов модели. " +
               "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
             : "");
 
@@ -86,25 +100,52 @@ partial class AgentRunner
 
     async Task<ToolOutcome> DelegateAsync(JsonArray? tasks, CancellationToken ct)
     {
-        if (tasks is not { Count: > 0 } || _model is not { } model) return new("Ошибка: укажи задачи для субагентов.", true);
-        var briefs = tasks.OfType<JsonObject>().Select(task => (Title: TextArg(task["title"]), Task: TextArg(task["task"]))).ToArray();
-        if (briefs.Length != tasks.Count || briefs.Any(brief => brief.Title is not { Length: <= 100 } || brief.Task is not { Length: <= 8000 }))
-            return new("Ошибка: каждой задаче нужны короткое название и описание.", true);
-        var user = _history.OfType<JsonObject>().Last(message => Role(message) == "user");
+        if (tasks is not { Count: > 0 } || _model is not { } model || LastUser() is not { } user)
+            return new("Ошибка: укажи задачи для субагентов.", true);
+        int remaining = RemainingSubagentTasks(user);
+        if (tasks.Count > remaining) return new($"Ошибка: в этом запросе осталось поручений для субагентов: {remaining}.", true);
+        var available = Attachment.ListFrom(user);
+        var briefs = new List<(string Title, string Task, List<Attachment> Files)>();
+        foreach (var node in tasks)
+        {
+            if (node is not JsonObject task || TextArg(task["title"]) is not { Length: <= 100 } title ||
+                TextArg(task["task"]) is not { Length: <= 6000 } text)
+                return new("Ошибка: каждой задаче нужны короткое название и описание.", true);
+            List<Attachment> files = [];
+            if (task["attachments"] is { } selection)
+            {
+                if (selection is not JsonArray { Count: <= SubagentAttachmentLimit } paths)
+                    return new($"Ошибка: укажи до {SubagentAttachmentLimit} вложений на поручение.", true);
+                foreach (var entry in paths)
+                {
+                    var path = TextArg(entry)?.Replace('/', '\\');
+                    var file = available.Find(a => a.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+                    if (file == null) return new("Ошибка: выбирай вложения только из текущего сообщения пользователя.", true);
+                    if (!files.Contains(file)) files.Add(file);
+                }
+            }
+            briefs.Add((title, text, files));
+        }
+        EnsureMeta(user)["delegated_tasks"] = (long)SubagentTaskLimit - remaining + briefs.Count;
+        Save();
         var registry = new ToolRegistry(tools.Context, readOnly: true);
         using var slots = new SemaphoreSlim(4);
-        int limit = Math.Clamp(2 * (MaxInputTokens / briefs.Length), 800, 10_000);
         var results = await Task.WhenAll(briefs.Select(brief =>
-            RunSubagentAsync(registry, slots, model, brief.Title!, brief.Task!, user, limit, ct)));
+            RunSubagentAsync(registry, slots, model, brief.Title, brief.Task, brief.Files, ct)));
+        var usage = new UsageInfo(results.Sum(r => r.Usage.PromptTokens), results.Sum(r => r.Usage.CompletionTokens));
+        if (ct.IsCancellationRequested) return new("Отменено пользователем.", true, DelegatedUsage: usage);
         bool failed = results.All(result => result.Failed);
         return new((failed ? "Ошибка: субагенты не завершили анализ.\n\n" : "") + string.Join("\n\n", results.Select(result => result.Text)),
-            failed, DelegatedUsage: new(results.Sum(r => r.Usage.PromptTokens), results.Sum(r => r.Usage.CompletionTokens)));
+            failed, DelegatedUsage: usage);
     }
 
+    int RemainingSubagentTasks(JsonObject user) => SubagentTaskLimit - (int)Math.Clamp(Long(MetaOf(user)?["delegated_tasks"]), 0, SubagentTaskLimit);
+
     async Task<(string Text, bool Failed, UsageInfo Usage)> RunSubagentAsync(ToolRegistry registry, SemaphoreSlim slots, string model,
-        string title, string task, JsonObject user, int limit, CancellationToken ct)
+        string title, string task, List<Attachment> files, CancellationToken ct)
     {
-        var update = new SubagentUpdate(Guid.NewGuid().ToString("N"), title, "В очереди") { Model = model, Provider = Provider, Effort = ReasoningEffort };
+        var effort = SubagentEffort?.Invoke(model);
+        var update = new SubagentUpdate(Guid.NewGuid().ToString("N"), title, "В очереди") { Model = model, Provider = Provider, Effort = effort };
         SubagentChanged?.Invoke(update);
         bool entered = false, failed = false;
         string? answer = null, warning = null;
@@ -128,7 +169,8 @@ partial class AgentRunner
             Report("Начинает работу");
             var worker = new AgentRunner(registry, store, true)
             {
-                Api = Api, Provider = Provider, MaxTokens = MaxTokens, ReasoningEffort = ReasoningEffort, CanSpendAsync = CanSpendAsync,
+                Api = Api, Provider = Provider, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens),
+                ReasoningEffort = effort, SubagentStepLimit = SubagentStepLimit, CanSpendAsync = CanSpendAsync,
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
             };
             var actions = new Dictionary<string, ToolCallEvent>();
@@ -148,7 +190,7 @@ partial class AgentRunner
                 actions.Remove(result.Id);
                 Report(actions.Count == 0 ? "Обрабатывает результат" : "В работе", actions.Values.FirstOrDefault(), result);
             };
-            worker.AssistantText += (text, elapsed) =>
+            worker.AssistantText += (text, elapsed, _) =>
             {
                 if (elapsed != null) answer = text;
                 else Comment(text);
@@ -161,15 +203,14 @@ partial class AgentRunner
                 completionTokens += usage.CompletionTokens;
                 UsageReported?.Invoke(id, usage);
             };
-            await worker.RunAsync($"Поручение основного агента:\n{task}\n\nИсходный запрос пользователя:\n{ExtractText(user["content"]) ?? ""}",
-                Attachment.ListFrom(user), model, ct);
+            await worker.RunAsync($"Поручение основного агента:\n{task}", files, model, ct);
             failed = string.IsNullOrWhiteSpace(answer);
             if (failed) answer = warning ?? "Модель не вернула результат. Уточни поручение или выполни его самостоятельно.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             SubagentChanged?.Invoke(update with { Status = "Остановлен", Elapsed = clock.Elapsed, Failed = true, Action = null });
-            throw;
+            return ("Отменено пользователем.", true, new(promptTokens, completionTokens));
         }
         catch (Exception ex)
         {
@@ -181,8 +222,9 @@ partial class AgentRunner
             clock.Stop();
             if (entered) slots.Release();
         }
-        if (answer!.Length > limit) answer = answer[..limit] + "\n… результат сокращён";
-        SubagentChanged?.Invoke(update with { Status = failed ? "Ошибка" : "Готово", Elapsed = clock.Elapsed, Result = answer, Failed = failed, Action = null });
+        if (answer!.Length > 3600) answer = answer[..3600] + "\n… результат сокращён";
+        var status = warning == SubagentStepStop ? "Лимит шагов" : failed ? "Ошибка" : "Готово";
+        SubagentChanged?.Invoke(update with { Status = status, Elapsed = clock.Elapsed, Result = answer, Failed = failed, Action = null });
         return (title + "\n" + answer, failed, new(promptTokens, completionTokens));
     }
 

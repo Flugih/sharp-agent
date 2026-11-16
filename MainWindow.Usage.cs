@@ -47,7 +47,12 @@ public partial class MainWindow
             AgentProvider.Groq => (_provider as ChatApiClient)?.Limits is { } limits && (Low(limits.RequestsLeft, limits.Requests) || Low(limits.TokensLeft, limits.Tokens)),
             _ => snapshot != null && LimitReached(snapshot) != null,
         };
-        var text = !tooken ? "Лимиты " + ProviderName(provider) : snapshot != null ? "Баланс " + Tokens.Format(snapshot.Balance) : "Баланс и расход";
+        var text = provider switch
+        {
+            AgentProvider.Tooken => snapshot != null ? "Баланс " + Tokens.Format(snapshot.Balance) : "Баланс и расход",
+            AgentProvider.ChatGpt or AgentProvider.Groq => "Лимиты " + ProviderName(provider),
+            _ => "Расход " + ProviderName(provider),
+        };
         BalanceButton.Visibility = VisibleIf(!(tooken && _usageUnavailable));
         BalanceText.Text = text;
         if (warning) BalanceButton.Foreground = Theme.Warning;
@@ -96,7 +101,13 @@ public partial class MainWindow
         UsagePanel.Children.Clear();
         if (_provider is ChatGptClient chat) BuildPlanPanel(chat);
         else if (_provider is ChatApiClient groq && _config.Provider == AgentProvider.Groq) BuildGroqPanel(groq.Limits);
-        else BuildBalancePanel();
+        else if (_config.Provider == AgentProvider.Tooken) BuildBalancePanel();
+        else
+        {
+            AddHeader("Расход " + ProviderName(_config.Provider));
+            if (!AddPlaceholder(_agent.Totals().PromptTokens + _agent.Totals().CompletionTokens == 0, "Расход появится после первого ответа модели."))
+                AddChatSection();
+        }
     }
 
     private void AddUsage(params UIElement[] items)
@@ -306,8 +317,9 @@ public partial class MainWindow
         try
         {
             SetTaskbar(TaskbarItemProgressState.Paused);
-            WindowEffects.Flash(this);
-            proceed = DarkDialog.Ask(this, "Лимит расхода исчерпан",
+            var owner = ActiveChatWindow;
+            WindowEffects.Flash(owner);
+            proceed = DarkDialog.Ask(owner, "Лимит расхода исчерпан",
                 reached + "\n\nПродолжить работу агента? До конца дня программа больше не будет об этом спрашивать. Изменить лимиты можно в настройках.", "Продолжить", "Остановить");
             SetTaskbar(TaskbarItemProgressState.Indeterminate);
             if (proceed)

@@ -23,6 +23,7 @@ public partial class MainWindow
 
     void OpenInApp(string path)
     {
+        _compactChat?.Close();
         if (Attachment.IsImagePath(path)) ShowPicture(path);
         else ShowPreview(path);
     }
@@ -75,6 +76,7 @@ public partial class MainWindow
 
     void ShowPreview(string path, FileDiff? diff = null, string? title = null, bool review = false)
     {
+        CloseSubagents(focusChat: false);
         _previewPath = path;
         _previewDiff = diff;
         PreviewTitle.Text = title ?? ChatLinks.DisplayName(path);
@@ -109,7 +111,26 @@ public partial class MainWindow
 
     void PreviewReveal_Click(object sender, RoutedEventArgs e) { if (_previewPath != null) FileActions.Reveal(_previewPath); }
 
-    void PreviewSplitter_DragCompleted(object sender, DragCompletedEventArgs e) => _previewWidth = PreviewColumn.ActualWidth;
+    void PreviewSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        if (!e.Canceled) SavePaneWidth();
+    }
+
+    void PreviewSplitter_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Left or Key.Right) SavePaneWidth();
+    }
+
+    void SavePaneWidth()
+    {
+        double width = PreviewColumn.Width.IsAbsolute ? PreviewColumn.Width.Value : PreviewColumn.ActualWidth;
+        if (IsShown(SubagentsWorkspace) && !_subagentsExpanded)
+        {
+            _state.SubagentsWidth = width;
+            _state.Save();
+        }
+        else _previewWidth = width;
+    }
 
     void ClosePreview()
     {
@@ -130,14 +151,20 @@ public partial class MainWindow
 
     void ApplyPreviewLayout()
     {
-        bool open = IsShown(PreviewPane), docked = open && PreviewDocks, overlay = open && !docked;
+        bool subagents = IsShown(SubagentsWorkspace), side = subagents && !_subagentsExpanded;
+        bool open = !subagents && IsShown(PreviewPane), previewDocked = open && PreviewDocks, overlay = open && !previewDocked;
+        bool docked = side || previewDocked;
         RightPane.Visibility = VisibleIf(open);
         if (_previewWidth == 0) _previewWidth = Math.Clamp(MainWidth * 0.45, 340, 760);
-        PreviewColumn.MinWidth = docked ? PaneMinWidth : 0;
-        PreviewColumn.MaxWidth = docked ? MainWidth - ChatMinWidth : 0;
-        PreviewColumn.Width = new GridLength(docked ? Math.Clamp(_previewWidth, PaneMinWidth, PreviewColumn.MaxWidth) : 0);
+        var width = side && _state.SubagentsWidth is { } saved && double.IsFinite(saved) ? saved : side ? 360 : _previewWidth;
+        PreviewColumn.MinWidth = side ? Math.Min(PaneMinWidth, MainWidth * 0.37) : previewDocked ? PaneMinWidth : 0;
+        PreviewColumn.MaxWidth = side ? MainWidth - Math.Min(ChatMinWidth, MainWidth * 0.55) : previewDocked ? MainWidth - ChatMinWidth : 0;
+        PreviewColumn.Width = new GridLength(docked ? Math.Clamp(width, PreviewColumn.MinWidth, PreviewColumn.MaxWidth) : 0);
         Grid.SetColumn(RightPane, overlay ? 0 : 1);
         Grid.SetColumnSpan(RightPane, overlay ? 2 : 1);
+        Grid.SetColumn(SubagentsWorkspace, side ? 1 : 0);
+        Grid.SetColumnSpan(SubagentsWorkspace, side ? 1 : 2);
+        SubagentsWorkspace.BorderThickness = new Thickness(side ? 1 : 0, 1, 0, 0);
         PreviewSplitter.Visibility = VisibleIf(docked);
         UpdateLayoutWidths();
     }

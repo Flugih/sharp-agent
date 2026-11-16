@@ -7,7 +7,7 @@ namespace SharpAgent.Tools;
 
 public static partial class FileTools
 {
-    const int DefaultReadLines = 850, MaxReadLines = 3_000, MaxReadChars = 50_000, MaxLineChars = 2_000, DefaultResults = 45, MaxResults = 1_000;
+    const int DefaultReadLines = 250, MaxReadLines = 3_000, MaxReadChars = 50_000, MaxLineChars = 2_000, DefaultResults = 45, MaxResults = 1_000;
     static readonly Prop FilePath = Text("path", "Путь к файлу.", true);
 
     public static IEnumerable<AgentTool> All() =>

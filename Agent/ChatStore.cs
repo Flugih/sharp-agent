@@ -34,7 +34,7 @@ public sealed class ChatStore(string folder, string logsFolder)
     {
         var root = ReadRoot(path);
         root["title"] = title;
-        Write(path, root);
+        Write(path, root, File.GetLastWriteTimeUtc(path));
     }
 
     public string Quarantine(string path) => Move(path, Unique(folder, "broken", "_" + Path.GetFileName(path)));
@@ -43,7 +43,21 @@ public sealed class ChatStore(string folder, string logsFolder)
 
     public string MoveToTrash(string path) => MoveTo(path, TrashFolder, DateTime.Now);
 
-    public string Restore(string path) => MoveTo(path, folder, null);
+    public string Restore(string path)
+    {
+        DateTime? updated = null;
+        try
+        {
+            if (DateTime.TryParseExact(Str(ReadRoot(path)["updated"]), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+                updated = time;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+        var restored = MoveTo(path, folder, null);
+        if (updated is { } previous)
+            try { File.SetLastWriteTime(restored, previous); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return restored;
+    }
 
     public void DeleteForever(string path)
     {
@@ -55,20 +69,23 @@ public sealed class ChatStore(string folder, string logsFolder)
 
     public int TrashCount() => Directory.Exists(TrashFolder) ? Directory.EnumerateFiles(TrashFolder, "chat_*.json").Count() : 0;
 
-    public List<ChatSummary> List() => Summaries(folder, deleted: false);
+    internal FileInfo[] ListChatFiles() => ChatFiles(folder)
+        .OrderByDescending(file => file.LastWriteTimeUtc).ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 
-    public List<ChatSummary> ListTrash() => Summaries(TrashFolder, deleted: true);
+    public List<ChatSummary> ListTrash() => Summaries(ChatFiles(TrashFolder));
 
-    static List<ChatSummary> Summaries(string directory, bool deleted)
+    static IEnumerable<FileInfo> ChatFiles(string directory) =>
+        Directory.Exists(directory) ? new DirectoryInfo(directory).EnumerateFiles("chat_*.json") : [];
+
+    internal static List<ChatSummary> Summaries(IEnumerable<FileInfo> files)
     {
         var result = new List<ChatSummary>();
-        if (!Directory.Exists(directory)) return result;
-        foreach (var file in new DirectoryInfo(directory).EnumerateFiles("chat_*.json"))
+        foreach (var file in files)
             try
             {
-                if (Summarize(file) is { } chat) result.Add(deleted ? chat with { Updated = file.LastWriteTime } : chat);
+                if (Summarize(file) is { } chat) result.Add(chat);
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
         return result;
     }
 
@@ -87,11 +104,7 @@ public sealed class ChatStore(string folder, string logsFolder)
             .FirstOrDefault();
         if (firstUser == null) return null;
         var title = root.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
-        var updated = root.TryGetProperty("updated", out var u) && u.ValueKind == JsonValueKind.String &&
-                      DateTime.TryParseExact(u.GetString(), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)
-            ? time
-            : file.LastWriteTime;
-        return new(file.FullName, TitleOf([firstUser], title), updated);
+        return new(file.FullName, TitleOf([firstUser], title), file.LastWriteTime);
     }
 
     IEnumerable<string> ArtifactsOf(string path)
@@ -134,11 +147,12 @@ public sealed class ChatStore(string folder, string logsFolder)
     static JsonObject ReadRoot(string path) =>
         JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8)) as JsonObject ?? throw new JsonException("В файле нет переписки.");
 
-    static void Write(string path, JsonObject root)
+    static void Write(string path, JsonObject root, DateTime? modifiedUtc = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temp = path + ".tmp";
         File.WriteAllText(temp, root.ToJsonString(JsonUtil.Pretty), new UTF8Encoding(false));
+        if (modifiedUtc is { } time) File.SetLastWriteTimeUtc(temp, time);
         File.Move(temp, path, true);
     }
 }

@@ -1,17 +1,19 @@
 namespace SharpAgent.Core;
 
-public enum AgentProvider { Tooken, ChatGpt, Groq }
+public enum AgentProvider { Tooken, ChatGpt, Groq, Gemini, OpenRouter, Mistral }
 
 public sealed class AppConfig
 {
     public const string DefaultBaseUrl = "https://tooken.club/v1";
     public const string DefaultModel = "claude-sonnet-5-5";
     public const string DefaultImageModel = "gpt-image-2";
+    public const int DefaultSubagentTaskLimit = 4, DefaultSubagentStepLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
     public static readonly string[] EffortLevels = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     public AgentProvider Provider { get; private init; }
-    public string? ApiKey { get; private init; }
-    public string? GroqApiKey { get; private init; }
+    Dictionary<AgentProvider, string> ApiKeys { get; init; } = [];
+    public string? ApiKey => ApiKeyFor(AgentProvider.Tooken);
+    public string? GroqApiKey => ApiKeyFor(AgentProvider.Groq);
     public string BaseUrl { get; private init; } = DefaultBaseUrl;
     public string Model { get; private init; } = DefaultModel;
     public string? ImageModel { get; private init; }
@@ -19,12 +21,16 @@ public sealed class AppConfig
     public string WorkingDirectory { get; private init; } = "";
     public bool Sandbox { get; private init; }
     public bool UseSubagents { get; private init; }
+    public int SubagentTaskLimit { get; private init; } = DefaultSubagentTaskLimit;
+    public int SubagentStepLimit { get; private init; } = DefaultSubagentStepLimit;
     public int? MaxTokens { get; private init; }
     public long? DayLimit { get; private init; }
     public long? MonthLimit { get; private init; }
     public string? LoadError { get; private init; }
-    public bool HasApiKey => !string.IsNullOrWhiteSpace(ApiKey);
-    public bool HasGroqKey => !string.IsNullOrWhiteSpace(GroqApiKey);
+    public bool HasApiKey => ApiKey != null;
+    public bool HasGroqKey => GroqApiKey != null;
+
+    public string? ApiKeyFor(AgentProvider provider) => ApiKeys.GetValueOrDefault(provider) is { Length: > 0 } key ? key : null;
 
     public static AppConfig Load()
     {
@@ -33,6 +39,7 @@ public sealed class AppConfig
         try { if (File.Exists(AppPaths.EnvPath)) vars = DotEnv.Parse(AppPaths.EnvPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { loadError = ex.Message; }
         string? Get(string key) => vars.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.Trim() : null;
+        int ReadLimit(string key, int fallback, int max) => int.TryParse(Get(key), out var value) ? Math.Clamp(value, 1, max) : fallback;
         bool IsTrue(string key) => new[] { "true", "1", "yes", "да" }.Contains(Get(key), StringComparer.OrdinalIgnoreCase);
         var provider = Enum.TryParse<AgentProvider>(Get("AGENT_PROVIDER"), true, out var parsed) && Enum.IsDefined(parsed) ? parsed : AgentProvider.Tooken;
         bool sandbox = IsTrue("AGENT_SANDBOX");
@@ -50,8 +57,8 @@ public sealed class AppConfig
         {
             LoadError = loadError,
             Provider = provider,
-            ApiKey = CleanKey(Get("TOOKEN_API_KEY")),
-            GroqApiKey = CleanKey(Get("GROQ_API_KEY")),
+            ApiKeys = Enum.GetValues<AgentProvider>().Where(p => p != AgentProvider.ChatGpt)
+                .ToDictionary(p => p, p => CleanKey(Get(KeyOf(p, "API_KEY")))),
             BaseUrl = NormalizeBaseUrl(Get("TOOKEN_BASE_URL") ?? DefaultBaseUrl),
             Model = Get(KeyOf(provider, "MODEL")) ?? DefaultModelOf(provider),
             ImageModel = Get("TOOKEN_IMAGE_MODEL"),
@@ -59,6 +66,8 @@ public sealed class AppConfig
             WorkingDirectory = workDir,
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
+            SubagentTaskLimit = ReadLimit("AGENT_SUBAGENT_TASK_LIMIT", DefaultSubagentTaskLimit, MaxSubagentTasks),
+            SubagentStepLimit = ReadLimit("AGENT_SUBAGENT_STEP_LIMIT", DefaultSubagentStepLimit, MaxSubagentSteps),
             MaxTokens = int.TryParse(Get("TOOKEN_MAX_TOKENS"), out var mt) && mt > 0 ? mt : null,
             DayLimit = ParseMillions(Get("AGENT_DAY_LIMIT_MLN")),
             MonthLimit = ParseMillions(Get("AGENT_MONTH_LIMIT_MLN")),
@@ -71,7 +80,19 @@ public sealed class AppConfig
     {
         AgentProvider.ChatGpt => "gpt-6.1-sol",
         AgentProvider.Groq => "openai/gpt-oss-120b",
+        AgentProvider.Gemini => "gemini-2.5-flash",
+        AgentProvider.OpenRouter => "openrouter/auto",
+        AgentProvider.Mistral => "mistral-small-latest",
         _ => DefaultModel,
+    };
+
+    public static string DefaultBaseUrlOf(AgentProvider provider) => provider switch
+    {
+        AgentProvider.Groq => Groq.BaseUrl,
+        AgentProvider.Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
+        AgentProvider.OpenRouter => "https://openrouter.ai/api/v1",
+        AgentProvider.Mistral => "https://api.mistral.ai/v1",
+        _ => DefaultBaseUrl,
     };
 
     public static string CleanKey(string? key)
@@ -93,7 +114,7 @@ public sealed class AppConfig
     }
 
     public static readonly string EnvTemplate = $"""
-        # Через кого отвечает агент: tooken, chatgpt или groq
+        # Через кого отвечает агент: tooken, chatgpt, groq, gemini, openrouter или mistral
         AGENT_PROVIDER=tooken
         # Ключ берётся в личном кабинете: https://tooken.club/dashboard (выглядит как tc_live_...)
         TOOKEN_API_KEY=
@@ -111,10 +132,22 @@ public sealed class AppConfig
         GROQ_API_KEY=
         GROQ_MODEL=openai/gpt-oss-120b
         GROQ_REASONING_EFFORT=
+        GEMINI_API_KEY=
+        GEMINI_MODEL={DefaultModelOf(AgentProvider.Gemini)}
+        GEMINI_REASONING_EFFORT=
+        OPENROUTER_API_KEY=
+        OPENROUTER_MODEL={DefaultModelOf(AgentProvider.OpenRouter)}
+        OPENROUTER_REASONING_EFFORT=
+        MISTRAL_API_KEY=
+        MISTRAL_MODEL={DefaultModelOf(AgentProvider.Mistral)}
+        MISTRAL_REASONING_EFFORT=
         # Рабочая папка агента (относительный путь — от папки программы)
         AGENT_WORKDIR=workspace
         # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd отключены)
         AGENT_SANDBOX=false
+        AGENT_USE_SUBAGENTS=false
+        AGENT_SUBAGENT_TASK_LIMIT={DefaultSubagentTaskLimit}
+        AGENT_SUBAGENT_STEP_LIMIT={DefaultSubagentStepLimit}
         # Свои лимиты расхода в миллионах токенов баланса Tooken Club (пусто — без лимита)
         # AGENT_DAY_LIMIT_MLN=5
         # AGENT_MONTH_LIMIT_MLN=50

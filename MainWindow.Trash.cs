@@ -84,7 +84,11 @@ public partial class MainWindow
 
     void RestoreChat(string path)
     {
-        try { _agent.Store.Restore(path); }
+        try
+        {
+            var restored = _agent.Store.Restore(path);
+            _chats.AddRange(ChatStore.Summaries([new FileInfo(restored)]));
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ShowToast("Не удалось вернуть чат: " + ex.Message, ToastKind.Error);
@@ -92,7 +96,7 @@ public partial class MainWindow
         }
         UpdateTrashCount();
         if (FlyoutShows(TrashCard)) ShowTrash();
-        _ = LoadChatsAsync();
+        RenderChatList();
         ShowToast("Чат возвращён в список", ToastKind.Success);
     }
 

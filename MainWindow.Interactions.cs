@@ -45,23 +45,25 @@ public partial class MainWindow
                 new DockPanel { Margin = new(0, 2, 0, 0), Children = { send, custom } },
             },
         };
-        QuestionHost.Content = new Border
+        _questionCard = new Border
         {
             Child = new ScrollViewer { Content = body, MaxHeight = 185, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
             Background = Theme.Surface, BorderBrush = Theme.LineStrong, BorderThickness = new(1), CornerRadius = new(10),
             Padding = new(12, 8, 12, 8),
         };
-        QuestionHost.Visibility = Visibility.Visible;
-        _ = Dispatcher.InvokeAsync(() => ((Button)choices.Children[0]).Focus(), DispatcherPriority.Input);
+        _questionFocus = (Button)choices.Children[0];
+        _compactChat?.SetStatus("Жду ответа");
+        PlaceQuestion();
         try
         {
             return await reply.Task.WaitAsync(ct);
         }
         finally
         {
-            QuestionHost.Visibility = Visibility.Collapsed;
-            QuestionHost.Content = null;
+            _questionCard = _questionFocus = null;
+            PlaceQuestion();
             if (IsActive) InputBox.Focus();
+            else if (_compactChat is { IsActive: true } compact) compact.FocusInput();
         }
     }
 }

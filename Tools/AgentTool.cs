@@ -13,9 +13,11 @@ public sealed class ToolContext
     public string? AppFolder { get => _appFolder; set => _appFolder = value != null ? FinalPath(value) : null; }
     public string? LogsFolder { get; set; }
     public string? SandboxRoot { get; set; }
+    public string? InstallationFolder { get; set; }
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
-    public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
+    string? _pluginsFolder;
+    public string? PluginsFolder { get => _pluginsFolder ?? (AppFolder != null ? App("plugins") : null); set => _pluginsFolder = value; }
 
     string App(string name) => Path.Combine(AppFolder!, name);
 
@@ -57,8 +59,9 @@ public sealed class ToolContext
         if (AppFolder == null) return;
         fullPath = FinalPath(fullPath);
         if (SamePath(fullPath, App(".env")) || IsInside(fullPath, App("auth")) || IsInside(fullPath, App("history")) ||
-            IsInside(fullPath, TempFolder) || IsInside(fullPath, PluginsFolder!) || SamePath(fullPath, App("state.json")) ||
+            IsInside(fullPath, TempFolder) || IsInside(fullPath, PluginsFolder!) || IsInside(PluginsFolder!, fullPath) || SamePath(fullPath, App("state.json")) ||
             SamePath(fullPath, App("errors.log")) ||
+            InstallationFolder is { } install && (IsInside(fullPath, install) || IsInside(install, fullPath)) ||
             Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)) || IsInside(AppFolder, fullPath))
             throw new ToolException("Это служебные файлы самой программы Sharp Agent (.env, auth, history, temp, plugins, state.json, exe " +
                 "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");

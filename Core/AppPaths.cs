@@ -2,7 +2,9 @@ namespace SharpAgent.Core;
 
 public static class AppPaths
 {
+    public static bool IsInstalled { get; } = File.Exists(Path.Combine(AppContext.BaseDirectory, "installed.mode"));
     public static string AppFolder { get; } = DetectAppFolder();
+    public static string PluginsFolder => In("plugins");
     public static string EnvPath => In(DotEnv.FileName);
     public static string ChatGptAuthPath => Path.Combine(AppFolder, "auth", "chatgpt.json");
     public static string HistoryFolder => In("history");
@@ -18,6 +20,7 @@ public static class AppPaths
     static string DetectAppFolder()
     {
         var exeDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
+        if (IsInstalled) return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpAgent");
         if (File.Exists(Path.Combine(exeDir, DotEnv.FileName))) return exeDir;
         var dir = new DirectoryInfo(exeDir);
         while (dir != null && !dir.Name.Equals("bin", StringComparison.OrdinalIgnoreCase)) dir = dir.Parent;

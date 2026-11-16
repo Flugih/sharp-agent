@@ -15,8 +15,17 @@ public sealed class DarkDialog : Window
         ShowInTaskbar = false;
         SizeToContent = SizeToContent.Height;
         Width = width;
-        if (owner.WindowState != WindowState.Minimized) MaxHeight = owner.ActualHeight;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        if (owner is CompactChatWindow)
+        {
+            MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 32);
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            Topmost = true;
+        }
+        else
+        {
+            if (owner.WindowState != WindowState.Minimized) MaxHeight = owner.ActualHeight;
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        }
         FontFamily = Theme.Ui;
         FontSize = 14;
         Foreground = Theme.Text;

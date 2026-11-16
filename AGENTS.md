@@ -22,7 +22,7 @@ Rules for every change to Sharp Agent.
 ## Keep stable
 - UI texts are Russian. Keep UI strings, the system prompt, tool names, descriptions, JSON schemas and output prefixes unchanged unless the change is the point.
 - Stored formats stay compatible: `.env` keys, `state.json`, `history/`, `auth/chatgpt.json`.
-- Portable: everything stays in the program folder (`AppPaths`); never write to `%APPDATA%`, `%TEMP%` or the registry.
+- Portable builds keep data in the program folder (`AppPaths`). Installed builds store user data in `%LOCALAPPDATA%\SharpAgent`; preserve both modes and their secret/app-file guards.
 - Safety: every tool path goes through `ToolContext.Resolve` and the secret/app-file guards; risky actions ask when settings say so; sandbox mode disables commands and plugins; `.env`, `auth/` and keys never reach the model, logs or UI.
 
 ## Before finishing

@@ -27,7 +27,7 @@ public static class ImageTools
     {
         var generate = c.GenerateImage ?? throw new ToolException(
             "картинки рисует Tooken Club, а его API-ключ не указан. Пользователь может добавить ключ Tooken Club в настройках " +
-            "(«Подключение» → Tooken Club), даже если агент отвечает через ChatGPT или Groq.");
+            "(«Подключение» → Tooken Club), даже если для чата выбран другой провайдер.");
         var prompt = a.Required("prompt");
         var requested = c.Resolve(a.Optional("path") ?? NameFrom(prompt));
         if (Directory.Exists(requested)) requested = Path.Combine(requested, NameFrom(prompt));

@@ -69,10 +69,12 @@ public partial class MainWindow
         ResetProgressStep();
         EnsureProgress().Start();
         SetProgressHint("Подготовка запроса…");
+        _compactChat?.ShowError(null);
     }
 
     void SetProgressHint(string? text)
     {
+        if (text != null) _compactChat?.SetStatus(text);
         if (_chatView.ProgressHint != null)
         {
             _chatView.Progress?.Items.Children.Remove(_chatView.ProgressHint);
@@ -102,6 +104,7 @@ public partial class MainWindow
     {
         ResetProgressStep();
         SetProgressHint(compressed ? "Сжатие контекста…" : null);
+        if (!compressed) _compactChat?.SetStatus("Размышление…");
     }
 
     void OnModelProgress(ModelProgress progress)
@@ -141,6 +144,7 @@ public partial class MainWindow
     void RenderDraft()
     {
         var text = _draftText.ToString();
+        _compactChat?.ShowDraft(_draftIsProgress ? null : text);
         if (string.IsNullOrWhiteSpace(text)) return;
         if (_draftView == null)
         {
@@ -162,6 +166,7 @@ public partial class MainWindow
     void ClearDraft(bool interrupted = false)
     {
         _draftTimer?.Stop();
+        _compactChat?.ShowDraft(null);
         if (interrupted && _draftText.Length > 0)
         {
             _draftIsProgress = true;
@@ -174,20 +179,25 @@ public partial class MainWindow
         _draftIsProgress = false;
     }
 
-    void OnAssistantText(string markdown, TimeSpan? elapsed)
+    void OnAssistantText(string markdown, TimeSpan? elapsed, DateTimeOffset sentAt)
     {
         ClearDraft();
-        if (elapsed != null) ShowFinalAnswer(markdown, elapsed);
+        if (elapsed != null)
+        {
+            ShowFinalAnswer(markdown, elapsed, sentAt);
+            SyncCompactChat();
+            _compactChat?.SetStatus(string.IsNullOrWhiteSpace(markdown) ? "Запрос завершён" : "Ответ готов");
+        }
         else if (!string.IsNullOrWhiteSpace(markdown)) AddProgressItem(ProgressText(markdown, "Промежуточное сообщение"));
     }
 
-    void ShowFinalAnswer(string markdown, TimeSpan? elapsed)
+    void ShowFinalAnswer(string markdown, TimeSpan? elapsed, DateTimeOffset? sentAt)
     {
         EnsureProgress();
         FinishProgress(elapsed is { } time ? "Выполнено за " + Tokens.Duration(time) : "Выполнено");
         _chatView.Progress = null;
         _chatView.ProgressHint = null;
-        if (!string.IsNullOrWhiteSpace(markdown)) AddAssistantMessage(markdown);
+        if (!string.IsNullOrWhiteSpace(markdown)) AddAssistantMessage(markdown, sentAt);
     }
 
     RichTextBox ProgressText(string markdown, string label)

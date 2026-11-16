@@ -113,7 +113,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
     {
         var body = new JsonObject
         {
-            ["model"] = model, ["messages"] = new JsonArray((_groq ? Groq.Clean(messages) : messages.Select(m => m.DeepClone())).ToArray()),
+            ["model"] = model, ["messages"] = RequestMessages(messages),
         };
         if (tools is { Count: > 0 })
         {
@@ -121,8 +121,17 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             body["tool_choice"] = "auto";
         }
         if (maxTokens is > 0) body["max_tokens"] = maxTokens.Value;
-        if (effort != null) body["reasoning_effort"] = effort;
-        bool stream = !_noStreaming.Contains(model), options = stream && !_noStreamOptions.Contains(model);
+        if (effort != null)
+        {
+            if (provider == AgentProvider.OpenRouter) body["reasoning"] = new JsonObject { ["effort"] = effort };
+            else body["reasoning_effort"] = effort;
+        }
+        if (provider == AgentProvider.Gemini && GeminiThinking(model))
+            body["extra_body"] = new JsonObject
+            {
+                ["google"] = new JsonObject { ["thinking_config"] = new JsonObject { ["include_thoughts"] = true } },
+            };
+        bool stream = !_noStreaming.Contains(model), options = provider != AgentProvider.Mistral && stream && !_noStreamOptions.Contains(model);
         if (options) body["stream_options"] = new JsonObject { ["include_usage"] = true };
         void Reset()
         {
@@ -152,6 +161,30 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         }, Reset, (attempt, total) => Retrying?.Invoke(attempt, total), ct);
     }
 
+    JsonArray RequestMessages(IReadOnlyList<JsonNode> messages)
+    {
+        var result = new JsonArray((_groq ? Groq.Clean(messages) : messages.Select(m => m.DeepClone())).ToArray());
+        if (provider != AgentProvider.Mistral) return result;
+        var calls = result.OfType<JsonObject>().SelectMany(m => (m["tool_calls"] as JsonArray)?.OfType<JsonObject>() ?? []).ToArray();
+        var used = calls.Select(call => Str(call["id"])).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var ids = new Dictionary<string, string>(StringComparer.Ordinal);
+        int next = 0;
+        foreach (var call in calls)
+        {
+            if (Str(call["id"]) is not { } id || id.Length == 9 && id.All(char.IsAsciiLetterOrDigit)) continue;
+            if (!ids.TryGetValue(id, out var mapped))
+            {
+                do { mapped = "sa" + (++next).ToString("D7", CultureInfo.InvariantCulture); } while (!used.Add(mapped));
+                ids[id] = mapped;
+            }
+            call["id"] = mapped;
+        }
+        foreach (var message in result.OfType<JsonObject>())
+            if (Str(message["role"]) == "tool" && Str(message["tool_call_id"]) is { } id && ids.TryGetValue(id, out var mapped))
+                message["tool_call_id"] = mapped;
+        return result;
+    }
+
     async Task<ChatResult> SendCompletionAsync(string json, bool stream, Action<string?, bool> reportText, Action<ModelProgress> reportProgress,
         CancellationToken ct)
     {
@@ -175,15 +208,23 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             try { root = JsonNode.Parse(text) as JsonObject; }
             catch (JsonException) { throw new ApiException("Сервер вернул не JSON: " + ApiException.Truncate(text, 400)); }
             if (root?["error"] is JsonObject) throw ApiException.FromResponse(response.StatusCode, text, requestId);
-            return (root?["choices"] as JsonArray)?.FirstOrDefault() is JsonObject choice && choice["message"] is JsonObject message
-                ? new((JsonObject)message.DeepClone(), Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId)
-                : throw new ApiException("Неожиданный ответ сервера (нет choices[0].message): " + ApiException.Truncate(text, 400));
+            if ((root?["choices"] as JsonArray)?.FirstOrDefault() is not JsonObject choice || choice["message"] is not JsonObject message)
+                throw new ApiException("Неожиданный ответ сервера (нет choices[0].message): " + ApiException.Truncate(text, 400));
+            var answer = (JsonObject)message.DeepClone();
+            if (ChatCompletionStream.ThinkingOf(answer["content"]) is { Length: > 0 } thought)
+            {
+                answer["content"] = AgentRunner.ExtractText(answer["content"]);
+                return new(answer, Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId, new(Reasoning: thought));
+            }
+            return new(answer, Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new ApiException("Модель не ответила за отведённое время. Нажмите «Повторить».", retryable: true);
         }
     }
+
+    internal async Task CheckOpenRouterKeyAsync(CancellationToken ct) => _ = await GetJsonAsync("/key", ct);
 
     public async Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct)
     {
@@ -193,11 +234,41 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         {
             var obj = item as JsonObject;
             var id = Str(obj != null ? obj["id"] : item);
+            if (provider == AgentProvider.Gemini && id?.StartsWith("models/", StringComparison.Ordinal) == true) id = id["models/".Length..];
             if (string.IsNullOrWhiteSpace(id) || result.Any(m => m.Id == id) || _groq && !Groq.IsChatModel(id, obj)) continue;
             var caps = obj?["capabilities"] as JsonObject;
             var endpoints = (caps?["endpoints"] as JsonArray)?.Select(Str).ToList();
             bool images = endpoints?.Contains("images") == true;
             long context = ContextKeys.Select(key => Long(obj?[key])).FirstOrDefault(tokens => tokens > 0);
+            if (provider == AgentProvider.Gemini)
+            {
+                bool chat = id.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase) &&
+                    !new[] { "embedding", "-tts", "-image", "live", "robotics", "computer-use", "native-audio", "aqa" }.Any(id.Contains);
+                if (chat) result.Add(new(id, context > 0 ? context : null, true, true, false,
+                    GeminiThinking(id) ? ["minimal", .. StandardEfforts] : [], Str(obj?["name"])));
+                continue;
+            }
+            if (provider == AgentProvider.OpenRouter)
+            {
+                var parameters = Values(obj?["supported_parameters"]);
+                var architecture = obj?["architecture"] as JsonObject;
+                var outputs = Values(architecture?["output_modalities"]);
+                var inputs = Values(architecture?["input_modalities"]);
+                var levels = Values((obj?["reasoning"] as JsonObject)?["supported_efforts"]).Intersect(AppConfig.EffortLevels).ToArray();
+                bool chat = (outputs.Length == 0 || outputs.Contains("text")) && (parameters.Contains("tools") || id == "openrouter/auto");
+                result.Add(new(id, context > 0 ? context : null, inputs.Length == 0 ? null : inputs.Contains("image"), chat, false,
+                    levels.Length > 0 ? levels : parameters.Contains("reasoning") ? StandardEfforts : [], Str(obj?["name"])));
+                continue;
+            }
+            if (provider == AgentProvider.Mistral)
+            {
+                if (context == 0) context = Long(obj?["max_context_length"]);
+                bool chat = Bool(caps?["completion_chat"]) != false && Bool(caps?["function_calling"]) != false;
+                bool thinking = Bool(caps?["reasoning"]) == true || new[] { "mistral-small-latest", "mistral-small-2603", "mistral-medium-latest", "mistral-medium-3-5" }.Contains(id);
+                result.Add(new(id, context > 0 ? context : null, Bool(caps?["vision"]), chat, false,
+                    thinking ? ["high"] : [], Str(obj?["name"])));
+                continue;
+            }
             result.Add(new(id, context > 0 ? context : null, Bool(caps?["vision"]), (endpoints?.Contains("chat") ?? !images) && Bool(caps?["tools"]) != false,
                 images, _groq ? Groq.EffortsOf(id) : Bool(caps?["reasoning_effort"]) == true &&
                     (caps?["reasoning_endpoints"] as JsonArray)?.Select(Str).Contains("chat") == true ? StandardEfforts : []));
@@ -205,6 +276,10 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         result.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase));
         return result;
     }
+
+    static string[] Values(JsonNode? source) => source is JsonArray items ? items.Select(Str).OfType<string>().ToArray() : [];
+
+    static bool GeminiThinking(string model) => Regex.IsMatch(model, @"^gemini-(?:2\.5|[3-9])", RegexOptions.IgnoreCase);
 
     public async Task<byte[]> GenerateImageAsync(string model, string prompt, string size, CancellationToken ct)
     {

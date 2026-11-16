@@ -27,6 +27,7 @@ public partial class MainWindow
 
     private void ShowToast(string text, ToastKind kind = ToastKind.Info, string? actionText = null, Action? action = null)
     {
+        _compactChat?.SetStatus(text.ReplaceLineEndings(" "));
         _toastVersion++;
         ToastText.Text = text;
         (ToastIcon.Text, ToastIcon.Foreground) = kind switch
@@ -125,19 +126,23 @@ public partial class MainWindow
             ShowSettingsError("Не удалось прочитать .env: " + ex.Message);
             env = new()
             {
-                ["TOOKEN_API_KEY"] = _config.ApiKey ?? "", ["GROQ_API_KEY"] = _config.GroqApiKey ?? "", ["TOOKEN_BASE_URL"] = _config.BaseUrl,
+                ["TOOKEN_BASE_URL"] = _config.BaseUrl,
                 ["TOOKEN_IMAGE_MODEL"] = _config.ImageModel ?? "", ["TOOKEN_MAX_TOKENS"] = $"{_config.MaxTokens}",
             };
         }
         string Value(string key, string fallback = "") => env.GetValueOrDefault(key) is { Length: > 0 } value ? value : fallback;
-        _settingsKeys[AgentProvider.Tooken] = AppConfig.CleanKey(Value("TOOKEN_API_KEY"));
-        _settingsKeys[AgentProvider.Groq] = AppConfig.CleanKey(Value("GROQ_API_KEY"));
         foreach (var provider in Enum.GetValues<AgentProvider>())
+        {
+            if (provider != AgentProvider.ChatGpt)
+                _settingsKeys[provider] = AppConfig.CleanKey(Value(AppConfig.KeyOf(provider, "API_KEY"), _config.ApiKeyFor(provider) ?? ""));
             _settingsModels[provider] = _savedModels[provider] =
                 provider == _config.Provider ? CurrentModel() : Value(AppConfig.KeyOf(provider, "MODEL"), AppConfig.DefaultModelOf(provider));
+        }
         ImageModelButton.Content = Value("TOOKEN_IMAGE_MODEL", AppConfig.DefaultImageModel);
         ImageModelButton.Tag = _imageModels ?? [(string)ImageModelButton.Content];
         SubagentsToggle.IsChecked = _config.UseSubagents;
+        SubagentTaskLimitBox.Text = _config.SubagentTaskLimit.ToString(CultureInfo.InvariantCulture);
+        SubagentStepLimitBox.Text = _config.SubagentStepLimit.ToString(CultureInfo.InvariantCulture);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
         PluginsText.Text = plugins.Count > 0
@@ -146,9 +151,9 @@ public partial class MainWindow
         MaxTokensBox.Text = Value("TOOKEN_MAX_TOKENS");
         DayLimitBox.Text = _config.DayLimit is { } day ? Tokens.ToMillions(day) : "";
         MonthLimitBox.Text = _config.MonthLimit is { } month ? Tokens.ToMillions(month) : "";
-        BaseUrlBox.Tag = MaxTokensBox.Tag = DayLimitBox.Tag = MonthLimitBox.Tag = null;
+        BaseUrlBox.Tag = MaxTokensBox.Tag = DayLimitBox.Tag = MonthLimitBox.Tag = SubagentTaskLimitBox.Tag = SubagentStepLimitBox.Tag = null;
         _settingsProvider = _config.Provider;
-        (_settingsProvider switch { AgentProvider.ChatGpt => ChatGptPill, AgentProvider.Groq => GroqPill, _ => TookenPill }).IsChecked = true;
+        ProviderChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsProvider)).IsChecked = true;
         ShowProviderSettings();
         SettingsOverlay.Visibility = Visibility.Visible;
         if (Theme.AnimationsEnabled) SettingsOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
@@ -167,8 +172,7 @@ public partial class MainWindow
 
     private void ProviderPill_Checked(object sender, RoutedEventArgs e)
     {
-        var provider = sender == ChatGptPill ? AgentProvider.ChatGpt : sender == GroqPill ? AgentProvider.Groq : AgentProvider.Tooken;
-        if (provider == _settingsProvider) return;
+        if (sender is not RadioButton { Tag: AgentProvider provider } || provider == _settingsProvider) return;
         KeepProviderInput();
         _settingsProvider = provider;
         ShowProviderSettings();
@@ -192,9 +196,13 @@ public partial class MainWindow
         {
             ShowKeyToggle.IsChecked = false;
             KeyTextBox.Text = KeyPasswordBox.Password = _settingsKeys.GetValueOrDefault(provider, "");
-            (KeyLabel.Text, KeyHint.Text, KeyLinkText.Text) = groq
-                ? ("API-ключ Groq", "Ключ создаётся в консоли Groq и начинается с gsk_. ", "Открыть страницу ключей")
-                : ("API-ключ tooken.club", "Ключ выдаётся в личном кабинете и начинается с tc_live_. ", "Открыть кабинет");
+            KeyLabel.Text = "API-ключ " + ProviderName(provider);
+            (KeyHint.Text, KeyLinkText.Text) = provider switch
+            {
+                AgentProvider.Groq => ("Ключ создаётся в консоли Groq и начинается с gsk_. ", "Открыть страницу ключей"),
+                AgentProvider.Tooken => ("Ключ выдаётся в личном кабинете и начинается с tc_live_. ", "Открыть кабинет"),
+                _ => ("Создайте API-ключ в кабинете провайдера. ", "Открыть страницу ключей"),
+            };
             AutomationProperties.SetName(KeyPasswordBox, KeyLabel.Text);
             AutomationProperties.SetName(KeyTextBox, KeyLabel.Text);
         }
@@ -226,7 +234,7 @@ public partial class MainWindow
         ChatGptCancelButton.Visibility = VisibleIf(waiting);
         ChatGptHint.Text = waiting ? "В браузере открылась страница OpenAI. Войдите и разрешите Sharp Agent использовать подписку — программа ждёт до 10 минут."
             : allowed ? "Запросы агента расходуют вашу подписку ChatGPT."
-            : connected ? "Вы вошли, но не разрешили Sharp Agent использовать подписку. Нажмите кнопку и разрешите это на сайте OpenAI или выберите другого провайдера — Tooken Club или Groq."
+            : connected ? "Разрешите Sharp Agent использовать подписку на сайте OpenAI или выберите другого провайдера."
             : _chatGpt.Label is { } label ? $"Sharp Agent подключён к {label}: нажмите «Продолжить с ChatGPT», чтобы войти снова."
             : "Откроется сайт OpenAI. Войдите в ChatGPT и разрешите Sharp Agent использовать подписку.";
         if (waiting || connected) return;
@@ -351,24 +359,25 @@ public partial class MainWindow
         if (provider == AgentProvider.ChatGpt ? !_chatGpt.PlanAllowed : key.Length == 0)
         {
             SetTestResult(provider != AgentProvider.ChatGpt ? "Сначала вставьте ключ."
-                : _chatGpt.Connected ? "Использование подписки не разрешено: нажмите «Разрешить использование подписки» или выберите другого провайдера — Tooken Club или Groq."
+                : _chatGpt.Connected ? "Нажмите «Разрешить использование подписки» или выберите другого провайдера."
                 : "Сначала войдите: нажмите «Продолжить с ChatGPT».", false);
             return;
         }
         using IChatProvider client = provider switch
         {
             AgentProvider.ChatGpt => new ChatGptClient(_chatGpt),
-            AgentProvider.Groq => new ChatApiClient(Groq.BaseUrl, key, AgentProvider.Groq),
-            _ => new ChatApiClient(AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl), key),
+            AgentProvider.Tooken => new ChatApiClient(AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl), key),
+            _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
         };
         TestKeyButton.IsEnabled = false;
         SetTestResult("Проверяю…", null);
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            if (provider == AgentProvider.OpenRouter && client is ChatApiClient router) await router.CheckOpenRouterKeyAsync(cts.Token);
             var models = await client.ListModelsAsync(cts.Token);
             RememberModelList(provider, models);
-            if (provider != _settingsProvider) return;
+            if (provider != _settingsProvider || !IsShown(SettingsOverlay)) return;
             var count = models.Count(m => m.Chat);
             SetTestResult((provider == AgentProvider.ChatGpt ? "Вход выполнен." : "Ключ принят.") + (count > 0 ? $" Доступно моделей: {count}." : ""), true);
             if (count > 0) DefaultModelButton.Tag = _modelLists[provider];
@@ -376,6 +385,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            if (provider != _settingsProvider || !IsShown(SettingsOverlay)) return;
             SetTestResult(ex switch
             {
                 ApiException => ex.Message,
@@ -416,6 +426,15 @@ public partial class MainWindow
         var maxTokens = MaxTokensBox.Text.Trim();
         if (maxTokens.Length > 0 && (!int.TryParse(maxTokens, out var limit) || limit < 1))
             Fail("«Токенов в одном ответе» — целое число больше нуля или пустое поле.", MaxTokensBox);
+        int SubagentLimit(TextBox field, int current, int max, string label)
+        {
+            if (SubagentsToggle.IsChecked != true) return current;
+            if (int.TryParse(field.Text, out int number) && number >= 1 && number <= max) return number;
+            Fail($"«{label}» — целое число от 1 до {max}.", field);
+            return current;
+        }
+        int subagentTasks = SubagentLimit(SubagentTaskLimitBox, _config.SubagentTaskLimit, AppConfig.MaxSubagentTasks, "Поручений на запрос");
+        int subagentSteps = SubagentLimit(SubagentStepLimitBox, _config.SubagentStepLimit, AppConfig.MaxSubagentSteps, "Шагов на поручение");
         var url = BaseUrlBox.Text.Trim() is { Length: > 0 } text ? text : AppConfig.DefaultBaseUrl;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
             Fail("Адрес API tooken.club должен начинаться с https://" + (_settingsProvider == AgentProvider.Tooken ? "" : " — исправьте его в разделе Tooken Club."), BaseUrlBox);
@@ -435,10 +454,12 @@ public partial class MainWindow
         var values = new Dictionary<string, string?>
         {
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
-            ["TOOKEN_API_KEY"] = _settingsKeys.GetValueOrDefault(AgentProvider.Tooken, ""), ["GROQ_API_KEY"] = _settingsKeys.GetValueOrDefault(AgentProvider.Groq, ""),
+            ["AGENT_SUBAGENT_TASK_LIMIT"] = subagentTasks.ToString(CultureInfo.InvariantCulture),
+            ["AGENT_SUBAGENT_STEP_LIMIT"] = subagentSteps.ToString(CultureInfo.InvariantCulture),
             ["TOOKEN_BASE_URL"] = url, ["TOOKEN_IMAGE_MODEL"] = ImageModelButton.Content as string is { Length: > 0 } image ? image : AppConfig.DefaultImageModel,
             ["TOOKEN_MAX_TOKENS"] = maxTokens, ["AGENT_DAY_LIMIT_MLN"] = dayLimit.Replace(',', '.'), ["AGENT_MONTH_LIMIT_MLN"] = monthLimit.Replace(',', '.'),
         };
+        foreach (var (provider, key) in _settingsKeys) values[AppConfig.KeyOf(provider, "API_KEY")] = key;
         foreach (var (provider, model) in _settingsModels)
             if (provider == _settingsProvider || model != _savedModels.GetValueOrDefault(provider))
                 values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
@@ -466,7 +487,14 @@ public partial class MainWindow
     }
 
     private void KeyLink_Click(object sender, RoutedEventArgs e) =>
-        FileActions.OpenUrl(_settingsProvider == AgentProvider.Groq ? Groq.KeysUrl : "https://tooken.club/dashboard");
+        FileActions.OpenUrl(_settingsProvider switch
+        {
+            AgentProvider.Groq => Groq.KeysUrl,
+            AgentProvider.Gemini => "https://aistudio.google.com/apikey",
+            AgentProvider.OpenRouter => "https://openrouter.ai/settings/keys",
+            AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
+            _ => "https://tooken.club/dashboard",
+        });
 
     private void GroqKeysLink_Click(object sender, RoutedEventArgs e) => FileActions.OpenUrl(Groq.KeysUrl);
 

@@ -27,7 +27,13 @@ public partial class MainWindow
         ["ultra"] = ("Ультра", "предельная тщательность, дольше всего"),
     };
 
-    readonly ToolContext _toolContext = new() { AppFolder = AppPaths.AppFolder, LogsFolder = AppPaths.LogsFolder };
+    readonly ToolContext _toolContext = new()
+    {
+        AppFolder = AppPaths.AppFolder,
+        InstallationFolder = AppPaths.IsInstalled ? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) : null,
+        PluginsFolder = AppPaths.PluginsFolder,
+        LogsFolder = AppPaths.LogsFolder,
+    };
     readonly UiState _state = UiState.Load();
     readonly ChatLinks _links;
     readonly MarkdownRenderer _markdown;
@@ -54,7 +60,13 @@ public partial class MainWindow
         ChatScroll.PreviewMouseWheel += ChatScroll_PreviewMouseWheel;
         Action<string, bool> notice = (text, error) => ShowToast(text, error ? ToastKind.Error : ToastKind.Info);
         FileActions.Notify += notice;
-        Closed += (_, _) => FileActions.Notify -= notice;
+        Closed += (_, _) =>
+        {
+            FileActions.Notify -= notice;
+            var compact = _compactChat;
+            _compactChat = null;
+            compact?.Close();
+        };
         _subagentTimer.Tick += (_, _) => UpdateSubagentTimes();
         _voiceTimer.Tick += (_, _) => OnVoiceTick();
         RestoreWindowPlacement();
@@ -72,11 +84,13 @@ public partial class MainWindow
 
     void Window_Loaded(object s, RoutedEventArgs e)
     {
+        if (_agent != null) return;
         _config = AppConfig.Load();
         _agent = new(new ToolRegistry(_toolContext), new ChatStore(AppPaths.HistoryFolder, AppPaths.LogsFolder))
         {
             ConfirmAsync = ConfirmAsync, ClarifyAsync = AskClarificationAsync, CanSpendAsync = CheckLimitsAsync,
             ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
+            SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
         };
         _agent.AssistantText += OnAssistantText;
         _agent.AssistantDelta += OnAssistantDelta;
@@ -105,6 +119,7 @@ public partial class MainWindow
         UpdateConfirmToggle();
         ApplySidebar();
         OpenStartupChat();
+        UpdateTrashCount();
         _ = LoadChatsAsync();
         _ = Task.Run(() => CommandLog.Prune(AppPaths.LogsFolder));
         if (_config.LoadError != null)
@@ -129,7 +144,7 @@ public partial class MainWindow
         if (_run is { IsCompleted: false } run && !_closeConfirmed)
         {
             e.Cancel = true;
-            if (!DarkDialog.Ask(this, "Агент ещё работает",
+            if (!DarkDialog.Ask(ActiveChatWindow, "Агент ещё работает",
                     "Если закрыть программу сейчас, текущая задача прервётся на середине. Переписка сохранится.",
                     "Остановить и закрыть", "Не закрывать", true))
                 return;
@@ -157,6 +172,8 @@ public partial class MainWindow
     {
         _agent.MaxTokens = _config.MaxTokens;
         _agent.UseSubagents = _config.UseSubagents;
+        _agent.SubagentTaskLimit = _config.SubagentTaskLimit;
+        _agent.SubagentStepLimit = _config.SubagentStepLimit;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
         ApplyWorkDir();
         ApplyProvider();
@@ -297,8 +314,9 @@ public partial class MainWindow
     {
         if (_confirmOff) return Task.FromResult(true);
         SetTaskbar(TaskbarItemProgressState.Paused);
-        WindowEffects.Flash(this);
-        bool allowed = DarkDialog.Ask(this, request.Title, request.Note ?? "", request.Action, "Отклонить", request.Danger, request.Subject, true);
+        var owner = ActiveChatWindow;
+        WindowEffects.Flash(owner);
+        bool allowed = DarkDialog.Ask(owner, request.Title, request.Note ?? "", request.Action, "Отклонить", request.Danger, request.Subject, true);
         SetTaskbar(TaskbarItemProgressState.Indeterminate);
         return Task.FromResult(allowed);
     }
@@ -312,6 +330,7 @@ public partial class MainWindow
         if (_cts is not { IsCancellationRequested: false }) return;
         _cts.Cancel();
         StopButton.IsEnabled = false;
+        UpdateCompactAction();
     }
 
     void InputBox_PreviewKeyDown(object s, KeyEventArgs e)
@@ -336,6 +355,7 @@ public partial class MainWindow
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
         SendButton.ToolTip = resume ? "Продолжить задачу (Enter)" : "Отправить (Enter). Новая строка — Shift+Enter";
         AutomationProperties.SetName(SendButton, resume ? "Продолжить задачу" : "Отправить");
+        UpdateCompactAction();
     }
 
     void UpdateComposerButtons()
@@ -370,8 +390,9 @@ public partial class MainWindow
         ClearPendingAttachments();
         ClearSubagents();
         ScrollToLatest();
+        var sentAt = DateTimeOffset.UtcNow;
         AddUserBubble(text, attachments);
-        await RunAgentAsync(ct => _agent.RunAsync(text, attachments, model, ct));
+        await RunAgentAsync(ct => _agent.RunAsync(text, attachments, model, ct, sentAt));
     }
 
     string? ModelForRequest()
@@ -379,7 +400,7 @@ public partial class MainWindow
         if (_provider == null)
         {
             ShowToast(NotReadyText(), ToastKind.Warning);
-            ShowSettings();
+            if (_compactChat == null) ShowSettings();
             return null;
         }
         var model = CurrentModel();
@@ -405,10 +426,11 @@ public partial class MainWindow
         SetRunning(true);
         StartProgress();
         var task = _run = run(cts.Token);
+        SyncCompactChat();
         try
         {
             await task;
-            WindowEffects.Flash(this);
+            WindowEffects.Flash(ActiveChatWindow);
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || _limitDeclined)
         {
@@ -443,7 +465,7 @@ public partial class MainWindow
             FlushTurnFiles();
             SetRunning(false);
             SyncCurrentChat(true);
-            if (!IsKeyboardFocusWithin || Keyboard.FocusedElement is not TextBoxBase) ComposerFocus.Focus();
+            if (_compactChat == null && (!IsKeyboardFocusWithin || Keyboard.FocusedElement is not TextBoxBase)) ComposerFocus.Focus();
             if (_provider is not ChatGptClient)
             {
                 _ = RefreshUsageAsync();
@@ -552,7 +574,7 @@ public partial class MainWindow
             new TextBlock
             {
                 Text = "ИИ-агент для работы с файлами и папками на этом компьютере. Работает от вашего имени, " +
-                       "без прав администратора, через Tooken Club, ChatGPT или Groq. Всё своё хранит в папке программы.",
+                       "без прав администратора. Провайдер выбирается в настройках. Всё своё хранит в папке программы.",
                 FontSize = 13, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
             },
             new TextBlock { Text = "Папка программы", FontSize = 12, Foreground = Theme.TextMuted, Margin = new(0, 0, 0, 6) },

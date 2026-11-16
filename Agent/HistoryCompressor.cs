@@ -5,11 +5,13 @@ namespace SharpAgent.Agent;
 public static class HistoryCompressor
 {
     const int CharsPerToken = 3, MessageTokens = 12, AttachmentTokens = 40;
-    const int FailureChars = 1_500, ErrorChars = 600, HarderHeadChars = 3_000, HarderTailChars = 1_000;
+    const int FailureChars = 1_500, ErrorChars = 600, ToolHeadChars = 3_000, ToolTailChars = 1_000;
     const string Header =
-        "[Сводка программы: давние шаги свёрнуты, чтобы сэкономить память модели. Это журнал твоих прошлых действий, " +
+        "[Сводка программы: давняя переписка свёрнута, чтобы сэкономить память модели. Это журнал прошлых запросов и действий, " +
         "а не новая просьба; если нужны подробности, получи их заново инструментами.]";
     const string NextHeader = "[Сводка программы, продолжение]";
+    static readonly Regex ImportantText = new(@"\b(?:требован\w*|огранич\w*|услови\w*|сохрани\w*|решени\w*|важно|обязательно|только|не меня\w*|долж\w*|нельзя|без|must|required|only|preserve|decision|do not|never)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     sealed record Unit(int Start, int End, bool User);
     sealed record Call(string Name, JsonObject Args, string Output);
@@ -29,20 +31,50 @@ public static class HistoryCompressor
 
     public static List<JsonNode> Compress(IReadOnlyList<JsonNode> history, int room, bool harder)
     {
+        if (!harder && EstimateAll(history) <= room) return [.. history];
         var units = Split(history);
+        int currentUser = units.FindLast(unit => unit.User)?.Start ?? -1;
         var steps = units.Where(unit => !unit.User).ToList();
         var lines = steps.ToDictionary(step => step, step => Lines(history, step, harder));
         int total = units.Where(unit => unit.User).Sum(unit => Size(history, unit)) + steps.Sum(step => LineTokens(lines[step]));
+        int lastStepDelta = steps.Count == 0 ? 0 : Size(history, steps[^1], harder) - LineTokens(lines[steps[^1]]);
+        var projected = history.ToArray();
+        foreach (var unit in units)
+        {
+            if (total + lastStepDelta <= room) break;
+            int index = unit.Start;
+            if (unit.User && index != currentUser && projected[index] is JsonObject message &&
+                ExtractText(message["content"]) is { } request && request.Length > (harder ? 600 : 1_200))
+            {
+                var copy = (JsonObject)message.DeepClone();
+                copy["content"] = "[Сводка прежнего запроса]\n" + Excerpt(request, harder ? 600 : 1_200);
+                total += Estimate(copy) - Estimate(message);
+                projected[index] = copy;
+            }
+        }
         int keepFrom = steps.Count;
         for (int k = steps.Count - 1; k >= 0; k--)
         {
-            int delta = Size(history, steps[k]) - LineTokens(lines[steps[k]]);
+            int delta = k == steps.Count - 1 ? lastStepDelta : Size(history, steps[k]) - LineTokens(lines[steps[k]]);
             if (k < steps.Count - 1 && (harder || total + delta > room)) break;
             total += delta;
             keepFrom = k;
         }
         AddLatestFailure(history, steps, keepFrom, lines);
-        return Assemble(history, units, keepFrom, lines, harder);
+        var result = Assemble(projected, units, keepFrom, lines, harder);
+        if (currentUser <= 0 || EstimateAll(result) <= room) return result;
+
+        int start = result.FindLastIndex(message => Role(message) == "user");
+        var latest = result.GetRange(start, result.Count - start);
+        int available = (room - EstimateAll(latest) - MessageTokens) * CharsPerToken;
+        if (available > 300)
+        {
+            var previous = units.TakeWhile(unit => unit.Start < currentUser)
+                .SelectMany(unit => unit.User ? ["- Запрос: " + Excerpt(ExtractText(projected[unit.Start]["content"]) ?? "", 450)] : lines[unit])
+                .ToList();
+            latest.Insert(0, new JsonObject { ["role"] = "assistant", ["content"] = Clip(Summary(Header, previous, harder), available - 1) });
+        }
+        return latest;
     }
 
     static List<Unit> Split(IReadOnlyList<JsonNode> history)
@@ -108,13 +140,13 @@ public static class HistoryCompressor
         return result;
     }
 
-    static JsonNode Shorten(JsonNode tool)
+    internal static JsonNode Shorten(JsonNode tool)
     {
-        if (Str(tool["content"]) is not { Length: > HarderHeadChars + HarderTailChars } content) return tool;
-        int head = content.LastIndexOf('\n', HarderHeadChars) is > HarderHeadChars / 2 and var end ? end : HarderHeadChars;
-        int tail = content.IndexOf('\n', content.Length - HarderTailChars, HarderTailChars - 1) is >= 0 and var start
+        if (Str(tool["content"]) is not { Length: > ToolHeadChars + ToolTailChars } content) return tool;
+        int head = content.LastIndexOf('\n', ToolHeadChars) is > ToolHeadChars / 2 and var end ? end : ToolHeadChars;
+        int tail = content.IndexOf('\n', content.Length - ToolTailChars, ToolTailChars - 1) is >= 0 and var start
             ? start + 1
-            : content.Length - HarderTailChars;
+            : content.Length - ToolTailChars;
         string skipped = content[head..tail], rest = content[tail..];
         bool tailMidLine = skipped[^1] != '\n';
         int missing = skipped.Count(c => c == '\n') - 1 + (skipped[0] == '\n' ? 0 : 1) + (tailMidLine ? 1 : 0);
@@ -148,8 +180,19 @@ public static class HistoryCompressor
         var lines = Calls(history, step).Select(call => $"- {call.Name}{Subject(call.Name, call.Args)} → {Result(call)}").ToList();
         if (history[step.Start] is JsonObject message && Role(message) == "assistant" && message["tool_calls"] == null &&
             ExtractText(message["content"]) is { } text && !string.IsNullOrWhiteSpace(text))
-            lines.Add("- Ответ: " + Clip(OneLine(text), harder ? 200 : 600));
+            lines.Add("- Ответ: " + Excerpt(text, harder ? 200 : 600));
         return lines;
+    }
+
+    static string Excerpt(string text, int limit)
+    {
+        if (text.Length <= limit) return text;
+        const string gap = "\n…\n";
+        int head = limit / 3, tail = limit / 4;
+        var details = string.Join("\n", text[head..^tail].Split('\n').Select(line => line.Trim())
+            .Where(line => ImportantText.IsMatch(line)).TakeLast(6).Select(line => Clip(line, 160)));
+        return text[..head] + gap + (details.Length == 0 ? "" : Clip(details, limit - head - tail - 2 * gap.Length - 1) + gap) +
+            text[^tail..];
     }
 
     static void AddLatestFailure(IReadOnlyList<JsonNode> history, List<Unit> steps, int keepFrom, Dictionary<Unit, List<string>> lines)
@@ -236,10 +279,10 @@ public static class HistoryCompressor
 
     static int Count(string output) => output.Split('\n').Count(line => line.Trim().Length > 0);
 
-    static int Size(IReadOnlyList<JsonNode> history, Unit unit)
+    static int Size(IReadOnlyList<JsonNode> history, Unit unit, bool shortenTools = false)
     {
-        int size = 0;
-        for (int i = unit.Start; i <= unit.End; i++) size += Estimate(history[i]);
+        int size = Estimate(history[unit.Start]);
+        for (int i = unit.Start + 1; i <= unit.End; i++) size += Estimate(shortenTools ? Shorten(history[i]) : history[i]);
         return size;
     }
 

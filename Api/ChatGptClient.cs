@@ -33,7 +33,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct)
     {
         bool summary = !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
-        var body = Request(model, messages, tools, effort, summary);
+        var body = Request(model, messages, tools, maxTokens, effort, summary);
         void Reset()
         {
             reportText(null, false);
@@ -76,7 +76,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         (ex.Parameter == "reasoning.summary" || !hasEffort && ex.Parameter == "reasoning" ||
          ex.Message.Contains("reasoning.summary", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("reasoning summar", StringComparison.OrdinalIgnoreCase));
 
-    static JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, string? effort, bool summary)
+    static JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort, bool summary)
     {
         JsonArray functions =
         [
@@ -98,6 +98,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             : [];
         foreach (var message in messages.OfType<JsonObject>()) AddInput(input, message);
         var body = new JsonObject { ["model"] = model, ["input"] = input, ["store"] = false };
+        if (maxTokens is > 0) body["max_output_tokens"] = Math.Max(16, maxTokens.Value);
         var reasoning = new JsonObject();
         if (effort != null) reasoning["effort"] = effort;
         if (summary) reasoning["summary"] = "auto";

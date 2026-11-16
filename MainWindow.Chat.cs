@@ -50,6 +50,7 @@ public partial class MainWindow
         EmptyChat.Visibility = VisibleIf(ChatPanel.Children.Count == 0);
         UpdateContextBanner();
         SyncCurrentChat(touched: false);
+        SyncCompactChat();
     }
 
     void AddUserBubble(string text, IReadOnlyList<Attachment> attachments)
@@ -66,7 +67,9 @@ public partial class MainWindow
             var files = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
             foreach (var attachment in attachments)
             {
-                var chip = _links.FileChip(attachment.Path, attachment.Name);
+                var chip = _links.FileChip(attachment.Path, attachment.Name, attachment.Kind == AttachmentKind.Image
+                    ? [FileActions.Item("Прикрепить к новому сообщению", Glyphs.Picture, () => _ = AddAttachmentsAsync([attachment.Path]))]
+                    : []);
                 chip.Margin = new(6, 0, 0, 6);
                 files.Children.Add(chip);
             }
@@ -143,13 +146,13 @@ public partial class MainWindow
         Padding = padding, Margin = margin, Child = child,
     };
 
-    void AddAssistantMessage(string markdown)
+    StackPanel AnswerView(string markdown, DateTimeOffset? sentAt)
     {
         var document = ChatText(markdown, Theme.Text, "Ответ агента");
         const string copyHint = "Скопировать ответ";
         var copy = Theme.IconButton(Glyphs.Copy, copyHint);
         copy.HorizontalAlignment = HorizontalAlignment.Left;
-        copy.Margin = new(-6, 4, 0, 0);
+        copy.Margin = new(-6, 0, 0, 0);
         copy.Click += (_, _) => ChatLinks.CopyWithFeedback(copy, markdown, copyHint);
         var copySelection = FileActions.Item("Копировать выделенное", Glyphs.Copy, () => document.Copy(), "Ctrl+C");
         var menu = new ContextMenu();
@@ -163,7 +166,19 @@ public partial class MainWindow
         }, "Ctrl+A"));
         menu.Opened += (_, _) => copySelection.IsEnabled = !document.Selection.IsEmpty;
         document.ContextMenu = menu;
-        var panel = new StackPanel { Margin = new(0, 8, 0, 8), Children = { document, copy } };
+        var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 4, 0, 0), Children = { copy } };
+        footer.Children.Add(new TextBlock
+        {
+            Text = sentAt?.ToLocalTime().ToString("HH:mm", Ru) ?? "—",
+            ToolTip = sentAt?.ToLocalTime().ToString("d MMMM yyyy, HH:mm:ss", Ru) ?? "Время ответа не сохранено",
+            FontSize = 12, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0),
+        });
+        return new StackPanel { Margin = new(0, 8, 0, 8), Children = { document, footer } };
+    }
+
+    void AddAssistantMessage(string markdown, DateTimeOffset? sentAt)
+    {
+        var panel = AnswerView(markdown, sentAt);
         AppendToChat(panel);
         _chatView.LastAnswer = panel;
     }
@@ -226,6 +241,8 @@ public partial class MainWindow
 
     void AddError(string text, ErrorFix fix = ErrorFix.None)
     {
+        _compactChat?.SetStatus("Ошибка");
+        _compactChat?.ShowError(text);
         if (!IsActive)
         {
             SetTaskbar(TaskbarItemProgressState.Error);
@@ -273,10 +290,12 @@ public partial class MainWindow
     {
         if (_lastErrorCard != null) ChatPanel.Children.Remove(_lastErrorCard);
         _lastErrorCard = null;
+        _compactChat?.ShowError(null);
     }
 
     void AddNotice(string text, bool warning = false, bool inProgress = true)
     {
+        if (warning || !inProgress) _compactChat?.SetStatus(text.ReplaceLineEndings(" "));
         var row = new DockPanel { Margin = inProgress ? new(0, 6, 0, 6) : new(0, 8, 0, 8) };
         if (warning) row.Children.Add(GlyphText(Glyphs.Warning, 13, Theme.Warning, new(0, 2, 8, 0), false));
         row.Children.Add(SelectableText(text, inProgress ? Theme.TextMuted : Theme.Text, fontSize: inProgress ? 13 : 14));
@@ -288,13 +307,16 @@ public partial class MainWindow
         }
     }
 
-    void OnToolCallStarted(ToolCallEvent e) => AddToolRow(e.Id, e.Name, e.ArgumentsJson);
+    void OnToolCallStarted(ToolCallEvent e)
+    {
+        _compactChat?.SetStatus(Activity(e.Name, e.ArgumentsJson));
+        AddToolRow(e.Id, e.Name, e.ArgumentsJson);
+    }
 
     void OnToolCallFinished(ToolResultEvent e)
     {
         if (!_chatView.ToolRows.TryGetValue(e.Id, out var row)) return;
         CompleteToolRow(row, e.Output, e.IsError, e.IsWarning, e.Diff, e.Change);
-        if (e.Diff != null && !e.IsError && row.FilePath != null && PreviewDocks) ShowPreview(row.FilePath, e.Diff);
     }
 
     static string Activity(string tool, string argumentsJson)
@@ -619,6 +641,7 @@ public partial class MainWindow
                 {
                     ResetProgressStep();
                     OnModelProgress(AgentRunner.ProgressOf(m));
+                    var sentAt = AgentRunner.SentAtOf(m);
                     var text = AgentRunner.ExtractText(m["content"])?.Trim() ?? "";
                     if (m["tool_calls"] is JsonArray { Count: > 0 } calls)
                     {
@@ -641,7 +664,7 @@ public partial class MainWindow
                         continue;
                     }
                     var elapsed = AgentRunner.ElapsedOf(m);
-                    if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed);
+                    if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt);
                 }
                 if (AgentRunner.StopReasonOf(m) is { } stop) AddNotice(stop, warning: true, inProgress: false);
             }

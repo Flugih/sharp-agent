@@ -5,10 +5,13 @@ namespace SharpAgent;
 public partial class MainWindow
 {
     const double DefaultSidebarWidth = 260, MinSidebarWidth = 208, MaxSidebarWidth = 480, RailWidth = 52, DockedMinWidth = 900;
+    const int ChatPageSize = 30;
     static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
 
-    List<ChatSummary> _chats = [];
-    bool _overlayOpen, _renderPending;
+    readonly List<ChatSummary> _chats = [];
+    FileInfo[]? _chatFiles;
+    int _nextChatFile;
+    bool _overlayOpen, _renderPending, _loadingChats;
     Grid? _renaming;
     Button? _flyoutOwner;
     double _sidebarDragOffset;
@@ -97,7 +100,11 @@ public partial class MainWindow
             _state.Save();
         }
         ApplySidebar();
-        if (expand) Dispatcher.InvokeAsync(FocusChatList, DispatcherPriority.Input);
+        if (expand)
+        {
+            if (AtChatListEnd()) _ = LoadChatsAsync();
+            Dispatcher.InvokeAsync(FocusChatList, DispatcherPriority.Input);
+        }
     }
 
     void CloseOverlay()
@@ -154,10 +161,40 @@ public partial class MainWindow
 
     async Task LoadChatsAsync()
     {
-        try { _chats = (await Task.Run(_agent.Store.List)).FindAll(c => File.Exists(c.Path)); }
+        if (_loadingChats || _chatFiles != null && _nextChatFile >= _chatFiles.Length) return;
+        _loadingChats = true;
+        bool appendNext = false;
+        try
+        {
+            var snapshot = _chatFiles;
+            int start = _nextChatFile;
+            var (files, next, page) = await Task.Run(() =>
+            {
+                var files = snapshot ?? _agent.Store.ListChatFiles();
+                int next = Math.Min(start + ChatPageSize, files.Length);
+                return (files, next, ChatStore.Summaries(files.Skip(start).Take(next - start)));
+            });
+            _chatFiles = files;
+            _nextChatFile = next;
+            var known = _chats.Select(chat => chat.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var added = page.Where(chat => File.Exists(chat.Path) && known.Add(chat.Path)).ToArray();
+            _chats.AddRange(added);
+            if (_renaming == null && added.Length > 0 && ChatList.Children is { Count: > 0 } children &&
+                children[children.Count - 1] is Grid { Tag: ChatSummary last } && last.Updated >= added[0].Updated)
+                AppendChatRows(added, GroupOf(last.Updated));
+            else if (added.Length > 0 || _chats.Count == 0) RenderChatList();
+            appendNext = added.Length == 0 && next < files.Length && AtChatListEnd();
+        }
         catch (Exception ex) { App.LogError(ex); }
-        UpdateTrashCount();
-        SyncCurrentChat(false);
+        finally { _loadingChats = false; }
+        if (appendNext) _ = Dispatcher.InvokeAsync(() => LoadChatsAsync(), DispatcherPriority.Background);
+    }
+
+    bool AtChatListEnd() => ChatListScroll.IsVisible && ChatListScroll.ScrollableHeight - ChatListScroll.VerticalOffset <= 100;
+
+    void ChatListScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (_agent != null && ReferenceEquals(e.OriginalSource, sender) && AtChatListEnd()) _ = LoadChatsAsync();
     }
 
     void SyncCurrentChat(bool touched)
@@ -165,7 +202,8 @@ public partial class MainWindow
         if (_agent.ChatPath is { } path && _agent.History.Count > 0)
         {
             int index = _chats.FindIndex(c => PathHelper.SamePath(c.Path, path));
-            var updated = touched || index < 0 ? DateTime.Now : _chats[index].Updated;
+            var updated = touched ? DateTime.Now : index >= 0 ? _chats[index].Updated
+                : File.Exists(path) ? File.GetLastWriteTime(path) : DateTime.Now;
             if (index >= 0) _chats.RemoveAt(index);
             _chats.Add(new(path, ChatStore.TitleOf(_agent.History, _agent.Title), updated));
         }
@@ -187,7 +225,7 @@ public partial class MainWindow
     {
         _renderPending = _renaming != null;
         if (_renderPending) return;
-        bool focused = ChatList.IsKeyboardFocusWithin;
+        var focused = (Keyboard.FocusedElement as FrameworkElement)?.Parent is Grid { Tag: ChatSummary chat } ? chat.Path : null;
         ChatList.Children.Clear();
         if (_chats.Count == 0)
         {
@@ -197,8 +235,13 @@ public partial class MainWindow
             });
             return;
         }
-        string? group = null;
-        foreach (var chat in _chats.OrderByDescending(c => c.Updated))
+        AppendChatRows(_chats.OrderByDescending(c => c.Updated).ThenBy(c => c.Path, StringComparer.OrdinalIgnoreCase), null);
+        if (focused != null) FocusChatRow(focused);
+    }
+
+    void AppendChatRows(IEnumerable<ChatSummary> chats, string? group)
+    {
+        foreach (var chat in chats)
         {
             var name = GroupOf(chat.Updated);
             if (name != group)
@@ -208,7 +251,6 @@ public partial class MainWindow
             }
             ChatList.Children.Add(ChatRow(chat));
         }
-        if (focused) FocusChatList();
     }
 
     static string GroupOf(DateTime time) => (DateTime.Today - time.Date).TotalDays switch
