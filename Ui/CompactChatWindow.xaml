@@ -17,7 +17,7 @@
         <Border Style="{StaticResource Pill}" MinHeight="54" Padding="15,9" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <StackPanel VerticalAlignment="Center">
                 <TextBlock x:Name="PromptTitle" Text="Sharp Agent" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
-                <TextBlock x:Name="StatusText" Text="Готов к запросу" Foreground="{StaticResource TextMuted}"
+                <TextBlock x:Name="StatusText" Text="Готов к запросу" Foreground="{StaticResource Success}"
                            TextTrimming="CharacterEllipsis" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite"/>
             </StackPanel>
         </Border>
@@ -36,7 +36,7 @@
             </ScrollViewer>
         </Border>
         <ContentControl x:Name="QuestionSlot" Margin="0,7,0,0" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
-        <Border Style="{StaticResource Pill}" MinHeight="46" Margin="0,7,0,0" Padding="11,4,6,4">
+        <Border Style="{StaticResource Pill}" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,4,6,4">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition/>
@@ -48,8 +48,23 @@
                              AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
                              TextChanged="PromptInput_TextChanged" PreviewKeyDown="PromptInput_PreviewKeyDown"
                              AutomationProperties.Name="Сообщение агенту"/>
-                    <TextBlock x:Name="PromptHint" Text="Сообщение агенту…" Foreground="{StaticResource TextMuted}"
-                               VerticalAlignment="Center" IsHitTestVisible="False"/>
+                    <TextBlock Text="Сообщение агенту…" Foreground="{StaticResource TextMuted}"
+                               VerticalAlignment="Center" IsHitTestVisible="False">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding Text, ElementName=PromptInput}" Value=""/>
+                                            <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=PromptInput}" Value="False"/>
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </Grid>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="ActionButton" Style="{StaticResource IconButton}" Width="31" Height="31" FontSize="14"

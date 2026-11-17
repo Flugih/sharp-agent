@@ -5,7 +5,7 @@ namespace SharpAgent.Ui;
 public static class WindowEffects
 {
     const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34, DWMWCP_ROUND = 2;
-    const uint FLASHW_TRAY = 0x2, FLASHW_TIMERNOFG = 0xC;
+    const uint FLASHW_TRAY = 0x2, FLASHW_TIMERNOFG = 0xC, WDA_EXCLUDEFROMCAPTURE = 0x11;
 
     [StructLayout(LayoutKind.Sequential)]
     struct FlashInfo
@@ -20,6 +20,12 @@ public static class WindowEffects
 
     [DllImport("user32.dll")]
     static extern bool FlashWindowEx(ref FlashInfo info);
+
+    [DllImport("user32.dll")]
+    static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+
+    internal static void ExcludeFromCapture(Window window) =>
+        SetWindowDisplayAffinity(new WindowInteropHelper(window).Handle, WDA_EXCLUDEFROMCAPTURE);
 
     public static void Flash(Window window)
     {

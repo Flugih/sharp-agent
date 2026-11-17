@@ -28,6 +28,12 @@ public partial class CompactChatWindow : Window
 
     internal void FocusInput() => PromptInput.Focus();
 
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        WindowEffects.ExcludeFromCapture(this);
+    }
+
     internal void SetStatus(string text) => StatusText.Text = text;
 
     internal void UpdateAction(bool running, bool enabled, bool resume)
@@ -122,11 +128,7 @@ public partial class CompactChatWindow : Window
 
     void FullWindow_Click(object sender, RoutedEventArgs e) => Close();
 
-    void PromptInput_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (PromptHint != null) PromptHint.Visibility = Draft.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        DraftChanged?.Invoke(Draft);
-    }
+    void PromptInput_TextChanged(object sender, TextChangedEventArgs e) => DraftChanged?.Invoke(Draft);
 
     void PromptInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {
