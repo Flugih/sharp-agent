@@ -2,13 +2,13 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Sharp Agent · Компактный режим" Width="360" SizeToContent="Height" WindowStyle="None"
-        ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent" Foreground="{StaticResource Text}"
+        ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent" Foreground="{DynamicResource Text}"
         FontFamily="Segoe UI" FontSize="13" Topmost="True" ShowInTaskbar="False"
         UseLayoutRounding="True" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" PreviewKeyDown="Window_PreviewKeyDown">
     <Window.Resources>
         <Style x:Key="Pill" TargetType="Border">
-            <Setter Property="Background" Value="#F01E1F22"/>
-            <Setter Property="BorderBrush" Value="#54FFFFFF"/>
+            <Setter Property="Background" Value="{DynamicResource CompactBg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CompactLine}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="26"/>
         </Style>
@@ -17,7 +17,7 @@
         <Border Style="{StaticResource Pill}" MinHeight="54" Padding="15,9" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <StackPanel VerticalAlignment="Center">
                 <TextBlock x:Name="PromptTitle" Text="Sharp Agent" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
-                <TextBlock x:Name="StatusText" Text="Готов к запросу" Foreground="{StaticResource Success}"
+                <TextBlock x:Name="StatusText" Text="Готов к запросу" Foreground="{DynamicResource Success}"
                            TextTrimming="CharacterEllipsis" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite"/>
             </StackPanel>
         </Border>
@@ -28,9 +28,9 @@
                 <StackPanel>
                     <StackPanel x:Name="Transcript"/>
                     <TextBox x:Name="StreamText" IsReadOnly="True" IsTabStop="False" TextWrapping="Wrap" Padding="0"
-                             Background="Transparent" BorderThickness="0" Foreground="{StaticResource Text}"
+                             Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}"
                              Visibility="Collapsed" Margin="0,5,4,6" AutomationProperties.Name="Ответ модели"/>
-                    <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{StaticResource DangerText}"
+                    <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource DangerText}"
                                Visibility="Collapsed" Margin="0,8,4,8" AutomationProperties.LiveSetting="Assertive"/>
                 </StackPanel>
             </ScrollViewer>
@@ -43,12 +43,12 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Grid Margin="3,0,4,0" VerticalAlignment="Center">
-                    <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{StaticResource Text}" BorderThickness="0"
-                             FontFamily="Segoe UI" FontSize="13" CaretBrush="{StaticResource Text}" Padding="0,4"
+                    <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0"
+                             FontFamily="Segoe UI" FontSize="13" CaretBrush="{DynamicResource Text}" Padding="0,4"
                              AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
                              TextChanged="PromptInput_TextChanged" PreviewKeyDown="PromptInput_PreviewKeyDown"
                              AutomationProperties.Name="Сообщение агенту"/>
-                    <TextBlock Text="Сообщение агенту…" Foreground="{StaticResource TextMuted}"
+                    <TextBlock Text="Сообщение агенту…" Foreground="{DynamicResource TextMuted}"
                                VerticalAlignment="Center" IsHitTestVisible="False">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
@@ -69,7 +69,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="ActionButton" Style="{StaticResource IconButton}" Width="31" Height="31" FontSize="14"
                             Content="&#xE74A;" ToolTip="Отправить" AutomationProperties.Name="Отправить" Click="ActionButton_Click"/>
-                    <Border Width="1" Height="17" Background="#38FFFFFF" Margin="3,0"/>
+                    <Border Width="1" Height="17" Background="{DynamicResource CompactDivider}" Margin="3,0"/>
                     <Button Style="{StaticResource IconButton}" Width="31" Height="31" FontSize="13" Content="&#xE8A7;"
                             ToolTip="Открыть полное окно" AutomationProperties.Name="Открыть полное окно" Click="FullWindow_Click"/>
                 </StackPanel>

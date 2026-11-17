@@ -51,22 +51,56 @@ public static class Theme
         timer.Start();
     }
 
-    public static void ApplySystemAccent(ResourceDictionary resources)
+    // Light values for every palette brush; dark ones are the App.xaml originals captured on first use.
+    static readonly Dictionary<string, Color> LightColors = new[]
     {
+        ("Bg", "#F3F3F5"), ("Surface", "#FFFFFF"), ("Surface2", "#F0F0F2"), ("Surface3", "#E4E4E8"), ("Line", "#E4E4E8"),
+        ("LineStrong", "#D0D0D6"), ("ControlBorder", "#8A8A94"), ("LineHover", "#5F5F68"), ("Text", "#1A1A1E"), ("TextSoft", "#36363C"),
+        ("TextMuted", "#5C5C64"), ("TextFaint", "#8A8A92"), ("UserBubble", "#1F5FAD"), ("Danger", "#C42B1C"), ("DangerSoft", "#FDE7E9"),
+        ("DangerLine", "#F0B4B8"), ("DangerText", "#B3261E"), ("Success", "#107C41"), ("Warning", "#8A5300"), ("WarningSoft", "#FFF4CE"),
+        ("WarningLine", "#EBCB7A"), ("Backdrop", "#C8EDEDF0"), ("Shade", "#59000000"), ("SidebarBg", "#EBEBEE"), ("DiffAdd", "#DCF3E2"),
+        ("DiffRemove", "#FBE1E3"), ("HoverLight", "#000000"), ("CaptionHover", "#14000000"), ("CaptionPressed", "#0C000000"),
+        ("CompactBg", "#F5FFFFFF"), ("CompactLine", "#33000000"), ("CompactDivider", "#24000000"),
+    }.ToDictionary(pair => pair.Item1, pair => (Color)ColorConverter.ConvertFromString(pair.Item2));
+    static Dictionary<string, Color>? _darkColors;
+
+    public static bool IsLight { get; private set; }
+
+    public static void Apply(ResourceDictionary resources, string? mode)
+    {
+        IsLight = mode == "light" || mode == "system" && SystemUsesLight();
+        _darkColors ??= LightColors.Keys.ToDictionary(key => key, key => ((SolidColorBrush)resources[key]).Color);
+        foreach (var (key, light) in LightColors) Set(resources, key, IsLight ? light : _darkColors[key]);
         Color ColorOf(string key) => ((SolidColorBrush)resources[key]).Color;
-        void Set(string key, Color color) => resources[key] = new SolidColorBrush(color).GetAsFrozen();
         Color surface = ColorOf("Surface"), surface2 = ColorOf("Surface2"), bg = ColorOf("Bg"), fill = ReadWindowsAccent();
-        for (int i = 0; i < 20 && Contrast(fill, surface) < 3.0; i++) fill = Mix(fill, Colors.White, 0.08);
+        var toward = IsLight ? Colors.Black : Colors.White;
+        for (int i = 0; i < 20 && Contrast(fill, surface) < 3.0; i++) fill = Mix(fill, toward, 0.08);
         var dark = Color.FromRgb(0x10, 0x10, 0x12);
-        var soft = Mix(surface, fill, 0.22);
+        var soft = Mix(surface, fill, IsLight ? 0.12 : 0.22);
         var text = fill;
-        for (int i = 0; i < 20 && (Contrast(text, soft) < 4.5 || Contrast(text, surface2) < 4.5); i++) text = Mix(text, Colors.White, 0.08);
-        Set("Accent", fill);
-        Set("OnAccent", Contrast(Colors.White, fill) >= 4.5 || Contrast(Colors.White, fill) >= Contrast(dark, fill) ? Colors.White : dark);
-        Set("AccentSoft", soft);
-        Set("AccentLine", Mix(surface, fill, 0.55));
-        Set("AccentText", text);
-        Set("BannerBg", Mix(bg, fill, 0.14));
+        for (int i = 0; i < 20 && (Contrast(text, soft) < 4.5 || Contrast(text, surface2) < 4.5); i++) text = Mix(text, toward, 0.08);
+        Set(resources, "Accent", fill);
+        Set(resources, "OnAccent", Contrast(Colors.White, fill) >= 4.5 || Contrast(Colors.White, fill) >= Contrast(dark, fill) ? Colors.White : dark);
+        Set(resources, "AccentSoft", soft);
+        Set(resources, "AccentLine", Mix(surface, fill, IsLight ? 0.45 : 0.55));
+        Set(resources, "AccentText", text);
+        Set(resources, "BannerBg", Mix(bg, fill, IsLight ? 0.1 : 0.14));
+    }
+
+    // XAML binds palette brushes as DynamicResource, so replacing an entry recolors the whole UI.
+    static void Set(ResourceDictionary resources, string key, Color color)
+    {
+        if (resources[key] is not SolidColorBrush brush || brush.Color != color) resources[key] = new SolidColorBrush(color).GetAsFrozen();
+    }
+
+    static bool SystemUsesLight()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is 1;
+        }
+        catch { return false; }
     }
 
     static Color ReadWindowsAccent()

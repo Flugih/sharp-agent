@@ -53,6 +53,7 @@ public partial class MainWindow
 
     public MainWindow()
     {
+        ApplyTheme();
         InitializeComponent();
         _links = new(this, new PathRefs(() => _toolContext.WorkingDirectory), OpenInApp);
         _markdown = new(_links.Markdown);
@@ -193,8 +194,10 @@ public partial class MainWindow
         ModePill.BorderBrush = _config.Sandbox ? Theme.AccentLine : Theme.LineStrong;
     }
 
-    public void OnAccentChanged()
+    public void ApplyTheme()
     {
+        Theme.Apply(Application.Current.Resources, _state.Theme);
+        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
         if (_config == null) return;
         ApplyModeColors();
         Composer.BorderBrush = InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;

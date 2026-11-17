@@ -16,7 +16,7 @@ public partial class MainWindow
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        WindowEffects.ApplyDarkFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
+        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
         (PresentationSource.FromVisual(this) as HwndSource)?.AddHook(WindowMessageHook);
         _maxHoverTimer.Tick += (_, _) =>
         {

@@ -4,7 +4,7 @@ namespace SharpAgent;
 
 public partial class App
 {
-    readonly DispatcherTimer _accentTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    readonly DispatcherTimer _themeTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     Mutex? _instanceMutex;
     EventWaitHandle? _activateSignal;
 
@@ -46,18 +46,23 @@ public partial class App
         {
             if (MainWindow is MainWindow window) window.ActivateChatWindow();
         }), null, Timeout.Infinite, false);
-        Theme.ApplySystemAccent(Resources);
-        _accentTimer.Tick += (_, _) =>
+        _themeTimer.Tick += (_, _) =>
         {
-            _accentTimer.Stop();
-            Theme.ApplySystemAccent(Resources);
-            (MainWindow as MainWindow)?.OnAccentChanged();
+            _themeTimer.Stop();
+            (MainWindow as MainWindow)?.ApplyTheme();
         };
+        void Refresh()
+        {
+            _themeTimer.Stop();
+            _themeTimer.Start();
+        }
         SystemParameters.StaticPropertyChanged += (_, args) =>
         {
-            if (args.PropertyName != nameof(SystemParameters.WindowGlassColor)) return;
-            _accentTimer.Stop();
-            _accentTimer.Start();
+            if (args.PropertyName == nameof(SystemParameters.WindowGlassColor)) Refresh();
+        };
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, args) =>
+        {
+            if (args.Category == Microsoft.Win32.UserPreferenceCategory.General) Refresh();
         };
         new MainWindow().Show();
     }

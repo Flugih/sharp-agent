@@ -33,6 +33,7 @@ public sealed class UiState
         new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
 
     public WindowPlacement? Window { get; set; }
+    public string? Theme { get; set; }
     public bool SidebarCollapsed { get; set; }
     public double? SidebarWidth { get; set; }
     public double? SubagentsWidth { get; set; }

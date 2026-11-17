@@ -37,11 +37,11 @@ public static class WindowEffects
         FlashWindowEx(ref info);
     }
 
-    public static void ApplyDarkFrame(Window window, Color border)
+    public static void ApplyFrame(Window window, Color border)
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         if (hwnd == IntPtr.Zero) return;
-        Set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
+        Set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, Theme.IsLight ? 0 : 1);
         Set(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
         Set(hwnd, DWMWA_BORDER_COLOR, border.R | (border.G << 8) | (border.B << 16));
     }

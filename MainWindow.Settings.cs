@@ -142,6 +142,7 @@ public partial class MainWindow
         ImageModelButton.Tag = _imageModels ?? [(string)ImageModelButton.Content];
         SubagentsToggle.IsChecked = _config.UseSubagents;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
+        ThemeChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _state.Theme ?? "dark")).IsChecked = true;
         SubagentTaskLimitBox.Text = _config.SubagentTaskLimit.ToString(CultureInfo.InvariantCulture);
         SubagentStepLimitBox.Text = _config.SubagentStepLimit.ToString(CultureInfo.InvariantCulture);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
@@ -497,6 +498,15 @@ public partial class MainWindow
             AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
             _ => "https://tooken.club/dashboard",
         });
+
+    private void ThemePill_Checked(object sender, RoutedEventArgs e)
+    {
+        var mode = (string)((RadioButton)sender).Tag is var tag && tag == "dark" ? null : tag;
+        if (_state.Theme == mode) return;
+        _state.Theme = mode;
+        _state.Save();
+        ApplyTheme();
+    }
 
     private void GroqKeysLink_Click(object sender, RoutedEventArgs e) => FileActions.OpenUrl(Groq.KeysUrl);
 
