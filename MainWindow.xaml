@@ -99,7 +99,7 @@
 
                             <Grid Grid.Row="1" Margin="4,0">
                                 <ui:ComposerBox x:Name="InputBox" Style="{StaticResource ComposerInput}" MinHeight="40" MaxHeight="200" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Сообщение агенту" PreviewKeyDown="InputBox_PreviewKeyDown" TextChanged="InputBox_TextChanged" CommandManager.PreviewCanExecute="InputBox_PreviewCanExecute" CommandManager.PreviewExecuted="InputBox_PreviewExecuted" GotKeyboardFocus="InputBox_FocusChanged" LostKeyboardFocus="InputBox_FocusChanged"/>
-                                <TextBlock x:Name="InputHint" IsHitTestVisible="False" Foreground="{DynamicResource TextMuted}" Margin="2,0,0,0" Text="Работайте в Sharp Agent"/>
+                                <TextBlock x:Name="InputHint" IsHitTestVisible="False" Foreground="{DynamicResource TextMuted}" Margin="5,0,0,0" Text="Работайте в Sharp Agent"/>
                                 <DockPanel x:Name="VoicePanel" MinHeight="40" Visibility="Collapsed">
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                                         <Button Style="{StaticResource IconButton}" Content="&#xE711;" FontSize="12" Margin="0,0,4,0" ToolTip="Отменить голосовой ввод (Esc)" AutomationProperties.Name="Отменить голосовой ввод" Click="VoiceCancel_Click"/>
@@ -321,7 +321,7 @@
 
             <Grid x:Name="SettingsPage" Grid.ColumnSpan="2" Margin="0,44,0,0" Visibility="Collapsed" Background="{DynamicResource Bg}" KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="240"/>
+                    <ColumnDefinition x:Name="SettingsNavColumn" Width="260"/>
                     <ColumnDefinition/>
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
@@ -331,29 +331,35 @@
 
                 <Border Grid.RowSpan="2" Background="{DynamicResource SidebarBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="12,20,12,12">
                     <StackPanel x:Name="SettingsNav" AutomationProperties.Name="Разделы настроек">
+                        <StackPanel.Resources>
+                            <Style x:Key="SettingsNavItem" TargetType="Button" BasedOn="{StaticResource NavButton}">
+                                <Setter Property="Height" Value="32"/>
+                                <Setter Property="Margin" Value="0,3"/>
+                            </Style>
+                        </StackPanel.Resources>
                         <DockPanel Margin="0,0,0,12">
                             <Button Style="{StaticResource IconButton}" Content="&#xE72B;" Width="32" Height="32" FontSize="13" ToolTip="Вернуться к чату без сохранения (Esc)" AutomationProperties.Name="Закрыть настройки" Click="SettingsCancel_Click"/>
                             <TextBlock Text="Настройки" FontSize="20" FontWeight="SemiBold" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </DockPanel>
-                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsGeneral" Click="SettingsNav_Click" AutomationProperties.Name="Общие">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsGeneral" Click="SettingsNav_Click" AutomationProperties.Name="Общие">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE713;" FontSize="16" VerticalAlignment="Center"/>
                                 <TextBlock Text="Общие" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsProviders" Click="SettingsNav_Click" AutomationProperties.Name="Провайдеры">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsProviders" Click="SettingsNav_Click" AutomationProperties.Name="Провайдеры">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE774;" FontSize="16" VerticalAlignment="Center"/>
                                 <TextBlock Text="Провайдеры" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsAgent" Click="SettingsNav_Click" AutomationProperties.Name="Агент">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsAgent" Click="SettingsNav_Click" AutomationProperties.Name="Агент">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE99A;" FontSize="16" VerticalAlignment="Center"/>
                                 <TextBlock Text="Агент" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsLimits" Click="SettingsNav_Click" AutomationProperties.Name="Лимиты">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsLimits" Click="SettingsNav_Click" AutomationProperties.Name="Лимиты">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xEC4A;" FontSize="16" VerticalAlignment="Center"/>
                                 <TextBlock Text="Лимиты" Margin="12,0,0,0" VerticalAlignment="Center"/>

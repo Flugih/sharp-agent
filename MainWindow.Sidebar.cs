@@ -48,6 +48,7 @@ public partial class MainWindow
             : RailWidth;
         Sidebar.Width = width;
         SidebarColumn.Width = new(Narrow ? RailWidth : width);
+        SettingsNavColumn.Width = new(SidebarExpanded ? width : DefaultSidebarWidth);
     }
 
     bool ResizeSidebar(double requested)

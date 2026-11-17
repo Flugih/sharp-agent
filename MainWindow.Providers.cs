@@ -273,12 +273,12 @@ public partial class MainWindow
     {
         var model = CurrentModel();
         var levels = EffortLevelsOf(model);
-        var effort = _agent.ReasoningEffort = EffectiveEffort(levels);
+        var effort = _agent.ReasoningEffort = _state.FastMode && levels.Length > 0 ? levels[0] : EffectiveEffort(levels);
         var label = ModelNameText.Text = ModelDisplayName(model);
         var pending = _loadingModelCatalog && !_models.ContainsKey(model) ? _config.ReasoningEffort : null;
-        bool showEffort = levels.Length > 0 || pending != null;
+        bool showEffort = levels.Length > 0 || pending != null || _state.FastMode;
         ModelEffortText.Visibility = VisibleIf(showEffort);
-        ModelEffortText.Text = effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное";
+        ModelEffortText.Text = _state.FastMode ? "Быстрый режим" : effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное";
         AutomationProperties.SetName(ModelButton, showEffort ? $"Модель {label}, рассуждение: {ModelEffortText.Text}" : $"Модель {label}");
     }
 
@@ -353,11 +353,24 @@ public partial class MainWindow
             else Commit();
         }));
         ShowValue();
-        var lightning = new TextBlock
+        var lightning = new ToggleButton
         {
-            Text = Glyphs.Lightning, FontFamily = Theme.Icons, FontSize = 13, Foreground = Theme.TextMuted,
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(4, 6, 0, 0),
+            Style = Theme.Style("IconToggle"), Content = Glyphs.Lightning, Width = 28, Height = 28, FontSize = 13, IsChecked = _state.FastMode,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+            ToolTip = "Быстрый режим: минимальная сила рассуждения и параллельная работа субагентов",
         };
+        AutomationProperties.SetName(lightning, "Быстрый режим");
+        slider.IsEnabled = !_state.FastMode;
+        void Toggle(object sender, RoutedEventArgs e)
+        {
+            _state.FastMode = lightning.IsChecked == true;
+            _state.Save();
+            slider.IsEnabled = !_state.FastMode;
+            ApplyFastMode();
+            ShowToast(_state.FastMode ? "Быстрый режим: агент меньше рассуждает и поручает независимые части субагентам" : "Быстрый режим выключен");
+        }
+        lightning.Checked += Toggle;
+        lightning.Unchecked += Toggle;
         return new MenuItem
         {
             Header = new StackPanel
@@ -367,6 +380,13 @@ public partial class MainWindow
             },
             Style = Theme.Style("EffortHeader"),
         };
+    }
+
+    private void ApplyFastMode()
+    {
+        _agent.FastMode = _state.FastMode;
+        _agent.UseSubagents = _config.UseSubagents || _state.FastMode;
+        UpdateModelEffort();
     }
 
     private bool DrawsOnly(string model) => _models.TryGetValue(model, out var info) && !info.Chat;

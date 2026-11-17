@@ -29,6 +29,7 @@ partial class AgentRunner
         """)!;
 
     public bool UseSubagents { get; set; }
+    public bool FastMode { get; set; }
     int SubagentStepLimit { get; init; } = MaxSubagentSteps;
     public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
@@ -69,6 +70,10 @@ partial class AgentRunner
               "и выбирай только относящиеся к поручению вложения по точным путям через attachments. " +
               $"Число поручений (до {MaxSubagentTasks} за запрос) и шагов каждого (steps) выбирай сам по объёму работы, без лишнего запаса. " +
               "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
+            : "") +
+        (FastMode
+            ? "\nВключён быстрый режим: пользователю важна скорость. Дели изучение и проверки на независимые части и поручай их " +
+              "субагентам параллельно одним вызовом delegate_tasks, объединяй независимые действия в один ответ, не трать шаги на лишнее."
             : "");
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)

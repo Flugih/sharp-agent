@@ -172,11 +172,11 @@ public partial class MainWindow
     void ApplyConfig()
     {
         _agent.MaxTokens = _config.MaxTokens;
-        _agent.UseSubagents = _config.UseSubagents;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
         _toolContext.ComputerUse = _config.ComputerUse;
         ApplyWorkDir();
         ApplyProvider();
+        ApplyFastMode();
         ApplyModeColors();
         ModeText.Text = _config.Sandbox ? "Песочница" : "Весь ПК";
         ModeIcon.Text = _config.Sandbox ? Glyphs.Lock : Glyphs.Globe;

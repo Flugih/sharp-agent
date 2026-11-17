@@ -506,7 +506,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     JsonObject SystemMessage()
     {
-        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{ClarifyAsync != null}|{tools.Context.ComputerUse}";
+        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{FastMode}|{ClarifyAsync != null}|{tools.Context.ComputerUse}";
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {

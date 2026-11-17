@@ -34,6 +34,7 @@ public sealed class UiState
 
     public WindowPlacement? Window { get; set; }
     public string? Theme { get; set; }
+    public bool FastMode { get; set; }
     public bool SidebarCollapsed { get; set; }
     public double? SidebarWidth { get; set; }
     public double? SubagentsWidth { get; set; }

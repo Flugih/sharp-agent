@@ -43,6 +43,8 @@ public partial class CompactChatWindow : Window
         ActionButton.ToolTip = label;
         AutomationProperties.SetName(ActionButton, label);
         ActionButton.IsEnabled = enabled;
+        StatusText.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+        UpdateTranscript(scroll: running);
     }
 
     internal void SyncHistory(IReadOnlyList<JsonNode> history)
@@ -53,13 +55,11 @@ public partial class CompactChatWindow : Window
             .TakeLast(16).ToArray();
         if (_shown.SequenceEqual(messages)) return;
         _shown = messages;
-        var heading = messages.LastOrDefault(m => AgentRunner.Role(m) == "user");
-        PromptTitle.Text = heading == null ? "Sharp Agent" : UserText(heading).ReplaceLineEndings(" ");
         Transcript.Children.Clear();
         foreach (var message in messages)
             if (AgentRunner.Role(message) == "assistant")
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
-            else if (message != heading) Transcript.Children.Add(new Border
+            else Transcript.Children.Add(new Border
             {
                 Background = Theme.Surface3, CornerRadius = new(10), HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new(18, 6, 2, 3), Padding = new(9, 5, 9, 5),
@@ -91,8 +91,8 @@ public partial class CompactChatWindow : Window
 
     void UpdateTranscript(bool scroll)
     {
-        TranscriptCard.Visibility = Transcript.Children.Count > 0 || StreamText.Visibility == Visibility.Visible ||
-            ErrorText.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
+        TranscriptCard.Visibility = Transcript.Children.Count > 0 || new UIElement[] { StatusText, StreamText, ErrorText }
+            .Any(item => item.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
         if (scroll) TranscriptScroll.ScrollToEnd();
     }
 

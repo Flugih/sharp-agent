@@ -14,19 +14,14 @@
         </Style>
     </Window.Resources>
     <StackPanel Margin="8,5,8,9">
-        <Border Style="{StaticResource Pill}" MinHeight="54" Padding="15,9" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
-            <StackPanel VerticalAlignment="Center">
-                <TextBlock x:Name="PromptTitle" Text="Sharp Agent" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
-                <TextBlock x:Name="StatusText" Text="Готов к запросу" Foreground="{DynamicResource Success}"
-                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0" AutomationProperties.LiveSetting="Polite"/>
-            </StackPanel>
-        </Border>
-        <Border x:Name="TranscriptCard" Style="{StaticResource Pill}" CornerRadius="17" Margin="0,7,0,0" Padding="13,1,8,2"
-                Visibility="Collapsed">
+        <Border x:Name="TranscriptCard" Style="{StaticResource Pill}" CornerRadius="17" Padding="13,1,8,2"
+                Visibility="Collapsed" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <ScrollViewer x:Name="TranscriptScroll" MaxHeight="238" Focusable="False"
                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <StackPanel x:Name="Transcript"/>
+                    <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"
+                               Visibility="Collapsed" Margin="0,6,4,6" AutomationProperties.LiveSetting="Polite"/>
                     <TextBox x:Name="StreamText" IsReadOnly="True" IsTabStop="False" TextWrapping="Wrap" Padding="0"
                              Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}"
                              Visibility="Collapsed" Margin="0,5,4,6" AutomationProperties.Name="Ответ модели"/>
@@ -36,7 +31,8 @@
             </ScrollViewer>
         </Border>
         <ContentControl x:Name="QuestionSlot" Margin="0,7,0,0" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
-        <Border Style="{StaticResource Pill}" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,4,6,4">
+        <Border Style="{StaticResource Pill}" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,4,6,4"
+                MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition/>
