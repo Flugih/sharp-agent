@@ -319,180 +319,188 @@
                 </StackPanel>
             </Grid>
 
-            <Grid x:Name="SettingsOverlay" Grid.ColumnSpan="2" Margin="0,44,0,0" Visibility="Collapsed" Background="{DynamicResource Backdrop}" KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle">
-                <Border MaxWidth="580" Margin="24,12,24,24" VerticalAlignment="Center" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="12">
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="40" ShadowDepth="8" Opacity="0.55" Color="Black"/>
-                    </Border.Effect>
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
+            <Grid x:Name="SettingsPage" Visibility="Collapsed" KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-                        <DockPanel Margin="24,20,16,4">
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8BB;" FontSize="10" VerticalAlignment="Top" ToolTip="Закрыть без сохранения (Esc)" AutomationProperties.Name="Закрыть настройки" Click="SettingsCancel_Click"/>
-                            <TextBlock Text="Настройки" FontSize="20" FontWeight="SemiBold"/>
-                        </DockPanel>
+                <Border Grid.RowSpan="2" Background="{DynamicResource SidebarBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="12,20,12,12">
+                    <StackPanel x:Name="SettingsNav" AutomationProperties.Name="Разделы настроек">
+                        <TextBlock Text="Настройки" FontSize="20" FontWeight="SemiBold" Margin="12,0,0,16"/>
+                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsGeneral" Content="Общие"/>
+                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsProviders" Content="Провайдеры"/>
+                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsAgent" Content="Агент"/>
+                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsLimits" Content="Лимиты"/>
+                    </StackPanel>
+                </Border>
 
-                        <ScrollViewer x:Name="SettingsScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="24,0" Focusable="False">
-                            <StackPanel x:Name="SettingsFields" Margin="0,0,0,8" TextBoxBase.TextChanged="SettingsFields_TextChanged">
-                                <TextBlock Style="{StaticResource SectionTitle}" Text="Подключение"/>
+                <ScrollViewer x:Name="SettingsScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="32,24,32,8" Focusable="False">
+                    <Grid x:Name="SettingsFields" MaxWidth="640" HorizontalAlignment="Left" TextBoxBase.TextChanged="SettingsFields_TextChanged">
+                        <StackPanel x:Name="SettingsGeneral">
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Оформление" Margin="0,0,0,12"/>
+                            <WrapPanel x:Name="ThemeChoices">
+                                <WrapPanel.Resources>
+                                    <Style TargetType="RadioButton" BasedOn="{StaticResource PillToggle}">
+                                        <Setter Property="Margin" Value="0,0,6,6"/>
+                                        <Setter Property="GroupName" Value="Theme"/>
+                                        <EventSetter Event="Checked" Handler="ThemePill_Checked"/>
+                                    </Style>
+                                </WrapPanel.Resources>
+                                <RadioButton Tag="dark" Content="Тёмная"/>
+                                <RadioButton Tag="light" Content="Светлая"/>
+                                <RadioButton Tag="system" Content="Как в Windows"/>
+                            </WrapPanel>
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Режим работы" Margin="0,24,0,12"/>
+                            <ToggleButton x:Name="SandboxToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Content="Песочница" ToolTip="Агент работает только внутри папки программы" AutomationProperties.Name="Песочница"/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Агент работает только внутри папки программы: команды PowerShell и cmd, скрипты плагинов и управление компьютером отключены. Без песочницы агенту доступны все файлы пользователя, без прав администратора."/>
+                        </StackPanel>
+                        <StackPanel x:Name="SettingsProviders" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Провайдеры" Margin="0,0,0,12"/>
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Провайдер"/>
+                            <WrapPanel x:Name="ProviderChoices">
+                                <WrapPanel.Resources>
+                                    <Style TargetType="RadioButton" BasedOn="{StaticResource PillToggle}">
+                                        <Setter Property="Margin" Value="0,0,6,6"/>
+                                        <Setter Property="GroupName" Value="Provider"/>
+                                        <EventSetter Event="Checked" Handler="ProviderPill_Checked"/>
+                                    </Style>
+                                </WrapPanel.Resources>
+                                <RadioButton Tag="{x:Static core:AgentProvider.Tooken}" Content="Tooken Club"/>
+                                <RadioButton Tag="{x:Static core:AgentProvider.ChatGpt}" Content="ChatGPT"/>
+                                <RadioButton Tag="{x:Static core:AgentProvider.Groq}" Content="Groq"/>
+                                <RadioButton Tag="{x:Static core:AgentProvider.Gemini}" Content="Google Gemini"/>
+                                <RadioButton Tag="{x:Static core:AgentProvider.OpenRouter}" Content="OpenRouter"/>
+                                <RadioButton Tag="{x:Static core:AgentProvider.Mistral}" Content="Mistral AI"/>
+                            </WrapPanel>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Через него агент отвечает в чате. Переключаться можно и в меню модели в поле ввода."/>
 
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Провайдер"/>
-                                <WrapPanel x:Name="ProviderChoices">
-                                    <WrapPanel.Resources>
-                                        <Style TargetType="RadioButton" BasedOn="{StaticResource PillToggle}">
-                                            <Setter Property="Margin" Value="0,0,6,6"/>
-                                            <Setter Property="GroupName" Value="Provider"/>
-                                            <EventSetter Event="Checked" Handler="ProviderPill_Checked"/>
-                                        </Style>
-                                    </WrapPanel.Resources>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.Tooken}" Content="Tooken Club"/>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.ChatGpt}" Content="ChatGPT"/>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.Groq}" Content="Groq"/>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.Gemini}" Content="Google Gemini"/>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.OpenRouter}" Content="OpenRouter"/>
-                                    <RadioButton Tag="{x:Static core:AgentProvider.Mistral}" Content="Mistral AI"/>
-                                </WrapPanel>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Через него агент отвечает в чате. Переключаться можно и в меню модели в поле ввода."/>
-
-                                <StackPanel x:Name="KeyPanel">
-                                    <TextBlock x:Name="KeyLabel" Style="{StaticResource FieldLabel}" Text="API-ключ"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <PasswordBox x:Name="KeyPasswordBox" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="API-ключ"/>
-                                        <TextBox x:Name="KeyTextBox" Style="{StaticResource FieldTextBox}" Visibility="Collapsed" AutomationProperties.Name="API-ключ"/>
-                                        <ToggleButton x:Name="ShowKeyToggle" Grid.Column="1" Style="{StaticResource IconToggle}" Content="&#xE890;" Margin="8,0,0,0" ToolTip="Показать или скрыть ключ" AutomationProperties.Name="Показать ключ" Checked="ShowKey_Changed" Unchecked="ShowKey_Changed"/>
-                                    </Grid>
-                                    <TextBlock Style="{StaticResource FieldHint}">
-                                        <Run x:Name="KeyHint" Text="Ключ выдаётся в личном кабинете и начинается с tc_live_. "/><Hyperlink Click="KeyLink_Click"><Run x:Name="KeyLinkText" Text="Открыть кабинет"/></Hyperlink>
-                                    </TextBlock>
-                                </StackPanel>
-
-                                <StackPanel x:Name="ChatGptPanel" Visibility="Collapsed">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Аккаунт ChatGPT"/>
-                                    <DockPanel x:Name="ChatGptAccountPanel" Visibility="Collapsed">
-                                        <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="Выйти" Margin="12,0,0,0" ToolTip="Выйти из ChatGPT" AutomationProperties.Name="Выйти из ChatGPT" Click="ChatGptSignOut_Click"/>
-                                        <StackPanel VerticalAlignment="Center">
-                                            <TextBlock x:Name="ChatGptEmail" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock x:Name="ChatGptPlan" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
-                                        </StackPanel>
-                                    </DockPanel>
-                                    <StackPanel x:Name="ChatGptSignInPanel" Orientation="Horizontal">
-                                        <Button x:Name="ChatGptSignInButton" Style="{StaticResource ChatGptPillButton}" Content="Продолжить с ChatGPT" ToolTip="Открыть браузер и войти в аккаунт ChatGPT" AutomationProperties.Name="Продолжить с ChatGPT" Click="ChatGptSignIn_Click"/>
-                                        <Button x:Name="ChatGptCancelButton" Content="Отменить вход" Margin="8,0,0,0" Visibility="Collapsed" ToolTip="Перестать ждать вход в браузере" AutomationProperties.Name="Отменить вход" Click="ChatGptCancel_Click"/>
-                                    </StackPanel>
-                                    <TextBlock x:Name="ChatGptHint" Style="{StaticResource FieldHint}"/>
-                                </StackPanel>
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Модель"/>
-                                <Button x:Name="DefaultModelButton" Style="{StaticResource ModelPicker}" Height="34" Click="DefaultModelButton_Click" ToolTip="Модель выбранного провайдера" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель: {0}'}"/>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Своя для каждого провайдера; у текущего — та же, что выбрана в поле ввода."/>
-
-                                <StackPanel x:Name="TookenPanel">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Модель для изображений"/>
-                                    <Button x:Name="ImageModelButton" Style="{StaticResource ModelPicker}" Height="34" Click="ImageModelButton_Click" ToolTip="Модель tooken.club, которой агент рисует картинки" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель для изображений: {0}'}"/>
-                                    <TextBlock Style="{StaticResource FieldHint}" Text="Генерация картинок использует ключ и баланс Tooken Club при любом провайдере чата."/>
-
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Адрес API"/>
-                                    <TextBox x:Name="BaseUrlBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Адрес API"/>
-                                    <TextBlock Style="{StaticResource FieldHint}" Text="Обычно менять не нужно."/>
-                                </StackPanel>
-
-                                <StackPanel Orientation="Horizontal">
-                                    <Button x:Name="TestKeyButton" Content="Проверить подключение" Click="TestKey_Click" ToolTip="Запросить список моделей у выбранного провайдера" AutomationProperties.Name="Проверить подключение"/>
-                                    <TextBlock x:Name="TestKeyIcon" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center" Margin="12,0,0,0"/>
-                                </StackPanel>
-                                <TextBlock x:Name="TestKeyResult" FontSize="13" TextWrapping="Wrap" Margin="0,8,0,0"/>
-
-                                <TextBlock Style="{StaticResource SectionTitle}" Text="Голосовой ввод" Margin="0,24,0,12"/>
-                                <StackPanel x:Name="VoiceKeyPanel">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="API-ключ Groq"/>
-                                    <PasswordBox x:Name="VoiceKeyBox" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="API-ключ Groq для голосового ввода"/>
-                                </StackPanel>
-                                <TextBlock Style="{StaticResource FieldHint}">
-                                    <Run x:Name="VoiceHint"/><Hyperlink Click="GroqKeysLink_Click">Открыть страницу ключей</Hyperlink>
-                                </TextBlock>
-
-                                <TextBlock Style="{StaticResource SectionTitle}" Text="Оформление" Margin="0,24,0,12"/>
-                                <WrapPanel x:Name="ThemeChoices">
-                                    <WrapPanel.Resources>
-                                        <Style TargetType="RadioButton" BasedOn="{StaticResource PillToggle}">
-                                            <Setter Property="Margin" Value="0,0,6,6"/>
-                                            <Setter Property="GroupName" Value="Theme"/>
-                                            <EventSetter Event="Checked" Handler="ThemePill_Checked"/>
-                                        </Style>
-                                    </WrapPanel.Resources>
-                                    <RadioButton Tag="dark" Content="Тёмная"/>
-                                    <RadioButton Tag="light" Content="Светлая"/>
-                                    <RadioButton Tag="system" Content="Как в Windows"/>
-                                </WrapPanel>
-
-                                <TextBlock Style="{StaticResource SectionTitle}" Text="Агент" Margin="0,24,0,12"/>
-                                <ToggleButton x:Name="SubagentsToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Content="Использовать субагентов" ToolTip="Агент может поручать независимые проверки и анализ субагентам" AutomationProperties.Name="Использовать субагентов"/>
-                                <Grid IsEnabled="{Binding IsChecked, ElementName=SubagentsToggle}" Margin="0,4,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition/>
-                                        <ColumnDefinition/>
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Margin="0,0,6,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Поручений на запрос"/>
-                                        <TextBox x:Name="SubagentTaskLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Поручений на запрос"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Margin="6,0,0,0">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Шагов на поручение"/>
-                                        <TextBox x:Name="SubagentStepLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Шагов на поручение"/>
-                                    </StackPanel>
-                                </Grid>
-
-                                <ToggleButton x:Name="ComputerUseToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Margin="0,12,0,0" Content="Управление компьютером" ToolTip="Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам" AutomationProperties.Name="Управление компьютером"/>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно."/>
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Плагины" Margin="0,12,0,6"/>
-                                <TextBlock x:Name="PluginsText" Style="{StaticResource FieldHint}" Margin="0,0,0,4"/>
-                                <TextBlock Style="{StaticResource FieldHint}">
-                                    <Hyperlink Click="OpenPlugins_Click">Открыть папку плагинов</Hyperlink>
-                                </TextBlock>
-
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Токенов в одном ответе, не больше"/>
-                                <TextBox x:Name="MaxTokensBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Токенов в одном ответе"/>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Пустое поле оставляет предел модели. Настройка применяется к подключениям по API-ключу."/>
-
-                                <TextBlock Style="{StaticResource SectionTitle}" Text="Лимиты расхода" Margin="0,8,0,12"/>
+                            <StackPanel x:Name="KeyPanel">
+                                <TextBlock x:Name="KeyLabel" Style="{StaticResource FieldLabel}" Text="API-ключ"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition/>
-                                        <ColumnDefinition Width="16"/>
-                                        <ColumnDefinition/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="В день, млн токенов"/>
-                                        <TextBox x:Name="DayLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Лимит в день, миллионов токенов"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="В месяц, млн токенов"/>
-                                        <TextBox x:Name="MonthLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Лимит в месяц, миллионов токенов"/>
-                                    </StackPanel>
+                                    <PasswordBox x:Name="KeyPasswordBox" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="API-ключ"/>
+                                    <TextBox x:Name="KeyTextBox" Style="{StaticResource FieldTextBox}" Visibility="Collapsed" AutomationProperties.Name="API-ключ"/>
+                                    <ToggleButton x:Name="ShowKeyToggle" Grid.Column="1" Style="{StaticResource IconToggle}" Content="&#xE890;" Margin="8,0,0,0" ToolTip="Показать или скрыть ключ" AutomationProperties.Name="Показать ключ" Checked="ShowKey_Changed" Unchecked="ShowKey_Changed"/>
                                 </Grid>
-                                <TextBlock Style="{StaticResource FieldHint}" Text="Когда лимит исчерпан, агент останавливается и спрашивает, продолжать ли. Считаются токены баланса tooken.club по всему ключу, поэтому лимиты действуют только для Tooken Club. Пустое поле — без лимита."/>
+                                <TextBlock Style="{StaticResource FieldHint}">
+                                    <Run x:Name="KeyHint" Text="Ключ выдаётся в личном кабинете и начинается с tc_live_. "/><Hyperlink Click="KeyLink_Click"><Run x:Name="KeyLinkText" Text="Открыть кабинет"/></Hyperlink>
+                                </TextBlock>
                             </StackPanel>
-                        </ScrollViewer>
 
-                        <Border Grid.Row="2" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="24,12,24,16">
-                            <StackPanel>
-                                <TextBlock x:Name="SettingsError" Foreground="{DynamicResource DangerText}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
-                                <DockPanel LastChildFill="False">
-                                    <Button DockPanel.Dock="Right" Content="Отмена" MinWidth="96" Margin="8,0,0,0" Click="SettingsCancel_Click" ToolTip="Закрыть без сохранения" AutomationProperties.Name="Отмена"/>
-                                    <Button DockPanel.Dock="Right" Style="{StaticResource AccentPillButton}" Content="Сохранить" MinWidth="112" Click="SettingsSave_Click" ToolTip="Применить настройки" AutomationProperties.Name="Сохранить настройки"/>
+                            <StackPanel x:Name="ChatGptPanel" Visibility="Collapsed">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Аккаунт ChatGPT"/>
+                                <DockPanel x:Name="ChatGptAccountPanel" Visibility="Collapsed">
+                                    <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="Выйти" Margin="12,0,0,0" ToolTip="Выйти из ChatGPT" AutomationProperties.Name="Выйти из ChatGPT" Click="ChatGptSignOut_Click"/>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock x:Name="ChatGptEmail" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock x:Name="ChatGptPlan" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                                    </StackPanel>
                                 </DockPanel>
+                                <StackPanel x:Name="ChatGptSignInPanel" Orientation="Horizontal">
+                                    <Button x:Name="ChatGptSignInButton" Style="{StaticResource ChatGptPillButton}" Content="Продолжить с ChatGPT" ToolTip="Открыть браузер и войти в аккаунт ChatGPT" AutomationProperties.Name="Продолжить с ChatGPT" Click="ChatGptSignIn_Click"/>
+                                    <Button x:Name="ChatGptCancelButton" Content="Отменить вход" Margin="8,0,0,0" Visibility="Collapsed" ToolTip="Перестать ждать вход в браузере" AutomationProperties.Name="Отменить вход" Click="ChatGptCancel_Click"/>
+                                </StackPanel>
+                                <TextBlock x:Name="ChatGptHint" Style="{StaticResource FieldHint}"/>
                             </StackPanel>
-                        </Border>
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Модель"/>
+                            <Button x:Name="DefaultModelButton" Style="{StaticResource ModelPicker}" Height="34" Click="DefaultModelButton_Click" ToolTip="Модель выбранного провайдера" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель: {0}'}"/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Своя для каждого провайдера; у текущего — та же, что выбрана в поле ввода."/>
+
+                            <StackPanel x:Name="TookenPanel">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Модель для изображений"/>
+                                <Button x:Name="ImageModelButton" Style="{StaticResource ModelPicker}" Height="34" Click="ImageModelButton_Click" ToolTip="Модель tooken.club, которой агент рисует картинки" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель для изображений: {0}'}"/>
+                                <TextBlock Style="{StaticResource FieldHint}" Text="Генерация картинок использует ключ и баланс Tooken Club при любом провайдере чата."/>
+
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="Адрес API"/>
+                                <TextBox x:Name="BaseUrlBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Адрес API"/>
+                                <TextBlock Style="{StaticResource FieldHint}" Text="Обычно менять не нужно."/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="TestKeyButton" Content="Проверить подключение" Click="TestKey_Click" ToolTip="Запросить список моделей у выбранного провайдера" AutomationProperties.Name="Проверить подключение"/>
+                                <TextBlock x:Name="TestKeyIcon" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            </StackPanel>
+                            <TextBlock x:Name="TestKeyResult" FontSize="13" TextWrapping="Wrap" Margin="0,8,0,0"/>
+
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Голосовой ввод" Margin="0,24,0,12"/>
+                            <StackPanel x:Name="VoiceKeyPanel">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="API-ключ Groq"/>
+                                <PasswordBox x:Name="VoiceKeyBox" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="API-ключ Groq для голосового ввода"/>
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource FieldHint}">
+                                <Run x:Name="VoiceHint"/><Hyperlink Click="GroqKeysLink_Click">Открыть страницу ключей</Hyperlink>
+                            </TextBlock>
+                        </StackPanel>
+                        <StackPanel x:Name="SettingsAgent" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Агент" Margin="0,0,0,12"/>
+                            <ToggleButton x:Name="SubagentsToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Content="Использовать субагентов" ToolTip="Агент может поручать независимые проверки и анализ субагентам" AutomationProperties.Name="Использовать субагентов"/>
+                            <Grid IsEnabled="{Binding IsChecked, ElementName=SubagentsToggle}" Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,6,0">
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Поручений на запрос"/>
+                                    <TextBox x:Name="SubagentTaskLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Поручений на запрос"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Шагов на поручение"/>
+                                    <TextBox x:Name="SubagentStepLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Шагов на поручение"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <ToggleButton x:Name="ComputerUseToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Margin="0,12,0,0" Content="Управление компьютером" ToolTip="Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам" AutomationProperties.Name="Управление компьютером"/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно."/>
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Плагины" Margin="0,12,0,6"/>
+                            <TextBlock x:Name="PluginsText" Style="{StaticResource FieldHint}" Margin="0,0,0,4"/>
+                            <TextBlock Style="{StaticResource FieldHint}">
+                                <Hyperlink Click="OpenPlugins_Click">Открыть папку плагинов</Hyperlink>
+                            </TextBlock>
+
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Токенов в одном ответе, не больше"/>
+                            <TextBox x:Name="MaxTokensBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Токенов в одном ответе"/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Пустое поле оставляет предел модели. Настройка применяется к подключениям по API-ключу."/>
+                        </StackPanel>
+                        <StackPanel x:Name="SettingsLimits" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="Лимиты расхода" Margin="0,0,0,12"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition/>
+                                    <ColumnDefinition Width="16"/>
+                                    <ColumnDefinition/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="В день, млн токенов"/>
+                                    <TextBox x:Name="DayLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Лимит в день, миллионов токенов"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="В месяц, млн токенов"/>
+                                    <TextBox x:Name="MonthLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Лимит в месяц, миллионов токенов"/>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Когда лимит исчерпан, агент останавливается и спрашивает, продолжать ли. Считаются токены баланса tooken.club по всему ключу, поэтому лимиты действуют только для Tooken Club. Пустое поле — без лимита."/>
+                        </StackPanel>
                     </Grid>
+                </ScrollViewer>
+
+                <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="32,12,24,16">
+                    <StackPanel>
+                        <TextBlock x:Name="SettingsError" Foreground="{DynamicResource DangerText}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
+                        <DockPanel LastChildFill="False">
+                            <Button DockPanel.Dock="Right" Content="Отмена" MinWidth="96" Margin="8,0,0,0" Click="SettingsCancel_Click" ToolTip="Закрыть без сохранения" AutomationProperties.Name="Отмена"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource AccentPillButton}" Content="Сохранить" MinWidth="112" Click="SettingsSave_Click" ToolTip="Применить настройки" AutomationProperties.Name="Сохранить настройки"/>
+                        </DockPanel>
+                    </StackPanel>
                 </Border>
             </Grid>
 

@@ -197,7 +197,8 @@ public partial class MainWindow
     public void ApplyTheme()
     {
         Theme.Apply(Application.Current.Resources, _state.Theme);
-        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
+        foreach (var window in new[] { this, _settingsWindow }.OfType<Window>())
+            WindowEffects.ApplyFrame(window, ((SolidColorBrush)Theme.LineStrong).Color);
         if (_config == null) return;
         ApplyModeColors();
         Composer.BorderBrush = InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;
@@ -272,7 +273,7 @@ public partial class MainWindow
         FileActions.OpenFolder(_toolContext.WorkingDirectory);
     }
 
-    void ModePill_Click(object s, RoutedEventArgs e) => ShowSettings();
+    void ModePill_Click(object s, RoutedEventArgs e) => OpenSettings(SandboxToggle);
 
     void ConfirmToggle_Checked(object s, RoutedEventArgs e)
     {
@@ -502,7 +503,6 @@ public partial class MainWindow
         {
             if (Keyboard.FocusedElement is TextBox box && ChatList.IsAncestorOf(box)) return;
             if (IsShown(PictureOverlay)) ClosePicture();
-            else if (IsShown(SettingsOverlay)) CloseSettings();
             else if (IsShown(FlyoutLayer)) CloseFlyout();
             else if (_overlayOpen) CloseOverlay();
             else if (VoiceShown) CancelVoice();
@@ -514,7 +514,7 @@ public partial class MainWindow
             e.Handled = true;
             return;
         }
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         const ModifierKeys ctrl = ModifierKeys.Control, ctrlShift = ModifierKeys.Control | ModifierKeys.Shift, none = ModifierKeys.None;
         Action? action = (Keyboard.Modifiers, key) switch
         {

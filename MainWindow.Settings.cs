@@ -12,6 +12,8 @@ public partial class MainWindow
     private readonly Dictionary<string, BannerInfo> _banners = new();
     private readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
     private AgentProvider _settingsProvider;
+    private Window? _settingsWindow;
+    private FrameworkElement? _settingsPage;
     private CancellationTokenSource? _signIn;
     private DispatcherTimer? _toastTimer;
     private Action? _toastAction;
@@ -115,7 +117,11 @@ public partial class MainWindow
             ShowToast("Остановите агента, чтобы изменить настройки", ToastKind.Warning);
             return;
         }
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null)
+        {
+            _settingsWindow.Activate();
+            return;
+        }
         CloseFlyout();
         CloseOverlay();
         SettingsError.Visibility = Visibility.Collapsed;
@@ -142,6 +148,7 @@ public partial class MainWindow
         ImageModelButton.Tag = _imageModels ?? [(string)ImageModelButton.Content];
         SubagentsToggle.IsChecked = _config.UseSubagents;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
+        SandboxToggle.IsChecked = _config.Sandbox;
         ThemeChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _state.Theme ?? "dark")).IsChecked = true;
         SubagentTaskLimitBox.Text = _config.SubagentTaskLimit.ToString(CultureInfo.InvariantCulture);
         SubagentStepLimitBox.Text = _config.SubagentStepLimit.ToString(CultureInfo.InvariantCulture);
@@ -157,19 +164,58 @@ public partial class MainWindow
         _settingsProvider = _config.Provider;
         ProviderChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsProvider)).IsChecked = true;
         ShowProviderSettings();
-        SettingsOverlay.Visibility = Visibility.Visible;
-        if (Theme.AnimationsEnabled) SettingsOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
+        (SettingsPage.Parent as Panel)?.Children.Remove(SettingsPage);
+        SettingsPage.Visibility = Visibility.Visible;
+        var window = _settingsWindow = new Window
+        {
+            Title = "Настройки — Sharp Agent", Owner = this, Width = 920, Height = 660, MinWidth = 700, MinHeight = 480, ShowInTaskbar = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, FontFamily = FontFamily, FontSize = FontSize, UseLayoutRounding = true,
+            Content = SettingsPage,
+        };
+        // The page stays declared in MainWindow.xaml, so its ElementName bindings keep resolving through this window's namescope.
+        NameScope.SetNameScope(window, NameScope.GetNameScope(this));
+        window.SetResourceReference(BackgroundProperty, "Bg");
+        window.SetResourceReference(ForegroundProperty, "Text");
+        window.SourceInitialized += (_, _) => WindowEffects.ApplyFrame(window, ((SolidColorBrush)Theme.LineStrong).Color);
+        window.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Escape) return;
+            e.Handled = true;
+            window.Close();
+        };
+        window.Closed += (_, _) =>
+        {
+            window.Content = null;
+            _settingsWindow = null;
+            KeyPasswordBox.Clear();
+            KeyTextBox.Clear();
+            VoiceKeyBox.Clear();
+            _settingsKeys.Clear();
+            InputBox.Focus();
+        };
+        if (focus == null && _provider == null)
+            focus = _settingsProvider == AgentProvider.ChatGpt ? ChatGptSignInButton : KeyPasswordBox;
+        ShowSettingsPage(focus ?? _settingsPage ?? SettingsGeneral);
         Dispatcher.InvokeAsync(() =>
         {
-            if (focus != null) focus.BringIntoView();
-            else
-            {
-                SettingsScroll.ScrollToTop();
-                focus = _settingsProvider == AgentProvider.ChatGpt ? (_chatGpt.PlanAllowed ? DefaultModelButton : ChatGptSignInButton)
-                    : KeyPasswordBox.Password.Length == 0 ? KeyPasswordBox : DefaultModelButton;
-            }
-            focus.Focus();
+            focus?.BringIntoView();
+            (focus ?? SettingsNav.Children.OfType<RadioButton>().First(nav => nav.IsChecked == true)).Focus();
         }, DispatcherPriority.Input);
+        window.ShowDialog();
+    }
+
+    private void ShowSettingsPage(FrameworkElement target)
+    {
+        var page = SettingsFields.Children.OfType<FrameworkElement>().First(page => page == target || page.IsAncestorOf(target));
+        SettingsNav.Children.OfType<RadioButton>().First(nav => Equals(nav.Tag, page.Name)).IsChecked = true;
+    }
+
+    private void SettingsNav_Checked(object sender, RoutedEventArgs e)
+    {
+        var name = (string)((RadioButton)sender).Tag;
+        foreach (var page in SettingsFields.Children.OfType<FrameworkElement>()) page.Visibility = VisibleIf(page.Name == name);
+        _settingsPage = (FrameworkElement)FindName(name);
+        SettingsScroll.ScrollToTop();
     }
 
     private void ProviderPill_Checked(object sender, RoutedEventArgs e)
@@ -267,7 +313,7 @@ public partial class MainWindow
             if (_config.Provider == AgentProvider.ChatGpt) ApplyProvider();
             else if (_chatGpt.PlanAllowed && _cts == null) SwitchProvider(AgentProvider.ChatGpt);
             bool allowed = _chatGpt.PlanAllowed;
-            if (!IsShown(SettingsOverlay))
+            if (_settingsWindow == null)
                 ShowToast(allowed ? "Подписка ChatGPT подключена" + (_chatGpt.Label is { } label ? ": " + label : "")
                     : "Вход выполнен, но Sharp Agent не получил разрешения использовать подписку ChatGPT", allowed ? ToastKind.Success : ToastKind.Warning);
             else if (_settingsProvider == AgentProvider.ChatGpt && allowed) TestKey_Click(this, new RoutedEventArgs());
@@ -276,7 +322,7 @@ public partial class MainWindow
         catch (Exception ex) when (ex is ApiException or IOException or System.Net.Sockets.SocketException or InvalidOperationException)
         {
             var text = ex is ApiException ? ex.Message : "Не удалось войти в ChatGPT: " + ex.Message + " Попробуйте ещё раз.";
-            if (IsShown(SettingsOverlay)) SetTestResult(text, false);
+            if (_settingsWindow != null) SetTestResult(text, false);
             else ShowToast(text, ToastKind.Error);
         }
         finally
@@ -301,7 +347,7 @@ public partial class MainWindow
 
     private async void ChatGptSignOut_Click(object sender, RoutedEventArgs e)
     {
-        if (!DarkDialog.Ask(this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", "Выйти")) return;
+        if (!DarkDialog.Ask(_settingsWindow ?? this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", "Выйти")) return;
         ChatGptSignOutButton.IsEnabled = false;
         bool revoked;
         try { revoked = await _chatGpt.SignOutAsync(); }
@@ -315,7 +361,7 @@ public partial class MainWindow
         _state.ModelCatalogs?.Remove(AgentProvider.ChatGpt);
         _state.Save();
         if (_config.Provider == AgentProvider.ChatGpt && _cts == null) ApplyProvider();
-        if (IsShown(SettingsOverlay))
+        if (_settingsWindow != null)
         {
             KeepProviderInput();
             ShowProviderSettings();
@@ -325,15 +371,7 @@ public partial class MainWindow
                 ToastKind.Warning, "Открыть", () => FileActions.OpenUrl(ChatGptClient.UsageUrl));
     }
 
-    private void CloseSettings()
-    {
-        SettingsOverlay.Visibility = Visibility.Collapsed;
-        KeyPasswordBox.Clear();
-        KeyTextBox.Clear();
-        VoiceKeyBox.Clear();
-        _settingsKeys.Clear();
-        InputBox.Focus();
-    }
+    private void CloseSettings() => _settingsWindow?.Close();
 
     private void SettingsCancel_Click(object sender, RoutedEventArgs e) => CloseSettings();
 
@@ -379,7 +417,7 @@ public partial class MainWindow
             if (provider == AgentProvider.OpenRouter && client is ChatApiClient router) await router.CheckOpenRouterKeyAsync(cts.Token);
             var models = await client.ListModelsAsync(cts.Token);
             RememberModelList(provider, models);
-            if (provider != _settingsProvider || !IsShown(SettingsOverlay)) return;
+            if (provider != _settingsProvider || _settingsWindow == null) return;
             var count = models.Count(m => m.Chat);
             SetTestResult((provider == AgentProvider.ChatGpt ? "Вход выполнен." : "Ключ принят.") + (count > 0 ? $" Доступно моделей: {count}." : ""), true);
             if (count > 0) DefaultModelButton.Tag = _modelLists[provider];
@@ -387,7 +425,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            if (provider != _settingsProvider || !IsShown(SettingsOverlay)) return;
+            if (provider != _settingsProvider || _settingsWindow == null) return;
             SetTestResult(ex switch
             {
                 ApiException => ex.Message,
@@ -448,6 +486,8 @@ public partial class MainWindow
             Fail("«Лимит в месяц» — число миллионов токенов, например 50. Чтобы снять лимит, оставьте поле пустым.", MonthLimitBox);
         if (invalid != null)
         {
+            ShowSettingsPage(invalid);
+            SettingsScroll.UpdateLayout();
             invalid.BringIntoView();
             invalid.Focus();
             return;
@@ -457,6 +497,7 @@ public partial class MainWindow
         {
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
             ["AGENT_COMPUTER_USE"] = ComputerUseToggle.IsChecked == true ? "true" : "false",
+            ["AGENT_SANDBOX"] = SandboxToggle.IsChecked == true ? "true" : "false",
             ["AGENT_SUBAGENT_TASK_LIMIT"] = subagentTasks.ToString(CultureInfo.InvariantCulture),
             ["AGENT_SUBAGENT_STEP_LIMIT"] = subagentSteps.ToString(CultureInfo.InvariantCulture),
             ["TOOKEN_BASE_URL"] = url, ["TOOKEN_IMAGE_MODEL"] = ImageModelButton.Content as string is { Length: > 0 } image ? image : AppConfig.DefaultImageModel,

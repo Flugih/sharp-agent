@@ -261,6 +261,16 @@
             </Style.Triggers>
         </Style>
 
+        <Style x:Key="NavTab" TargetType="RadioButton" BasedOn="{StaticResource PillToggle}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+            <Setter Property="GroupName" Value="SettingsNav"/>
+        </Style>
+
         <Style x:Key="IconToggle" TargetType="ToggleButton" BasedOn="{StaticResource PillToggle}">
             <Setter Property="Width" Value="32"/>
             <Setter Property="Background" Value="{DynamicResource Bg}"/>

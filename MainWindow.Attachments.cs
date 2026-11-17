@@ -17,7 +17,7 @@ public partial class MainWindow
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
         _dropHideTimer?.Stop();
-        if (IsShown(SettingsOverlay))
+        if (_settingsWindow != null)
         {
             e.Effects = DragDropEffects.None;
             return;
@@ -50,7 +50,7 @@ public partial class MainWindow
         HideDropOverlay();
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
-        if (!accepted || IsShown(SettingsOverlay)) return;
+        if (!accepted || _settingsWindow != null) return;
         var paths = e.Data.GetData(DataFormats.FileDrop) as string[] ?? SaveVirtualFiles(e.Data);
         if (paths.Length == 0) return;
         _ = AddAttachmentsAsync(paths);
@@ -95,7 +95,7 @@ public partial class MainWindow
 
     void Attach_Click(object sender, RoutedEventArgs e)
     {
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Прикрепить файлы", Multiselect = true, CheckFileExists = true };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
         if (dialog.ShowDialog(this) == true) _ = AddAttachmentsAsync(dialog.FileNames);
@@ -104,7 +104,7 @@ public partial class MainWindow
 
     void AttachFolder_Click(object sender, RoutedEventArgs e)
     {
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Прикрепить папку", Multiselect = true };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
         if (dialog.ShowDialog(this) == true) _ = AddAttachmentsAsync(dialog.FolderNames);

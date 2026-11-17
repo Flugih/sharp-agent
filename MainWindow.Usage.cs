@@ -71,7 +71,7 @@ public partial class MainWindow
 
     private void Balance_Click(object sender, RoutedEventArgs e)
     {
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         if (FlyoutShows(UsageCard)) CloseFlyout();
         else if (_provider == null) ShowToast(NotReadyText(), ToastKind.Warning);
         else if (_config.Provider == AgentProvider.Tooken && _usageUnavailable) ShowToast("Этот сервер не сообщает баланс и расход");

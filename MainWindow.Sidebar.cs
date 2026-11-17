@@ -91,7 +91,7 @@ public partial class MainWindow
 
     void ToggleSidebar()
     {
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         bool expand = !SidebarExpanded;
         if (Narrow) _overlayOpen = expand;
         else
@@ -354,7 +354,7 @@ public partial class MainWindow
 
     void StartNewChat()
     {
-        if (IsShown(SettingsOverlay)) return;
+        if (_settingsWindow != null) return;
         if (_cts != null)
         {
             ShowToast("Агент работает. Остановите его (Esc), чтобы начать новый чат", ToastKind.Warning);
