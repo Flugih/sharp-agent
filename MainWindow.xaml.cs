@@ -173,8 +173,6 @@ public partial class MainWindow
     {
         _agent.MaxTokens = _config.MaxTokens;
         _agent.UseSubagents = _config.UseSubagents;
-        _agent.SubagentTaskLimit = _config.SubagentTaskLimit;
-        _agent.SubagentStepLimit = _config.SubagentStepLimit;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
         _toolContext.ComputerUse = _config.ComputerUse;
         ApplyWorkDir();
@@ -197,8 +195,7 @@ public partial class MainWindow
     public void ApplyTheme()
     {
         Theme.Apply(Application.Current.Resources, _state.Theme);
-        foreach (var window in new[] { this, _settingsWindow }.OfType<Window>())
-            WindowEffects.ApplyFrame(window, ((SolidColorBrush)Theme.LineStrong).Color);
+        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
         if (_config == null) return;
         ApplyModeColors();
         Composer.BorderBrush = InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;
@@ -273,7 +270,7 @@ public partial class MainWindow
         FileActions.OpenFolder(_toolContext.WorkingDirectory);
     }
 
-    void ModePill_Click(object s, RoutedEventArgs e) => OpenSettings(SandboxToggle);
+    void ModePill_Click(object s, RoutedEventArgs e) => ShowSettings();
 
     void ConfirmToggle_Checked(object s, RoutedEventArgs e)
     {
@@ -503,6 +500,7 @@ public partial class MainWindow
         {
             if (Keyboard.FocusedElement is TextBox box && ChatList.IsAncestorOf(box)) return;
             if (IsShown(PictureOverlay)) ClosePicture();
+            else if (SettingsOpen) CloseSettings();
             else if (IsShown(FlyoutLayer)) CloseFlyout();
             else if (_overlayOpen) CloseOverlay();
             else if (VoiceShown) CancelVoice();
@@ -514,7 +512,7 @@ public partial class MainWindow
             e.Handled = true;
             return;
         }
-        if (_settingsWindow != null) return;
+        if (SettingsOpen) return;
         const ModifierKeys ctrl = ModifierKeys.Control, ctrlShift = ModifierKeys.Control | ModifierKeys.Shift, none = ModifierKeys.None;
         Action? action = (Keyboard.Modifiers, key) switch
         {

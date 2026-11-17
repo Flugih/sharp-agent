@@ -7,7 +7,6 @@ public sealed class AppConfig
     public const string DefaultBaseUrl = "https://tooken.club/v1";
     public const string DefaultModel = "claude-sonnet-5-5";
     public const string DefaultImageModel = "gpt-image-2";
-    public const int DefaultSubagentTaskLimit = 4, DefaultSubagentStepLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
     public static readonly string[] EffortLevels = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     public AgentProvider Provider { get; private init; }
@@ -22,8 +21,6 @@ public sealed class AppConfig
     public bool Sandbox { get; private init; }
     public bool UseSubagents { get; private init; }
     public bool ComputerUse { get; private init; }
-    public int SubagentTaskLimit { get; private init; } = DefaultSubagentTaskLimit;
-    public int SubagentStepLimit { get; private init; } = DefaultSubagentStepLimit;
     public int? MaxTokens { get; private init; }
     public long? DayLimit { get; private init; }
     public long? MonthLimit { get; private init; }
@@ -40,7 +37,6 @@ public sealed class AppConfig
         try { if (File.Exists(AppPaths.EnvPath)) vars = DotEnv.Parse(AppPaths.EnvPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { loadError = ex.Message; }
         string? Get(string key) => vars.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.Trim() : null;
-        int ReadLimit(string key, int fallback, int max) => int.TryParse(Get(key), out var value) ? Math.Clamp(value, 1, max) : fallback;
         bool IsTrue(string key) => new[] { "true", "1", "yes", "да" }.Contains(Get(key), StringComparer.OrdinalIgnoreCase);
         var provider = Enum.TryParse<AgentProvider>(Get("AGENT_PROVIDER"), true, out var parsed) && Enum.IsDefined(parsed) ? parsed : AgentProvider.Tooken;
         bool sandbox = IsTrue("AGENT_SANDBOX");
@@ -68,8 +64,6 @@ public sealed class AppConfig
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
-            SubagentTaskLimit = ReadLimit("AGENT_SUBAGENT_TASK_LIMIT", DefaultSubagentTaskLimit, MaxSubagentTasks),
-            SubagentStepLimit = ReadLimit("AGENT_SUBAGENT_STEP_LIMIT", DefaultSubagentStepLimit, MaxSubagentSteps),
             MaxTokens = int.TryParse(Get("TOOKEN_MAX_TOKENS"), out var mt) && mt > 0 ? mt : null,
             DayLimit = ParseMillions(Get("AGENT_DAY_LIMIT_MLN")),
             MonthLimit = ParseMillions(Get("AGENT_MONTH_LIMIT_MLN")),
@@ -148,8 +142,6 @@ public sealed class AppConfig
         # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd отключены)
         AGENT_SANDBOX=false
         AGENT_USE_SUBAGENTS=false
-        AGENT_SUBAGENT_TASK_LIMIT={DefaultSubagentTaskLimit}
-        AGENT_SUBAGENT_STEP_LIMIT={DefaultSubagentStepLimit}
         # true — агент управляет программами на экране и смотрит скриншоты (скриншоты расходуют много токенов)
         AGENT_COMPUTER_USE=false
         # Свои лимиты расхода в миллионах токенов баланса Tooken Club (пусто — без лимита)

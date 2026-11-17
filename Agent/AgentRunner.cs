@@ -19,7 +19,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     const string ElapsedField = "elapsed_ms", StopField = "stopped", SentAtField = "sent_at";
     const string TruncatedCallReply = "Ошибка: ответ оборвался на лимите токенов, аргументы вызова пришли не полностью — действие не выполнено. " +
         "Повтори его меньшими частями (например, write_file по частям с append=true).";
-    const int ImageTokens = 1_000, MaxInputTokens = 80_000;
+    const int ImageTokens = 1_000;
 
     readonly bool delegated;
     readonly List<JsonNode> _history = [];
@@ -337,9 +337,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     int InputBudget(string model)
     {
-        long budget = Math.Min(delegated ? SubagentInputTokens : MaxInputTokens, _inputCaps.GetValueOrDefault(model, int.MaxValue));
-        if (ModelContextTokens?.Invoke(model) is > 0 and var window) budget = Math.Min(budget, window - Math.Min(MaxTokens ?? 8_000, window / 2));
-        return (int)budget;
+        long window = ModelContextTokens?.Invoke(model) is > 0 and var known ? known : DefaultContextTokens;
+        long budget = Math.Min(window - Math.Min(MaxTokens ?? 8_000, window / 2), _inputCaps.GetValueOrDefault(model, int.MaxValue));
+        return (int)(delegated ? Math.Min(budget, SubagentInputTokens) : budget);
     }
 
     static bool Mentions(string? text, params string[] hints) =>
@@ -392,6 +392,11 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         if (finalWorkerStep) note += "\n\n[Последний шаг субагента. Подведи итог по собранным данным и укажи, чего не удалось проверить.]";
         var project = await ProjectContextAsync(Math.Clamp(room * 3 / (harder ? 12 : 5), 0, harder ? 2200 : 11_000), ct);
         room -= ((note?.Length ?? 0) + (project?.Length ?? 0)) / 3;
+        int start = Math.Max(0, SummaryStart());
+        if (!delegated && HistoryCompressor.EstimateAll(_history.Skip(start)) > room * (harder ? 0.5 : CompactAt) && await CompactAsync(model, room, ct))
+            start = SummaryStart();
+        var summary = start > 0 ? SummaryMessage(start, currentUser) : null;
+        if (summary != null) room -= HistoryCompressor.Estimate(summary);
         int completedBefore = currentUser;
         for (int i = _history.Count - 1, retained = 0; i > currentUser; i--)
             if (Role(_history[i]) == "assistant" && _history[i]["tool_calls"] is JsonArray { Count: > 0 } && ++retained == 2)
@@ -409,7 +414,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             shortened |= !ReferenceEquals(node, compact);
             return compact;
         }
-        for (int i = 0; i < _history.Count; i++)
+        for (int i = start; i < _history.Count; i++)
         {
             var node = WithVerificationSummary(_history[i]);
             // Current-task results stay whole unless repeated later: the model keeps what it read and the prompt prefix stays cacheable.
@@ -439,11 +444,16 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             projected.Add(node);
         }
         if (HistoryCompressor.EstimateAll(projected) > room)
-            for (int i = currentUser + 1; i < completedBefore; i++)
-                if (Role(projected[i]) == "tool") projected[i] = Shorten(projected[i]);
+            for (int i = Math.Max(currentUser + 1, start); i < completedBefore; i++)
+                if (Role(projected[i - start]) == "tool") projected[i - start] = Shorten(projected[i - start]);
         bool compress = harder || HistoryCompressor.EstimateAll(projected) > room;
         IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, room, harder || delegated) : projected;
         var list = new List<JsonNode> { system };
+        if (summary != null)
+        {
+            list.Add(summary);
+            if (Role(source.FirstOrDefault()) == "user") list.Add(new JsonObject { ["role"] = "assistant", ["content"] = "Понял, продолжаю с учётом сводки." });
+        }
         int shown = 0;
         foreach (var node in source)
         {
@@ -496,7 +506,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     JsonObject SystemMessage()
     {
-        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{SubagentTaskLimit}|{SubagentStepLimit}|{ClarifyAsync != null}|{tools.Context.ComputerUse}";
+        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{ClarifyAsync != null}|{tools.Context.ComputerUse}";
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {

@@ -319,9 +319,9 @@
                 </StackPanel>
             </Grid>
 
-            <Grid x:Name="SettingsPage" Visibility="Collapsed" KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle">
+            <Grid x:Name="SettingsPage" Grid.ColumnSpan="2" Margin="0,44,0,0" Visibility="Collapsed" Background="{DynamicResource Bg}" KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.ControlTabNavigation="Cycle">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="220"/>
+                    <ColumnDefinition Width="240"/>
                     <ColumnDefinition/>
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
@@ -331,11 +331,34 @@
 
                 <Border Grid.RowSpan="2" Background="{DynamicResource SidebarBg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0" Padding="12,20,12,12">
                     <StackPanel x:Name="SettingsNav" AutomationProperties.Name="Разделы настроек">
-                        <TextBlock Text="Настройки" FontSize="20" FontWeight="SemiBold" Margin="12,0,0,16"/>
-                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsGeneral" Content="Общие"/>
-                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsProviders" Content="Провайдеры"/>
-                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsAgent" Content="Агент"/>
-                        <RadioButton Style="{StaticResource NavTab}" Checked="SettingsNav_Checked" Tag="SettingsLimits" Content="Лимиты"/>
+                        <DockPanel Margin="0,0,0,12">
+                            <Button Style="{StaticResource IconButton}" Content="&#xE72B;" Width="32" Height="32" FontSize="13" ToolTip="Вернуться к чату без сохранения (Esc)" AutomationProperties.Name="Закрыть настройки" Click="SettingsCancel_Click"/>
+                            <TextBlock Text="Настройки" FontSize="20" FontWeight="SemiBold" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsGeneral" Click="SettingsNav_Click" AutomationProperties.Name="Общие">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE713;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Text="Общие" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsProviders" Click="SettingsNav_Click" AutomationProperties.Name="Провайдеры">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE774;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Text="Провайдеры" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsAgent" Click="SettingsNav_Click" AutomationProperties.Name="Агент">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE99A;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Text="Агент" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource NavButton}" CommandParameter="SettingsLimits" Click="SettingsNav_Click" AutomationProperties.Name="Лимиты">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xEC4A;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Text="Лимиты" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
 
@@ -355,9 +378,6 @@
                                 <RadioButton Tag="light" Content="Светлая"/>
                                 <RadioButton Tag="system" Content="Как в Windows"/>
                             </WrapPanel>
-                            <TextBlock Style="{StaticResource SectionTitle}" Text="Режим работы" Margin="0,24,0,12"/>
-                            <ToggleButton x:Name="SandboxToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Content="Песочница" ToolTip="Агент работает только внутри папки программы" AutomationProperties.Name="Песочница"/>
-                            <TextBlock Style="{StaticResource FieldHint}" Text="Агент работает только внутри папки программы: команды PowerShell и cmd, скрипты плагинов и управление компьютером отключены. Без песочницы агенту доступны все файлы пользователя, без прав администратора."/>
                         </StackPanel>
                         <StackPanel x:Name="SettingsProviders" Visibility="Collapsed">
                             <TextBlock Style="{StaticResource SectionTitle}" Text="Провайдеры" Margin="0,0,0,12"/>
@@ -443,20 +463,7 @@
                         <StackPanel x:Name="SettingsAgent" Visibility="Collapsed">
                             <TextBlock Style="{StaticResource SectionTitle}" Text="Агент" Margin="0,0,0,12"/>
                             <ToggleButton x:Name="SubagentsToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Content="Использовать субагентов" ToolTip="Агент может поручать независимые проверки и анализ субагентам" AutomationProperties.Name="Использовать субагентов"/>
-                            <Grid IsEnabled="{Binding IsChecked, ElementName=SubagentsToggle}" Margin="0,4,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition/>
-                                    <ColumnDefinition/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Margin="0,0,6,0">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Поручений на запрос"/>
-                                    <TextBox x:Name="SubagentTaskLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Поручений на запрос"/>
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Margin="6,0,0,0">
-                                    <TextBlock Style="{StaticResource FieldLabel}" Text="Шагов на поручение"/>
-                                    <TextBox x:Name="SubagentStepLimitBox" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Шагов на поручение"/>
-                                </StackPanel>
-                            </Grid>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="Сколько поручений и шагов нужно на задачу, агент решает сам."/>
 
                             <ToggleButton x:Name="ComputerUseToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Margin="0,12,0,0" Content="Управление компьютером" ToolTip="Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам" AutomationProperties.Name="Управление компьютером"/>
                             <TextBlock Style="{StaticResource FieldHint}" Text="Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно."/>
