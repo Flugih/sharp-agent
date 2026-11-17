@@ -436,6 +436,9 @@
                                     </StackPanel>
                                 </Grid>
 
+                                <ToggleButton x:Name="ComputerUseToggle" Style="{StaticResource PillToggle}" HorizontalAlignment="Left" Margin="0,12,0,0" Content="Управление компьютером" ToolTip="Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам" AutomationProperties.Name="Управление компьютером"/>
+                                <TextBlock Style="{StaticResource FieldHint}" Text="Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно."/>
+
                                 <TextBlock Style="{StaticResource FieldLabel}" Text="Плагины" Margin="0,12,0,6"/>
                                 <TextBlock x:Name="PluginsText" Style="{StaticResource FieldHint}" Margin="0,0,0,4"/>
                                 <TextBlock Style="{StaticResource FieldHint}">

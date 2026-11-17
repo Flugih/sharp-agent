@@ -80,7 +80,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     void OnRetrying(int attempt, int total) => Retrying?.Invoke(attempt, total);
 
     public bool CanContinue => _history.LastOrDefault() is JsonObject last && (Role(last) is "user" or "tool" ||
-        Role(last) == "assistant" && last["tool_calls"] == null && string.IsNullOrWhiteSpace(ExtractText(last["content"])));
+        Role(last) == "assistant" && last["tool_calls"] == null && (string.IsNullOrWhiteSpace(ExtractText(last["content"])) || ReviewOf(last) != null));
 
     public void Open(string path)
     {
@@ -197,7 +197,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             var calls = message["tool_calls"] is JsonArray { Count: > 0 } array ? array : null;
             bool blockedCalls = finalWorkerStep && calls != null;
             if (blockedCalls) calls = null;
-            TimeSpan? elapsed = calls == null ? _turnClock.Elapsed : null;
+            var review = calls == null && !string.IsNullOrWhiteSpace(text) && result.FinishReason != "length" ? ReviewNote() : null;
+            TimeSpan? elapsed = calls == null && review == null ? _turnClock.Elapsed : null;
             if (calls == null) message.Remove("tool_calls");
             else
             {
@@ -212,6 +213,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 meta["request_id"] = result.RequestId;
             }
             if (elapsed is { } time) meta[ElapsedField] = (long)time.TotalMilliseconds;
+            if (review != null) meta[ReviewField] = review;
             if (result.Progress?.Reasoning is { } reasoning) meta["reasoning"] = reasoning;
             if (progress.Commentary != null) meta["commentary"] = progress.Commentary;
             if (result.Phase != null) meta["phase"] = result.Phase;
@@ -250,6 +252,11 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
             if (calls == null)
             {
+                if (review != null)
+                {
+                    Notice?.Invoke("Агент проверяет результат перед завершением.");
+                    continue;
+                }
                 if (string.IsNullOrWhiteSpace(text))
                     Warning?.Invoke("Модель вернула пустой ответ. Попробуйте переформулировать запрос или выбрать другую модель" +
                                     $" (причина остановки: {result.FinishReason ?? "не указана"}).");
@@ -378,8 +385,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         var shownImages = withImages && currentUser >= 0 && _history[currentUser] is JsonObject active
             ? Attachment.ListFrom(active).Where(a => a.Kind == AttachmentKind.Image).TakeLast(8).Select(a => (active, a.Path)).ToHashSet()
             : [];
+        var screenshot = withImages ? LatestScreenshot(currentUser) : null;
         int room = InputBudget(model) - HistoryCompressor.Estimate(system) - HistoryCompressor.Estimate(definitions) -
-                   shownImages.Count * ImageTokens;
+                   (shownImages.Count + (screenshot != null ? 1 : 0)) * ImageTokens;
         var note = RequestTail(harder);
         if (finalWorkerStep) note += "\n\n[Последний шаг субагента. Подведи итог по собранным данным и укажи, чего не удалось проверить.]";
         var project = await ProjectContextAsync(Math.Clamp(room * 3 / (harder ? 12 : 5), 0, harder ? 2200 : 11_000), ct);
@@ -393,16 +401,19 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
         bool omitReasoning = definitions.Count == 0 || !_toolReasoningModels.Contains(model);
         bool shortened = false;
+        var superseded = SupersededResults(currentUser);
         var projected = new List<JsonNode>(_history.Count);
+        JsonNode Shorten(JsonNode node)
+        {
+            var compact = HistoryCompressor.Shorten(node);
+            shortened |= !ReferenceEquals(node, compact);
+            return compact;
+        }
         for (int i = 0; i < _history.Count; i++)
         {
             var node = WithVerificationSummary(_history[i]);
-            if (i < completedBefore && Role(node) == "tool")
-            {
-                var compact = HistoryCompressor.Shorten(node);
-                shortened |= !ReferenceEquals(node, compact);
-                node = compact;
-            }
+            // Current-task results stay whole unless repeated later: the model keeps what it read and the prompt prefix stays cacheable.
+            if (Role(node) == "tool" && (i < currentUser || superseded.Contains(Str(node["tool_call_id"]) ?? ""))) node = Shorten(node);
             if (node is JsonObject message && Role(message) == "assistant")
             {
                 bool sameModel = FromModel(message, model);
@@ -427,6 +438,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
             projected.Add(node);
         }
+        if (HistoryCompressor.EstimateAll(projected) > room)
+            for (int i = currentUser + 1; i < completedBefore; i++)
+                if (Role(projected[i]) == "tool") projected[i] = Shorten(projected[i]);
         bool compress = harder || HistoryCompressor.EstimateAll(projected) > room;
         IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, room, harder || delegated) : projected;
         var list = new List<JsonNode> { system };
@@ -447,19 +461,42 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     foreach (var key in new[] { "commentary", "phase" })
                         if (meta[key] is { } value) clean[key] = value.DeepClone();
                 list.Add(clean);
+                if (Str(meta[ReviewField]) is { } review) list.Add(new JsonObject { ["role"] = "user", ["content"] = review });
             }
             else list.Add(node);
         }
+        if (screenshot is var (id, path) && list.FindIndex(node => Str(node["tool_call_id"]) == id) is >= 0 and var at &&
+            await GetImageAsync(path, ct) is { } url)
+        {
+            while (Role(list.ElementAtOrDefault(at + 1)) == "tool") at++;
+            list.Insert(at + 1, new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray
+                {
+                    new JsonObject { ["type"] = "text", ["text"] = $"[Программа: скриншот {path}]" },
+                    new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = url } },
+                },
+            });
+            shown++;
+        }
         AddContext(list, project == null ? null : "\n\n" + project, "user");
+        if ((compress || shortened) && PlanNote() is { } plan) note += "\n\n[Программа: часть шагов свёрнута]\n" + plan;
         AddContext(list, note, "tool", "user");
         if (delegated && HistoryCompressor.EstimateAll(list) + HistoryCompressor.Estimate(definitions) + shown * ImageTokens > InputBudget(model))
             throw new ApiException("Поручение не помещается в бюджет контекста субагента. Сузьте задачу или передайте меньше вложений.");
         return (list, shown, compress || shortened);
     }
 
+    (string Id, string Path)? LatestScreenshot(int currentUser) =>
+        _history.Skip(currentUser + 1).LastOrDefault(m => Role(m) == "tool" &&
+            Str(m["content"])?.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) == true) is { } shot
+            ? (Str(shot["tool_call_id"]) ?? "", Str(shot["content"])![ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim())
+            : null;
+
     JsonObject SystemMessage()
     {
-        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{SubagentTaskLimit}|{SubagentStepLimit}|{ClarifyAsync != null}";
+        var key = $"{tools.Context.WorkingDirectory}|{tools.Context.SandboxRoot}|{DateTime.Now:yyyy-MM-dd}|{UseSubagents}|{SubagentTaskLimit}|{SubagentStepLimit}|{ClarifyAsync != null}|{tools.Context.ComputerUse}";
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {
@@ -550,7 +587,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     if (reused) continue;
                     finished.Add(new(call.Id, call.Name, output, outcome.IsError, outcome.IsWarning, outcome.Diff) { Change = outcome.Change });
                     if (outcome.Restriction?.UnavailableShell == null && !ToolRegistry.IsReadOnly(call.Name) &&
-                        call.Name is not ("ask_user" or "delegate_tasks"))
+                        call.Name is not ("ask_user" or "delegate_tasks" or "update_plan"))
                         InvalidateReads(call);
                 }
                 Save();

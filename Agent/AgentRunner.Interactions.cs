@@ -37,7 +37,7 @@ partial class AgentRunner
 
     JsonArray Definitions()
     {
-        if (delegated || ClarifyAsync == null && !UseSubagents && _activePlugins.Count == 0) return tools.Definitions;
+        if (delegated) return tools.Definitions;
         var definitions = (JsonArray)tools.Definitions.DeepClone();
         if (_activePlugins.Count > 0 &&
             definitions.OfType<JsonObject>().FirstOrDefault(tool => JsonUtil.Str(tool["function"]?["name"]) == "use_plugin") is { } activate)
@@ -48,6 +48,7 @@ partial class AgentRunner
             else if (activate["function"]?["parameters"]?["properties"]?["name"] is JsonObject name)
                 name["enum"] = new JsonArray([.. available.Select(value => JsonValue.Create(value))]);
         }
+        definitions.Add(PlanDefinition.DeepClone());
         if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
         if (UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
         {
@@ -73,7 +74,7 @@ partial class AgentRunner
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
     {
-        if (delegated || call.Name is not ("ask_user" or "delegate_tasks"))
+        if (delegated || call.Name is not ("ask_user" or "delegate_tasks" or "update_plan"))
         {
             var shell = call.Name switch
             {
@@ -88,6 +89,7 @@ partial class AgentRunner
             return outcome;
         }
         if (ArgsOf(call) is not { } args) return new("Ошибка: проверь параметры вызова.", true);
+        if (call.Name == "update_plan") return UpdatePlan(args);
         if (call.Name == "delegate_tasks" && UseSubagents) return await DelegateAsync(args["tasks"] as JsonArray, ct);
         if (call.Name == "ask_user" && ClarifyAsync is { } ask &&
             TextArg(args["question"]) is { Length: <= 600 } question && args["choices"] is JsonArray { Count: >= 2 and <= 5 } choices)

@@ -345,9 +345,25 @@ public partial class MainWindow
             "read_log" => "Читаю журнал команды",
             "ask_user" => "Ожидаю ответа на уточнение",
             "delegate_tasks" => "Субагенты выполняют поручения",
+            "update_plan" => "Обновляю план",
+            ComputerTools.Name => ComputerActivity(Get("action")) + ((Get("element") ?? Get("path")) is { } target ? " " + OneLine(target) : ""),
             _ => "Выполняю " + tool,
         };
     }
+
+    static string ComputerActivity(string? action) => action switch
+    {
+        "launch" => "Запускаю",
+        "windows" => "Смотрю список окон",
+        "tree" => "Смотрю элементы окна",
+        "click" => "Нажимаю",
+        "type" => "Ввожу текст",
+        "keys" => "Нажимаю клавиши",
+        "screenshot" => "Делаю скриншот",
+        "wait" => "Жду",
+        "close" => "Закрываю окно",
+        _ => "Управляю программой",
+    };
 
     static (string Glyph, string Label) Describe(string tool) => tool switch
     {
@@ -371,6 +387,8 @@ public partial class MainWindow
         "run_plugin" => (Glyphs.Plugin, "Работа плагина"),
         "ask_user" => (Glyphs.Info, "Уточнение"),
         "delegate_tasks" => (Glyphs.Tool, "Поручение субагентам"),
+        "update_plan" => (Glyphs.Check, "План"),
+        ComputerTools.Name => (Glyphs.Open, "Управление программой"),
         _ => (Glyphs.Tool, tool),
     };
 
@@ -435,15 +453,30 @@ public partial class MainWindow
             "use_plugin" => TextChip(Get("name")),
             "read_log" => TextChip(Get("log_id"), mono: true),
             "run_plugin" => TextChip($"{Get("name")} · {Get("script")}"),
+            ComputerTools.Name => TextChip(OneLine($"{ComputerActivity(Get("action"))} {Get("element") ?? Get("path") ?? Get("text") ?? Get("window")}")),
             "delete_path" => TextChip(ShortName(Get("path"))),
             "move_path" or "copy_path" => TextChip($"{ShortName(Get("source"))} → {ShortName(Get("destination"))}"),
             "get_system_info" => null,
+            "update_plan" => TextChip(PlanProgress(argumentsJson)),
             _ => Get("path") is var path && ResolvePath(path) is { } full ? _links.FileChip(full, ShortName(path)) : TextChip(ShortName(path)),
         };
         if (element == null) return null;
         element.Margin = new(8, 0, 0, 0);
         if (element is not Button) element.ToolTip = Shorten(PrettyJson(argumentsJson), 800);
         return element;
+    }
+
+    static string? PlanProgress(string argumentsJson)
+    {
+        try
+        {
+            if ((JsonNode.Parse(argumentsJson)?["items"] as JsonArray)?.OfType<JsonObject>().ToList() is not { Count: > 0 } items) return null;
+            var current = items.FirstOrDefault(item => JsonUtil.Str(item["status"]) == "in_progress") ??
+                          items.FirstOrDefault(item => JsonUtil.Str(item["status"]) != "done");
+            return $"{items.Count(item => JsonUtil.Str(item["status"]) == "done")}/{items.Count}" +
+                   (current != null ? " · " + OneLine(JsonUtil.Str(current["step"])) : "");
+        }
+        catch (JsonException) { return null; }
     }
 
     static FrameworkElement? TextChip(string? text, bool mono = false) => string.IsNullOrWhiteSpace(text) ? null : new Border
@@ -483,6 +516,9 @@ public partial class MainWindow
         }
         if (row.Name == "generate_image" && !isError && ImageTools.SavedPath(output) is { } image && File.Exists(image))
             row.Root.Children.Add(ImagePreview(image));
+        if (row.Name == ComputerTools.Name && !isError && output.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) &&
+            output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim() is var shot && File.Exists(shot))
+            row.Root.Children.Add(ViewedImage(shot));
         if (change != null) row.FilePath = change.Path;
         else if (row.FilePath != null && !isError && ResultPath(output) is { } exact) row.FilePath = exact;
         row.Output = output;
@@ -530,6 +566,30 @@ public partial class MainWindow
                 preview.Visibility = Visibility.Collapsed;
             }
         }
+    }
+
+    FrameworkElement ViewedImage(string path)
+    {
+        var chevron = new TextBlock { FontFamily = Theme.Icons, FontSize = 9, Text = Glyphs.ChevronRight, Margin = new(0, 1, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        var toggle = new Button
+        {
+            Style = Theme.Style("RowButton"), Padding = new(6, 3, 8, 3), HorizontalAlignment = HorizontalAlignment.Left, Margin = new(16, 4, 0, 0),
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children = { chevron, GlyphText(Glyphs.Picture, 13, Theme.TextMuted, new(0, 1, 6, 0), false), new TextBlock { Text = "Просмотрено изображение", FontSize = 13, Foreground = Theme.TextMuted } },
+            },
+        };
+        AutomationProperties.SetName(toggle, "Просмотрено изображение — показать скриншот");
+        var reveal = new RevealPanel();
+        toggle.Click += (_, _) =>
+        {
+            reveal.Child ??= ImagePreview(path);
+            reveal.IsOpen = !reveal.IsOpen;
+            chevron.Text = reveal.IsOpen ? Glyphs.ChevronDown : Glyphs.ChevronRight;
+            if (reveal.IsOpen) _autoScroll = false;
+        };
+        return new StackPanel { Children = { toggle, reveal } };
     }
 
     static string? ResultTarget(string output)
@@ -664,7 +724,8 @@ public partial class MainWindow
                         continue;
                     }
                     var elapsed = AgentRunner.ElapsedOf(m);
-                    if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt);
+                    if (AgentRunner.ReviewOf(m) != null) AddProgressItem(ProgressText(text, "Промежуточное сообщение"));
+                    else if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt);
                 }
                 if (AgentRunner.StopReasonOf(m) is { } stop) AddNotice(stop, warning: true, inProgress: false);
             }

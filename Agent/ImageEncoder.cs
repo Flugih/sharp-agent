@@ -58,7 +58,7 @@ public static class ImageEncoder
         return DataUrl("image/jpeg", Encode(new JpegBitmapEncoder { QualityLevel = 88 }, new FormatConvertedBitmap(source, PixelFormats.Bgr24, null, 0)));
     }
 
-    static byte[] Encode(BitmapEncoder encoder, BitmapSource source)
+    internal static byte[] Encode(BitmapEncoder encoder, BitmapSource source)
     {
         encoder.Frames.Add(BitmapFrame.Create(source));
         using var stream = new MemoryStream();

@@ -141,6 +141,7 @@ public partial class MainWindow
         ImageModelButton.Content = Value("TOOKEN_IMAGE_MODEL", AppConfig.DefaultImageModel);
         ImageModelButton.Tag = _imageModels ?? [(string)ImageModelButton.Content];
         SubagentsToggle.IsChecked = _config.UseSubagents;
+        ComputerUseToggle.IsChecked = _config.ComputerUse;
         SubagentTaskLimitBox.Text = _config.SubagentTaskLimit.ToString(CultureInfo.InvariantCulture);
         SubagentStepLimitBox.Text = _config.SubagentStepLimit.ToString(CultureInfo.InvariantCulture);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
@@ -454,6 +455,7 @@ public partial class MainWindow
         var values = new Dictionary<string, string?>
         {
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
+            ["AGENT_COMPUTER_USE"] = ComputerUseToggle.IsChecked == true ? "true" : "false",
             ["AGENT_SUBAGENT_TASK_LIMIT"] = subagentTasks.ToString(CultureInfo.InvariantCulture),
             ["AGENT_SUBAGENT_STEP_LIMIT"] = subagentSteps.ToString(CultureInfo.InvariantCulture),
             ["TOOKEN_BASE_URL"] = url, ["TOOKEN_IMAGE_MODEL"] = ImageModelButton.Content as string is { Length: > 0 } image ? image : AppConfig.DefaultImageModel,

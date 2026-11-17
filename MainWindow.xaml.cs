@@ -175,6 +175,7 @@ public partial class MainWindow
         _agent.SubagentTaskLimit = _config.SubagentTaskLimit;
         _agent.SubagentStepLimit = _config.SubagentStepLimit;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
+        _toolContext.ComputerUse = _config.ComputerUse;
         ApplyWorkDir();
         ApplyProvider();
         ApplyModeColors();

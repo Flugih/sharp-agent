@@ -9,25 +9,34 @@ public sealed record ToolOutcome(string Output, bool IsError, bool IsWarning = f
 public sealed class ToolRegistry
 {
     const int MaxToolOutputChars = 100_000;
-    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin"];
+    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name];
     static readonly HashSet<string> ReadOnly =
         ["read_file", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin"];
     static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано"];
     readonly Dictionary<string, AgentTool> _byName;
-    readonly JsonArray _allDefinitions, _sandboxDefinitions;
+    readonly List<AgentTool> _tools;
+    readonly Dictionary<(bool Sandbox, bool Computer), JsonArray> _definitions = [];
 
     public ToolContext Context { get; }
 
-    public JsonArray Definitions => Context.SandboxRoot != null ? _sandboxDefinitions : _allDefinitions;
+    public JsonArray Definitions
+    {
+        get
+        {
+            var key = (Sandbox: Context.SandboxRoot != null, Computer: Context.ComputerUse);
+            if (!_definitions.TryGetValue(key, out var definitions))
+                _definitions[key] = definitions = BuildDefinitions(_tools.Where(t =>
+                    !(key.Sandbox && UnsafeInSandbox.Contains(t.Name) || t.Name == ComputerTools.Name && !key.Computer)));
+            return definitions;
+        }
+    }
 
     public ToolRegistry(ToolContext context, bool readOnly = false)
     {
         Context = context;
-        var tools = FileTools.All().Concat(ShellTools.All()).Concat(CommandLog.All()).Concat(ImageTools.All())
-            .Concat(PluginTools.All()).Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
-        _byName = tools.ToDictionary(t => t.Name);
-        _allDefinitions = BuildDefinitions(tools);
-        _sandboxDefinitions = BuildDefinitions(tools.Where(t => !UnsafeInSandbox.Contains(t.Name)));
+        _tools = FileTools.All().Concat(ShellTools.All()).Concat(CommandLog.All()).Concat(ImageTools.All())
+            .Concat(PluginTools.All()).Concat(ComputerTools.All()).Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
+        _byName = _tools.ToDictionary(t => t.Name);
     }
 
     static JsonArray BuildDefinitions(IEnumerable<AgentTool> tools) => new(tools.Select(t => (JsonNode?)new JsonObject
@@ -45,7 +54,8 @@ public sealed class ToolRegistry
     public async Task<ToolOutcome> ExecuteAsync(string name, string argumentsJson, Func<ConfirmRequest, Task<bool>>? confirm,
         CancellationToken ct)
     {
-        if (!_byName.TryGetValue(name, out var tool)) return Error($"Ошибка: неизвестный инструмент '{name}'.");
+        if (!_byName.TryGetValue(name, out var tool) || name == ComputerTools.Name && !Context.ComputerUse)
+            return Error($"Ошибка: неизвестный инструмент '{name}'.");
         if (Context.SandboxRoot != null && UnsafeInSandbox.Contains(name))
             return Error($"Ошибка: инструмент '{name}' отключён в режиме песочницы.");
         JsonObject args;

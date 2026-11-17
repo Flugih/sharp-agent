@@ -58,7 +58,7 @@ partial class AgentRunner
                 return $"Плагин «{name}» уже открыт. Сразу выполни действие по приложенной инструкции через run_plugin.";
         }
         if (execution.PreviousId is { } id && (batch.Take(index).Any(previous => previous.Key == key) || ResultInContext(id, outcome.Output)))
-            return "Полный результат этого действия уже передан. Используй его и переходи к следующему шагу.";
+            return AlreadySent + " Используй его и переходи к следующему шагу.";
         if (_reads.Count < 128 || _reads.ContainsKey(key)) _reads[key] = (call.Id, outcome);
         return outcome.Output;
     }

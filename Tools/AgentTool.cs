@@ -14,6 +14,7 @@ public sealed class ToolContext
     public string? LogsFolder { get; set; }
     public string? SandboxRoot { get; set; }
     public string? InstallationFolder { get; set; }
+    public bool ComputerUse { get; set; }
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
     string? _pluginsFolder;

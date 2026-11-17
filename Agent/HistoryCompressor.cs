@@ -249,6 +249,7 @@ public static class HistoryCompressor
             "use_plugin" => Get("name"),
             "generate_image" => Get("prompt") is { } prompt ? "«" + Clip(OneLine(prompt), 60) + "»" : null,
             "read_log" => Get("log_id"),
+            ComputerTools.Name => $"{Get("action")} {Get("element") ?? Get("path") ?? Get("text") ?? Get("window")}".TrimEnd(),
             "get_system_info" => null,
             _ => Get("path"),
         };
