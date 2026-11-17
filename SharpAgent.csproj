@@ -9,7 +9,7 @@
     <RootNamespace>SharpAgent</RootNamespace>
     <AssemblyName>SharpAgent</AssemblyName>
     <Product>Sharp Agent</Product>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**</DefaultItemExcludes>
