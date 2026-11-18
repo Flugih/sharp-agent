@@ -112,8 +112,26 @@ static partial class LocalProjectContext
 
     static void FormatCode(StringBuilder report, ToolContext context, Dictionary<string, IndexedSource> index, string root, Candidate[] candidates)
     {
-        var dependencies = new HashSet<string>(StringComparer.Ordinal);
-        var selected = candidates.Select(c => c.Symbol.Name).ToHashSet(StringComparer.Ordinal);
+        var selected = candidates.Select(c => (c.File, c.Symbol.Start, c.Symbol.Name)).ToHashSet();
+        var names = candidates.Select(c => c.Symbol.Name).ToHashSet(StringComparer.Ordinal);
+        Func<string, bool> isSelectedName = names.Contains;
+        var dependencies = candidates.SelectMany(c => c.Symbol.Dependencies).ToHashSet(StringComparer.Ordinal);
+        var uses = new List<string>();
+        var definitions = new List<string>();
+        foreach (var (path, source) in index)
+        {
+            foreach (var symbol in source.Syntax.Symbols)
+            {
+                if (selected.Contains((path, symbol.Start, symbol.Name))) continue;
+                if (uses.Count < 6 && symbol.Dependencies.FirstOrDefault(isSelectedName) is { } reference)
+                    uses.Add($"{path}:{symbol.Start} — {symbol.Name} упоминает {reference}");
+                if (definitions.Count < 6 && dependencies.Contains(symbol.Name))
+                    definitions.Add($"{path}:{symbol.Start} — {Clip(symbol.Signature, 160)}");
+            }
+            if (uses.Count == 6 && definitions.Count == 6) break;
+        }
+        if (uses.Count > 0) report.AppendLine("Возможные места использования (по имени):\n" + string.Join("\n", uses));
+        if (definitions.Count > 0) report.AppendLine("Возможные определения зависимостей:\n" + string.Join("\n", definitions));
         foreach (var group in candidates.GroupBy(c => c.File, StringComparer.OrdinalIgnoreCase))
         {
             if (!ProjectSourceIndex.SafeSource(context, root, group.Key, out var file)) continue;
@@ -127,14 +145,10 @@ static partial class LocalProjectContext
                 report.AppendLine($"{group.Key}:{symbol.Start} — {symbol.Signature}");
                 report.AppendLine(Clip(string.Join("\n", lines.Skip(symbol.Start - 1).Take(count).Select(line => Clip(line, 280))), 1350));
                 if (symbol.End >= symbol.Start + count) report.AppendLine("Остальные строки доступны через read_file.");
-                dependencies.UnionWith(symbol.Dependencies);
             }
             foreach (var diagnostic in source.Syntax.Diagnostics.Take(6))
                 report.AppendLine("Ошибка синтаксиса " + group.Key + ":" + Clip(diagnostic, 240));
         }
-        var signatures = index.SelectMany(file => file.Value.Syntax.Symbols.Where(s => dependencies.Contains(s.Name) && !selected.Contains(s.Name))
-            .Select(s => $"- {file.Key}:{s.Start} {s.Signature}")).Distinct().Take(12).ToArray();
-        if (signatures.Length > 0) report.AppendLine("Сигнатуры зависимостей:\n" + string.Join("\n", signatures));
     }
 
     static async Task<string> GitContext(ToolContext context, Repository repo, string[] paths, HashSet<string> terms, CancellationToken ct)

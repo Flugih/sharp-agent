@@ -37,7 +37,8 @@ public sealed class UsageTracker(UiState state)
         long spentSinceLast = 0, fetchedTotal = 0;
         DateTime? oldestDay = null;
         string? cursor = null;
-        for (int page = 0; page < 40; page++)
+        var cursors = new HashSet<string>(StringComparer.Ordinal);
+        for (int page = 0; !firstRun || page < 40; page++)
         {
             var result = await api.GetUsageAsync(cursor, ct);
             cursor = result.NextCursor;
@@ -59,6 +60,7 @@ public sealed class UsageTracker(UiState state)
                     cache.Rates[entry.Model] = (double)entry.Cost / entry.TotalTokens;
             }
             if (cursor == null) break;
+            if (!cursors.Add(cursor)) throw new ApiException("Сервер повторил страницу статистики расхода.");
         }
         bool capped = cursor != null;
         var pruneBefore = today.AddDays(-62);

@@ -128,39 +128,67 @@ public static partial class FileTools
         c.GuardSecrets(path);
         if (Directory.Exists(path)) throw new ToolException($"Это папка, а не файл: {path}. Используйте list_directory.");
         if (!File.Exists(path)) throw new ToolException($"Файл не найден: {path}");
-        string? text = OfficeText.Extract(path), source = "текст извлечён из документа";
-        if (text == null)
-        {
-            (text, var encoding) = TextFileIO.Read(path);
-            source = "кодировка: " + encoding.WebName;
-        }
-        var lines = text.Replace("\r\n", "\n").Split('\n');
-        int total = lines.Length;
-        if (total > 1 && lines[^1].Length == 0) total--;
-        if (total == 1 && lines[0].Length == 0) return $"Файл: {path}\n(файл пуст)";
         var (offset, limit) = ReadRange(a);
-        if (offset > total) throw new ToolException($"offset={offset} больше числа строк в файле ({total}).");
-        var body = new StringBuilder();
-        int last = Math.Min(total, offset + limit - 1), end = offset - 1, clipped = 0;
-        bool single = last == offset;
-        for (int i = offset - 1; i < last; i++)
+        if (OfficeText.Extract(path) is { } document)
         {
-            var line = ClipLine(lines[i], i + 1, single);
-            if (i >= offset)
-            {
-                if (body.Length + line.Length + 1 > MaxReadChars) break;
-                body.Append('\n');
-            }
-            body.Append(line);
-            if (line.Length != lines[i].Length) clipped++;
-            end = i + 1;
+            using var reader = new StringReader(document);
+            return Page(reader, "текст извлечён из документа");
         }
-        return $"Файл: {path} | {FormatSize(new FileInfo(path).Length)} | {source} | строк: {total}" +
-            (offset > 1 || end < total ? $" | показаны строки {offset}–{end}" : "") +
-            (clipped == 0 ? "" : single ? $" | обрезано: строка длиннее {MaxReadChars} символов — read_file покажет только её начало"
-                : $" | обрезано длинных строк: {clipped} — строку целиком (до {MaxReadChars} символов) покажут её offset и limit=1") +
-            (end < last ? $" | показано не всё (за раз до {MaxReadChars} символов) — дальше читай с offset={end + 1}"
-                : end < total ? $" | показано не всё — дальше читай с offset={end + 1}" : "") + "\n----------\n" + body;
+        using var stream = File.OpenRead(path);
+        if (stream.Length > 20 * 1024 * 1024)
+            throw new ToolException($"Файл слишком большой для чтения как текст ({FormatSize(stream.Length)}).");
+        var prefix = new byte[Math.Min(stream.Length, 8000)];
+        stream.ReadExactly(prefix);
+        var encoding = TextFileIO.DetectBom(prefix);
+        if (encoding == null && prefix.Contains((byte)0)) throw new ToolException("Это двоичный файл (не текст) — прочитать или изменить его как текст нельзя.");
+        try { return ReadPage(encoding ?? new UTF8Encoding(false, true)); }
+        catch (DecoderFallbackException) when (encoding == null) { return ReadPage(Encoding.GetEncoding(1251)); }
+
+        string ReadPage(Encoding chosen)
+        {
+            stream.Position = chosen.GetPreamble().Length;
+            using var reader = new StreamReader(stream, chosen, false, 4096, true);
+            return Page(reader, "кодировка: " + chosen.WebName);
+        }
+
+        string Page(TextReader reader, string source)
+        {
+            int number = 0;
+            while (number < offset - 1 && reader.ReadLine() != null)
+            {
+                ct.ThrowIfCancellationRequested();
+                number++;
+            }
+            var current = reader.ReadLine();
+            if (current == null)
+            {
+                if (number == 0) return $"Файл: {path}\n(файл пуст)";
+                throw new ToolException($"offset={offset} больше числа строк в файле ({number}).");
+            }
+            int clipped = 0;
+            var body = new StringBuilder();
+            bool single = limit == 1 || reader.Peek() == -1;
+            while (current != null && number - offset + 1 < limit)
+            {
+                ct.ThrowIfCancellationRequested();
+                var line = ClipLine(current, number + 1, single);
+                if (number >= offset)
+                {
+                    if (body.Length + line.Length + 1 > MaxReadChars) break;
+                    body.Append('\n');
+                }
+                body.Append(line);
+                if (line.Length != current.Length) clipped++;
+                number++;
+                if (number - offset + 1 == limit) break;
+                current = reader.ReadLine();
+            }
+            bool more = current != null && (number - offset + 1 < limit || reader.Peek() != -1);
+            return $"Файл: {path} | {FormatSize(new FileInfo(path).Length)} | {source}" +
+                (more ? $" | показаны строки {offset}–{number}" : $" | строк: {number}") +
+                (clipped > 0 ? $" | обрезано длинных строк: {clipped}" : "") +
+                (more ? $" | показано не всё — дальше читай с offset={number + 1}" : "") + "\n----------\n" + body;
+        }
     }
 
     internal static (int Offset, int Limit) ReadRange(ToolArgs args) =>

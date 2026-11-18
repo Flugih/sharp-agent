@@ -49,9 +49,10 @@ public partial class MainWindow
         else if (provider == AgentProvider.Groq && _provider is ChatApiClient groq) groq.LimitsChanged += OnLimitsChanged;
         _agent.Api = _provider;
         _agent.Provider = provider;
-        _toolContext.GenerateImage = _tooken is { } images
-            ? (prompt, size, ct) => images.GenerateImageAsync(_config.ImageModel ?? AppConfig.DefaultImageModel, prompt, size, ct)
-            : null;
+        var drawer = _config.ImageProvider;
+        _toolContext.GenerateImage = drawer != AgentProvider.Tooken
+            ? (prompt, size, ct) => ImageApi.GenerateAsync(drawer, _config.ApiKeyFor(drawer)!, _config.ImageModelOf(drawer), prompt, size, ct)
+            : _tooken is { } images ? (prompt, size, ct) => images.GenerateImageAsync(_config.ImageModelOf(drawer), prompt, size, ct) : null;
         _models = new(StringComparer.OrdinalIgnoreCase);
         _modelLists.Remove(provider);
         _modelNames.Remove(provider);
@@ -111,18 +112,16 @@ public partial class MainWindow
     private async Task LoadModelListAsync(IChatProvider api)
     {
         var provider = _config.Provider;
-        var key = ModelCatalogKey(provider);
+        var connection = ModelCatalogKey(provider);
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var models = await api.ListModelsAsync(cts.Token);
             if (models.Count == 0 || !ReferenceEquals(api, _provider)) return;
             ApplyModelCatalog(provider, models);
-            if (key != null)
-            {
-                (_state.ModelCatalogs ??= new())[provider] = new(key, models);
-                _state.Save();
-            }
+            CacheModelCatalog(provider, connection, models);
+            if (SettingsOpen && _settingsProvider == provider && SettingsCatalogKey() == connection)
+                DefaultModelButton.Tag = ChatModelChoices(provider);
             if (_cts == null) EnsureChatModel();
             UpdateContextBanner();
         }
@@ -149,26 +148,40 @@ public partial class MainWindow
         }
     }
 
-    private string? ModelCatalogKey(AgentProvider provider) => provider switch
+    private string? ModelCatalogKey(AgentProvider provider) =>
+        ModelCatalogKey(provider, _config.ApiKeyFor(provider), _config.BaseUrl);
+
+    private string? ModelCatalogKey(AgentProvider provider, string? key, string tookenBaseUrl) => provider switch
     {
-        AgentProvider.Tooken when _config.HasApiKey => UsageTracker.KeyId(_config.ApiKey!, _config.BaseUrl),
         AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client => UsageTracker.KeyId(client, "https://api.openai.com/v1/models"),
-        _ when _config.ApiKeyFor(provider) is { } key => UsageTracker.KeyId(key, AppConfig.DefaultBaseUrlOf(provider)),
+        AgentProvider.ChatGpt => null,
+        _ when !string.IsNullOrEmpty(key) => UsageTracker.KeyId(key, provider == AgentProvider.Tooken ? tookenBaseUrl : AppConfig.DefaultBaseUrlOf(provider)),
         _ => null,
     };
+
+    private void CacheModelCatalog(AgentProvider provider, string? connection, List<ModelInfo> models)
+    {
+        if (connection == null || models.Count == 0) return;
+        (_state.ModelCatalogs ??= new())[provider] = new(connection, models);
+        _state.Save();
+    }
+
+    private IEnumerable<string> ChatModelChoices(AgentProvider provider) =>
+        _modelLists.GetValueOrDefault(provider) is { Count: > 0 } models ? models : DefaultModelsOf(provider);
 
     private void ApplyModelCatalog(AgentProvider provider, List<ModelInfo> models)
     {
         RememberModelList(provider, models);
         _models = new(StringComparer.OrdinalIgnoreCase);
         foreach (var model in models) _models[model.Id] = model;
-        ModelButton.Tag = _modelLists[provider];
+        ModelButton.Tag = ChatModelChoices(provider);
     }
 
     private void RememberModelList(AgentProvider provider, List<ModelInfo> models)
     {
         if (models.Count == 0) return;
-        _modelLists[provider] = models.Where(m => m.Chat).Select(m => m.Id).ToList();
+        _modelLists[provider] = models.Where(m => m.Chat && string.Equals(m.Id, AppConfig.ChatModelOf(provider, m.Id), StringComparison.OrdinalIgnoreCase))
+            .Select(m => m.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var names = _modelNames[provider] = new(StringComparer.Ordinal);
         foreach (var model in models)
             if (model.Name is { Length: > 0 } name) names[model.Id] = name;
@@ -212,7 +225,6 @@ public partial class MainWindow
         {
             var divider = new Separator();
             var hidden = menu.Items.OfType<UIElement>().Append(divider).ToArray();
-            foreach (var item in hidden) item.Visibility = Visibility.Collapsed;
             menu.Style = Theme.Style("EffortPickerMenu");
             menu.MinWidth = 0;
             menu.Items.Insert(0, divider);
@@ -273,12 +285,13 @@ public partial class MainWindow
     {
         var model = CurrentModel();
         var levels = EffortLevelsOf(model);
-        var effort = _agent.ReasoningEffort = _state.FastMode && levels.Length > 0 ? levels[0] : EffectiveEffort(levels);
+        var effort = _agent.ReasoningEffort = EffectiveEffort(levels);
         var label = ModelNameText.Text = ModelDisplayName(model);
         var pending = _loadingModelCatalog && !_models.ContainsKey(model) ? _config.ReasoningEffort : null;
         bool showEffort = levels.Length > 0 || pending != null || _state.FastMode;
         ModelEffortText.Visibility = VisibleIf(showEffort);
-        ModelEffortText.Text = _state.FastMode ? "Быстрый режим" : effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное";
+        ModelEffortText.Text = (_state.FastMode ? "Быстро · " : "") +
+            (effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное");
         AutomationProperties.SetName(ModelButton, showEffort ? $"Модель {label}, рассуждение: {ModelEffortText.Text}" : $"Модель {label}");
     }
 
@@ -291,7 +304,7 @@ public partial class MainWindow
         heading.SetResourceReference(ForegroundProperty, "AccentText");
         var chevron = new TextBlock
         {
-            Text = Glyphs.ChevronRight, FontFamily = Theme.Icons, FontSize = 8, Foreground = Theme.TextMuted, Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            Text = Glyphs.ChevronDown, FontFamily = Theme.Icons, FontSize = 8, Foreground = Theme.TextMuted, Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
         };
         var caption = new TextBlock { Text = modelName, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.TextSoft, MaxWidth = 135 };
         var choose = new Button
@@ -357,17 +370,15 @@ public partial class MainWindow
         {
             Style = Theme.Style("IconToggle"), Content = Glyphs.Lightning, Width = 28, Height = 28, FontSize = 13, IsChecked = _state.FastMode,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
-            ToolTip = "Быстрый режим: минимальная сила рассуждения и параллельная работа субагентов",
+            ToolTip = "Параллельный поиск и чтение кода с обычной глубиной проверки",
         };
         AutomationProperties.SetName(lightning, "Быстрый режим");
-        slider.IsEnabled = !_state.FastMode;
         void Toggle(object sender, RoutedEventArgs e)
         {
             _state.FastMode = lightning.IsChecked == true;
             _state.Save();
-            slider.IsEnabled = !_state.FastMode;
             ApplyFastMode();
-            ShowToast(_state.FastMode ? "Быстрый режим: агент меньше рассуждает и поручает независимые части субагентам" : "Быстрый режим выключен");
+            ShowToast(_state.FastMode ? "Быстрый режим включён" : "Быстрый режим выключен");
         }
         lightning.Checked += Toggle;
         lightning.Unchecked += Toggle;
@@ -385,7 +396,7 @@ public partial class MainWindow
     private void ApplyFastMode()
     {
         _agent.FastMode = _state.FastMode;
-        _agent.UseSubagents = _config.UseSubagents || _state.FastMode;
+        _agent.UseSubagents = _config.UseSubagents;
         UpdateModelEffort();
     }
 
@@ -397,7 +408,7 @@ public partial class MainWindow
         var provider = _config.Provider;
         if (provider != AgentProvider.Tooken)
         {
-            if (_modelLists.GetValueOrDefault(provider) is not { Count: > 0 } known || known.Contains(model)) return;
+            if (_modelLists.GetValueOrDefault(provider) is not { Count: > 0 } known || known.Contains(model, StringComparer.OrdinalIgnoreCase)) return;
             var fallback = AppConfig.DefaultModelOf(provider);
             if (!known.Contains(fallback)) fallback = known[0];
             _selectedModel = fallback;

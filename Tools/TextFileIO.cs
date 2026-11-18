@@ -13,11 +13,11 @@ public static class TextFileIO
         return Decode(File.ReadAllBytes(path));
     }
 
+    internal static Encoding? DetectBom(byte[] bytes) => BomEncodings.FirstOrDefault(encoding => bytes.AsSpan().StartsWith(encoding.Preamble));
+
     internal static (string Text, Encoding Encoding) Decode(byte[] bytes)
     {
-        foreach (var encoding in BomEncodings)
-            if (bytes.AsSpan().StartsWith(encoding.Preamble))
-                return (encoding.GetString(bytes.AsSpan(encoding.Preamble.Length)), encoding);
+        if (DetectBom(bytes) is { } encoding) return (encoding.GetString(bytes.AsSpan(encoding.Preamble.Length)), encoding);
         if (bytes.AsSpan(0, Math.Min(bytes.Length, 8000)).Contains((byte)0))
             throw new ToolException("Это двоичный файл (не текст) — прочитать или изменить его как текст нельзя.");
         try { return (StrictUtf8.GetString(bytes), new UTF8Encoding(false)); }

@@ -7,7 +7,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible", BaseUrl = "https://api.openai.com/v1";
     static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(300);
     readonly HashSet<string> _noSummaries = new(StringComparer.OrdinalIgnoreCase), _noStreaming = new(StringComparer.OrdinalIgnoreCase);
-    readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan, DefaultRequestHeaders = { { "User-Agent", ChatGptAuth.UserAgent } } };
+    readonly HttpClient _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.ParseAdd(ChatGptAuth.UserAgent));
 
     public event Action<int, int>? Retrying;
     public event Action? LimitsChanged;
@@ -169,16 +169,16 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         CancellationToken ct)
     {
         using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (streaming) idle.CancelAfter(IdleTimeout);
+        idle.CancelAfter(IdleTimeout);
         using var response = await SendAsync(() => new(HttpMethod.Post, BaseUrl + "/responses")
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
             Headers = { Accept = { new(streaming ? "text/event-stream" : "application/json") } },
         }, idle.Token);
-        if (!response.IsSuccessStatusCode) throw Explain(response, await response.Content.ReadAsStringAsync(ct));
+        if (!response.IsSuccessStatusCode) throw Explain(response, await response.Content.ReadAsStringAsync(idle.Token));
         var requestId = RequestId(response);
         if (!streaming || response.Content.Headers.ContentType?.MediaType == "application/json")
-            return FinishResponse([], ParseObject(await response.Content.ReadAsStringAsync(ct))
+            return FinishResponse([], ParseObject(await response.Content.ReadAsStringAsync(idle.Token))
                 ?? throw new ApiException("ChatGPT вернул ответ в неизвестном формате. Нажмите «Повторить»."), requestId);
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct));
         List<JsonObject> items = [];
@@ -257,8 +257,8 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         if (status == "failed" || error != null) throw Failed(error, requestId);
         var reason = Str((answer?["incomplete_details"] as JsonObject)?["reason"]);
         if (reason == "content_filter")
-            throw new ApiException("ChatGPT остановил ответ фильтром содержимого. Переформулируйте запрос." + ApiException.Tail(null, "content_filter", requestId),
-                code: "content_filter");
+            return new(new JsonObject(), reason, answer?["usage"] is JsonObject billed
+                ? new UsageInfo(Long(billed["input_tokens"]), Long(billed["output_tokens"])) : null, requestId);
         if (answer?["output"] is JsonArray { Count: > 0 } output) items = output.OfType<JsonObject>().ToList();
         List<string> texts = [], commentary = [];
         var calls = new JsonArray();

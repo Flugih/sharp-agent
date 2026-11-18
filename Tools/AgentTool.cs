@@ -43,7 +43,7 @@ public sealed class ToolContext
     {
         if (AppFolder == null) return false;
         fullPath = FinalPath(fullPath);
-        return IsInside(App(".env"), fullPath) || IsInside(App("auth"), fullPath) || IsInside(fullPath, App("auth")) ||
+        return IsInside(App(".env"), fullPath) || SamePath(fullPath, App(".env.tmp")) || IsInside(App("auth"), fullPath) || IsInside(fullPath, App("auth")) ||
                IsInside(fullPath, App(@"history\changes")) ||
                IsInside(fullPath, AppFolder) && Path.GetFileName(fullPath).Equals(".env", StringComparison.OrdinalIgnoreCase);
     }
@@ -59,7 +59,7 @@ public sealed class ToolContext
     {
         if (AppFolder == null) return;
         fullPath = FinalPath(fullPath);
-        if (SamePath(fullPath, App(".env")) || IsInside(fullPath, App("auth")) || IsInside(fullPath, App("history")) ||
+        if (SamePath(fullPath, App(".env")) || SamePath(fullPath, App(".env.tmp")) || IsInside(fullPath, App("auth")) || IsInside(fullPath, App("history")) ||
             IsInside(fullPath, TempFolder) || IsInside(fullPath, PluginsFolder!) || IsInside(PluginsFolder!, fullPath) || SamePath(fullPath, App("state.json")) ||
             SamePath(fullPath, App("errors.log")) ||
             InstallationFolder is { } install && (IsInside(fullPath, install) || IsInside(install, fullPath)) ||

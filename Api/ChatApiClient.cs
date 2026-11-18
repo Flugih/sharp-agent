@@ -94,14 +94,15 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
 {
     static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(10);
     static readonly string[] ContextKeys = ["safe_context_tokens", "context_window_tokens", "context_window", "context_length"], StandardEfforts = ["low", "medium", "high"];
-    static readonly HttpClient Downloads = new() { Timeout = TimeSpan.FromMinutes(2), MaxResponseContentBufferSize = 64 << 20 };
+    static readonly HttpClient Downloads = AppNetwork.Client(TimeSpan.FromMinutes(2), 64 << 20);
     readonly string _baseUrl = baseUrl.TrimEnd('/');
     readonly bool _groq = provider == AgentProvider.Groq;
-    readonly HttpClient _http = new()
+    readonly HttpClient _http = AppNetwork.Client(RequestTimeout, headers: headers =>
     {
-        Timeout = RequestTimeout,
-        DefaultRequestHeaders = { Authorization = new("Bearer", apiKey), UserAgent = { new("SharpAgent", "1.0") }, Accept = { new("application/json") } },
-    };
+        headers.Authorization = new("Bearer", apiKey);
+        headers.UserAgent.Add(new("SharpAgent", "1.0"));
+        headers.Accept.Add(new("application/json"));
+    });
     readonly HashSet<string> _noStreaming = new(StringComparer.OrdinalIgnoreCase), _noStreamOptions = new(StringComparer.OrdinalIgnoreCase);
 
     public event Action<int, int>? Retrying;

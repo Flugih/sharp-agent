@@ -2,9 +2,15 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    void UpdateTrashCount()
+    int _trashVersion, _trashCountVersion;
+
+    async void UpdateTrashCount()
     {
-        int count = _agent.Store.TrashCount();
+        int version = ++_trashCountVersion;
+        int count;
+        try { count = await Task.Run(_agent.Store.TrashCount); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return; }
+        if (version != _trashCountVersion) return;
         TrashCount.Text = count > 0 ? count.ToString() : "";
         SetHint(TrashButton, count > 0 ? "Корзина: " + Plural(count, "удалённый чат", "удалённых чата", "удалённых чатов") : "Корзина пуста");
     }
@@ -15,9 +21,24 @@ public partial class MainWindow
         else ShowTrash();
     }
 
-    void ShowTrash()
+    async void ShowTrash()
     {
-        var chats = _agent.Store.ListTrash().OrderByDescending(c => c.Updated).ToList();
+        int version = ++_trashVersion;
+        TrashPanel.Children.Clear();
+        TrashPanel.Children.Add(Caption("Загружаю корзину…", 0));
+        if (!FlyoutShows(TrashCard)) ShowFlyout(TrashCard, TrashButton);
+        List<ChatSummary> chats;
+        try { chats = await Task.Run(() => _agent.Store.ListTrash().OrderByDescending(c => c.Updated).ToList()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (version == _trashVersion && FlyoutShows(TrashCard))
+            {
+                TrashPanel.Children.Clear();
+                TrashPanel.Children.Add(Caption("Не удалось прочитать корзину.", 0));
+            }
+            return;
+        }
+        if (version != _trashVersion || !FlyoutShows(TrashCard)) return;
         TrashPanel.Children.Clear();
         var header = new DockPanel { Margin = new(4, 0, 4, 4) };
         if (chats.Count > 0)
@@ -44,14 +65,24 @@ public partial class MainWindow
         if (chats.Count > 0)
         {
             var list = new StackPanel();
-            foreach (var chat in chats) list.Children.Add(TrashRow(chat));
-            TrashPanel.Children.Add(new ScrollViewer
+            int next = 0;
+            void AppendPage()
+            {
+                int end = Math.Min(next + 30, chats.Count);
+                while (next < end) list.Children.Add(TrashRow(chats[next++]));
+            }
+            AppendPage();
+            var scroll = new ScrollViewer
             {
                 Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false,
-            });
+            };
+            scroll.ScrollChanged += (_, _) =>
+            {
+                if (scroll.ScrollableHeight - scroll.VerticalOffset < 80 && next < chats.Count) AppendPage();
+            };
+            TrashPanel.Children.Add(scroll);
         }
-        if (!FlyoutShows(TrashCard)) ShowFlyout(TrashCard, TrashButton);
     }
 
     DockPanel TrashRow(ChatSummary chat)

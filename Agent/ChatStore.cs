@@ -16,25 +16,35 @@ public sealed class ChatStore(string folder, string logsFolder)
     public ChatFile Load(string path)
     {
         var root = ReadRoot(path);
-        return new(root["messages"] is JsonArray array ? array.OfType<JsonObject>().Select(m => (JsonNode)m.DeepClone()).ToList() : [],
-            JsonUtil.Str(root["title"]));
+        if (root["messages"] is not JsonArray array) return new([], Str(root["title"]));
+        var messages = array.Where(message => message is JsonObject).Cast<JsonNode>().ToList();
+        array.Clear();
+        return new(messages, Str(root["title"]));
     }
 
-    public void Save(string path, IEnumerable<JsonNode> messages, string? model, string? title) => Write(path, new JsonObject
+    public void Save(string path, IEnumerable<JsonNode> messages, string? model, string? title) => Write(path, writer =>
     {
-        ["app"] = "SharpAgent",
-        ["format"] = "openai-chat-messages",
-        ["updated"] = DateTime.Now.ToString(TimeFormat, CultureInfo.InvariantCulture),
-        ["title"] = title,
-        ["model"] = model,
-        ["messages"] = new JsonArray(messages.Select(m => m.DeepClone()).ToArray()),
+        writer.WriteStartObject();
+        writer.WriteString("app", "SharpAgent");
+        writer.WriteString("format", "openai-chat-messages");
+        writer.WriteString("updated", DateTime.Now.ToString(TimeFormat, CultureInfo.InvariantCulture));
+        writer.WriteString("title", title);
+        writer.WriteString("model", model);
+        writer.WriteStartArray("messages");
+        foreach (var message in messages)
+        {
+            message.WriteTo(writer, Pretty);
+            if (writer.BytesPending >= 64 * 1024) writer.Flush();
+        }
+        writer.WriteEndArray();
+        writer.WriteEndObject();
     });
 
     public void Rename(string path, string? title)
     {
         var root = ReadRoot(path);
         root["title"] = title;
-        Write(path, root, File.GetLastWriteTimeUtc(path));
+        Write(path, writer => root.WriteTo(writer, Pretty), File.GetLastWriteTimeUtc(path));
     }
 
     public string Quarantine(string path) => Move(path, Unique(folder, "broken", "_" + Path.GetFileName(path)));
@@ -94,7 +104,19 @@ public sealed class ChatStore(string folder, string logsFolder)
 
     static ChatSummary? Summarize(FileInfo file)
     {
-        using var stream = file.OpenRead();
+        using var stream = File.Open(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        var prefix = new byte[Math.Min(8192, stream.Length)];
+        int filled = 0;
+        while (true)
+        {
+            filled += stream.ReadAtLeast(prefix.AsSpan(filled), prefix.Length - filled, false);
+            if (HeaderTitle(prefix.AsSpan(0, filled), out var legacy) is { } display)
+                return new(file.FullName, display, file.LastWriteTime);
+            if (legacy || filled >= stream.Length || filled < prefix.Length) break;
+            Array.Resize(ref prefix, (int)Math.Min(stream.Length, Math.Min((long)prefix.Length * 2, Array.MaxLength)));
+            if (prefix.Length == filled) break;
+        }
+        stream.Position = 0;
         using var document = JsonDocument.Parse(stream);
         var root = document.RootElement;
         if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array) return null;
@@ -105,6 +127,37 @@ public sealed class ChatStore(string folder, string logsFolder)
         if (firstUser == null) return null;
         var title = root.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
         return new(file.FullName, TitleOf([firstUser], title), file.LastWriteTime);
+    }
+
+    static string? HeaderTitle(ReadOnlySpan<byte> bytes, out bool legacy)
+    {
+        legacy = false;
+        if (bytes.StartsWith(Encoding.UTF8.Preamble)) bytes = bytes[Encoding.UTF8.Preamble.Length..];
+        var reader = new Utf8JsonReader(bytes, false, default);
+        bool sawTitle = false;
+        while (reader.Read())
+        {
+            if (reader.CurrentDepth != 1 || reader.TokenType != JsonTokenType.PropertyName) continue;
+            if (reader.ValueTextEquals("title"u8))
+            {
+                if (!reader.Read()) return null;
+                if (reader.TokenType == JsonTokenType.String && reader.GetString() is { } name && !string.IsNullOrWhiteSpace(name)) return name.Trim();
+                sawTitle = true;
+            }
+            else if (reader.ValueTextEquals("messages"u8))
+            {
+                if (!sawTitle) { legacy = true; return null; }
+                if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray) return null;
+                while (reader.Read() && reader.TokenType == JsonTokenType.StartObject && JsonDocument.TryParseValue(ref reader, out var item))
+                {
+                    using (item)
+                        if (item.RootElement.TryGetProperty("role", out var role) && role.ValueEquals("user"u8))
+                            return TitleOf([JsonNode.Parse(item.RootElement.GetRawText())!], null);
+                }
+                return null;
+            }
+        }
+        return null;
     }
 
     IEnumerable<string> ArtifactsOf(string path)
@@ -144,15 +197,27 @@ public sealed class ChatStore(string folder, string logsFolder)
         return path;
     }
 
-    static JsonObject ReadRoot(string path) =>
-        JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8)) as JsonObject ?? throw new JsonException("В файле нет переписки.");
+    static JsonObject ReadRoot(string path)
+    {
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return JsonNode.Parse(reader.ReadToEnd()) as JsonObject ?? throw new JsonException("В файле нет переписки.");
+    }
 
-    static void Write(string path, JsonObject root, DateTime? modifiedUtc = null)
+    static void Write(string path, Action<Utf8JsonWriter> write, DateTime? modifiedUtc = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temp = path + ".tmp";
-        File.WriteAllText(temp, root.ToJsonString(JsonUtil.Pretty), new UTF8Encoding(false));
+        using (var file = File.Create(temp))
+        using (var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = Pretty.WriteIndented, Encoder = Pretty.Encoder }))
+        {
+            write(writer);
+        }
         if (modifiedUtc is { } time) File.SetLastWriteTimeUtc(temp, time);
-        File.Move(temp, path, true);
+        try { File.Move(temp, path, true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && File.Exists(path))
+        {
+            File.Replace(temp, path, null);
+        }
     }
 }

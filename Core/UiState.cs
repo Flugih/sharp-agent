@@ -42,6 +42,7 @@ public sealed class UiState
     public string? Draft { get; set; }
     public UsageCache? Usage { get; set; }
     public string? LimitOverrideDay { get; set; }
+    public Guid? SubscriptionDeviceId { get; set; }
     public Dictionary<AgentProvider, ModelCatalogCache>? ModelCatalogs { get; set; }
 
     public static UiState Load()

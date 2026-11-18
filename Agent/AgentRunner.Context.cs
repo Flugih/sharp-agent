@@ -2,6 +2,23 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
+    const string StoppedRequest = "[Программа: прошлое поручение остановлено. Возобновляй его только по явной просьбе пользователя.]";
+
+    HashSet<int> StoppedRequests(int currentUser)
+    {
+        var requests = new HashSet<int>();
+        bool stopped = false;
+        for (int i = currentUser - 1; i >= 0; i--)
+        {
+            var message = _history[i];
+            stopped |= MetaOf(message)?[StopField] != null;
+            if (Role(message) != "user") continue;
+            if (stopped) requests.Add(i);
+            stopped = false;
+        }
+        return requests;
+    }
+
     bool _projectContextReady;
     string? _projectContext, _changedSource;
     List<Plugin>? _plugins;
@@ -41,7 +58,7 @@ partial class AgentRunner
             ["role"] = "assistant", ["content"] = text,
             [MetaField] = new JsonObject { [ElapsedField] = (long)elapsed.TotalMilliseconds, ["local_command"] = command, [SentAtField] = FormatSentAt(sentAt) },
         });
-        Save();
+        await SaveAsync();
         AssistantText?.Invoke(text, elapsed, sentAt);
     });
 

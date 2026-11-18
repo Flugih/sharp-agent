@@ -8,7 +8,7 @@ public static partial class Groq
     public const string BaseUrl = "https://api.groq.com/openai/v1";
     public const string KeysUrl = "https://console.groq.com/keys";
     static readonly string[] NonChat = ["whisper", "orpheus", "tts", "guard"], Fields = ["role", "content", "tool_calls", "tool_call_id"];
-    static readonly HttpClient Speech = new() { Timeout = TimeSpan.FromMinutes(5) };
+    static readonly HttpClient Speech = AppNetwork.Client(TimeSpan.FromMinutes(5));
 
     [GeneratedRegex(@"(\d+(?:\.\d+)?)\s*(ms|h|m|s)?", RegexOptions.IgnoreCase)]
     private static partial Regex DurationPart();

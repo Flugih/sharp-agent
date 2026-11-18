@@ -3,15 +3,17 @@ namespace SharpAgent.Ui;
 public partial class CompactChatWindow : Window
 {
     readonly Func<string, DateTimeOffset?, StackPanel> _answerView;
-    JsonObject[] _shown = [];
+    readonly Func<string, Button> _fileCard;
+    (JsonObject Message, string? File)[] _shown = [];
     double? _anchorBottom;
 
     internal event Action<string>? DraftChanged;
     internal event Action? Send, Stop;
 
-    internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView)
+    internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView, Func<string, Button> fileCard)
     {
         _answerView = answerView;
+        _fileCard = fileCard;
         InitializeComponent();
     }
 
@@ -34,7 +36,12 @@ public partial class CompactChatWindow : Window
         WindowEffects.ExcludeFromCapture(this);
     }
 
-    internal void SetStatus(string text) => StatusText.Text = text;
+    internal void SetStatus(string text)
+    {
+        StatusText.Text = text;
+        StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
+        UpdateTranscript(scroll: true);
+    }
 
     internal void UpdateAction(bool running, bool enabled, bool resume)
     {
@@ -43,21 +50,17 @@ public partial class CompactChatWindow : Window
         ActionButton.ToolTip = label;
         AutomationProperties.SetName(ActionButton, label);
         ActionButton.IsEnabled = enabled;
-        StatusText.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         UpdateTranscript(scroll: running);
     }
 
-    internal void SyncHistory(IReadOnlyList<JsonNode> history)
+    internal void SyncHistory((JsonObject Message, string? File)[] messages)
     {
-        var messages = history.OfType<JsonObject>()
-            .Where(m => AgentRunner.Role(m) == "user" || AgentRunner.Role(m) == "assistant" &&
-                m["tool_calls"] == null && !string.IsNullOrWhiteSpace(AgentRunner.ExtractText(m["content"])))
-            .TakeLast(16).ToArray();
         if (_shown.SequenceEqual(messages)) return;
         _shown = messages;
         Transcript.Children.Clear();
-        foreach (var message in messages)
-            if (AgentRunner.Role(message) == "assistant")
+        foreach (var (message, path) in messages)
+            if (path != null) Transcript.Children.Add(_fileCard(path));
+            else if (AgentRunner.Role(message) == "assistant")
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
             else Transcript.Children.Add(new Border
             {

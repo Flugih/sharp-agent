@@ -80,18 +80,21 @@ public static partial class FileTools
         GuardSecretCopy(c, source, target);
         if (Directory.Exists(source))
         {
-            if (IsInside(target, source)) throw new ToolException("Нельзя переместить папку внутрь неё самой.");
+            if (IsInside(FinalPath(target), FinalPath(source))) throw new ToolException("Нельзя переместить папку внутрь неё самой.");
             if (Path.Exists(target)) throw new ToolException($"Назначение уже существует: {target}");
             if (c.AppFolder != null && IsInside(FinalPath(source), c.AppFolder))
-                foreach (var file in Directory.EnumerateFiles(source, "*", Everything))
-                    GuardSecretCopy(c, file, Path.Join(target, Path.GetRelativePath(source, file)));
+            {
+                RejectLink(source);
+                foreach (var entry in new DirectoryInfo(source).EnumerateFileSystemInfos("*", Everything))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    RejectLink(entry.FullName);
+                    GuardSecretCopy(c, entry.FullName, Path.Join(target, Path.GetRelativePath(source, entry.FullName)));
+                }
+            }
             EnsureParent(target);
             if (SameVolume(source, target)) Directory.Move(source, target);
-            else
-            {
-                CopyDirectory(c, source, target, false, ct);
-                Directory.Delete(source, true);
-            }
+            else MoveDirectoryAcrossVolumes(c, source, target, ct);
             return $"Папка перемещена: {source} → {target}";
         }
         if (!File.Exists(source)) throw new ToolException($"Источник не найден: {source}");
@@ -111,7 +114,7 @@ public static partial class FileTools
         c.GuardAppFiles(target);
         if (Directory.Exists(source))
         {
-            if (IsInside(target, source)) throw new ToolException("Нельзя копировать папку внутрь неё самой.");
+            if (IsInside(FinalPath(target), FinalPath(source))) throw new ToolException("Нельзя копировать папку внутрь неё самой.");
             EnsureParent(target);
             return $"Папка скопирована: {source} → {target} (файлов: {CopyDirectory(c, source, target, overwrite, ct)})";
         }
@@ -122,14 +125,80 @@ public static partial class FileTools
         return $"Файл скопирован: {source} → {target}";
     }
 
+    static void MoveDirectoryAcrossVolumes(ToolContext context, string source, string target, CancellationToken ct)
+    {
+        var stage = Path.Combine(Path.GetDirectoryName(target)!, ".sharp-move-" + Guid.NewGuid().ToString("N"));
+        List<string> directories = [];
+        List<string> moved = [];
+        try
+        {
+            Transfer(source);
+            ct.ThrowIfCancellationRequested();
+            Directory.Move(stage, target);
+        }
+        catch
+        {
+            bool restored = true;
+            foreach (var file in moved.AsEnumerable().Reverse())
+            {
+                try { File.Move(Path.Combine(stage, Path.GetRelativePath(source, file)), file); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { restored = false; }
+            }
+            foreach (var dir in directories.AsEnumerable().Reverse())
+            {
+                try { Directory.Delete(Path.Combine(stage, Path.GetRelativePath(source, dir))); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { restored = false; }
+            }
+            if (!restored) throw new ToolException($"Перенос прерван. Не удалось вернуть все файлы в {source}. Оставшиеся файлы сохранены в {stage}.");
+            throw;
+        }
+        try
+        {
+            foreach (var dir in directories.AsEnumerable().Reverse()) Directory.Delete(dir, false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new ToolException($"Файлы перенесены в {target}. Исходную папку {source} не удалось убрать. Проверьте оставшиеся файлы.");
+        }
+
+        void Transfer(string dir)
+        {
+            ct.ThrowIfCancellationRequested();
+            RejectLink(dir);
+            var destination = Path.Combine(stage, Path.GetRelativePath(source, dir));
+            Directory.CreateDirectory(destination);
+            directories.Add(dir);
+            foreach (var file in Directory.EnumerateFiles(dir))
+            {
+                ct.ThrowIfCancellationRequested();
+                RejectLink(file);
+                GuardSecretCopy(context, file, Path.Combine(target, Path.GetRelativePath(source, file)));
+                File.Move(file, Path.Combine(destination, Path.GetFileName(file)));
+                moved.Add(file);
+            }
+            foreach (var child in Directory.EnumerateDirectories(dir)) Transfer(child);
+        }
+    }
+
+    static void RejectLink(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new ToolException($"Не удалось перенести или скопировать ссылку на файл или папку: {path}");
+    }
+
     static int CopyDirectory(ToolContext c, string source, string target, bool overwrite, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        RejectLink(source);
+        if (Directory.Exists(target)) RejectLink(target);
         Directory.CreateDirectory(target);
         int count = 0;
         foreach (var file in Directory.EnumerateFiles(source))
         {
             ct.ThrowIfCancellationRequested();
             var dest = Path.Combine(target, Path.GetFileName(file));
+            RejectLink(file);
+            if (File.Exists(dest)) RejectLink(dest);
             GuardSecretCopy(c, file, dest);
             if (File.Exists(dest) && !overwrite)
                 throw new ToolException($"Файл уже существует: {dest}. Чтобы заменять файлы, укажите overwrite=true.");
@@ -175,7 +244,7 @@ public static partial class FileTools
         if (c.SandboxRoot != null && (isUrl || File.Exists(target) && !OpensQuietly(target)))
             throw new ToolException("В режиме песочницы можно открывать только папки и документы (не программы, скрипты и ссылки).");
         using var process = Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-        return $"Открыто: {target}";
+        return $"Открыто: {target}" + (isUrl ? " (во внешней программе с её сетевыми настройками)" : "");
     }
 
     static bool IsWebUrl(string value) =>
@@ -226,7 +295,7 @@ public static partial class FileTools
     static ConfirmRequest? ConfirmOpen(ToolArgs a, ToolContext c)
     {
         var raw = a.Required("path");
-        if (IsWebUrl(raw)) return new("Открыть ссылку в браузере?", raw.Trim(), "Открыть");
+        if (IsWebUrl(raw)) return new("Открыть ссылку во внешнем браузере?", raw.Trim(), "Открыть", Note: "Браузер использует собственные сетевые настройки.");
         var path = c.Resolve(raw);
         return c.SandboxRoot != null || Directory.Exists(path) || OpensQuietly(path) ? null
             : IsExecutable(path) ? new("Запустить программу или скрипт?", path, "Запустить", Danger: true)

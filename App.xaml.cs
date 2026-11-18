@@ -74,6 +74,7 @@ public partial class App
 
     protected override void OnExit(ExitEventArgs e)
     {
+        AppNetwork.Stop();
         _activateSignal?.Dispose();
         try { _instanceMutex?.ReleaseMutex(); } catch { }
         _instanceMutex?.Dispose();

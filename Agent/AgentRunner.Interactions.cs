@@ -14,7 +14,7 @@ public sealed record SubagentUpdate(string Id, string Title, string Status, Date
 
 partial class AgentRunner
 {
-    const int SubagentInputTokens = 8_000, SubagentOutputTokens = 1_200, SubagentAttachmentLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
+    const int SubagentOutputTokens = 1_200, SubagentAttachmentLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
     const string SubagentStepStop = "Достигнут лимит шагов субагента.";
     const string SubagentPrompt = """
         Ты — субагент Sharp Agent. Выполни порученную часть задачи. Пользуйся только доступными инструментами чтения и поиска.
@@ -31,7 +31,6 @@ partial class AgentRunner
     public bool UseSubagents { get; set; }
     public bool FastMode { get; set; }
     int SubagentStepLimit { get; init; } = MaxSubagentSteps;
-    public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
     public event Action<SubagentUpdate>? SubagentChanged;
 
@@ -72,8 +71,8 @@ partial class AgentRunner
               "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
             : "") +
         (FastMode
-            ? "\nВключён быстрый режим: пользователю важна скорость. Дели изучение и проверки на независимые части и поручай их " +
-              "субагентам параллельно одним вызовом delegate_tasks, объединяй независимые действия в один ответ, не трать шаги на лишнее."
+            ? "\nВ быстром режиме объединяй независимые поиски и чтения в один пакет вызовов. Зависимые шаги выполняй по результатам предыдущих. " +
+              "Применяй обычные критерии проверки и завершения задачи."
             : "");
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
@@ -133,7 +132,7 @@ partial class AgentRunner
             briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", 4), 1, MaxSubagentSteps)));
         }
         EnsureMeta(user)["delegated_tasks"] = (long)MaxSubagentTasks - remaining + briefs.Count;
-        Save();
+        await SaveAsync();
         var registry = new ToolRegistry(tools.Context, readOnly: true);
         using var slots = new SemaphoreSlim(4);
         var results = await Task.WhenAll(briefs.Select(brief =>
@@ -150,7 +149,7 @@ partial class AgentRunner
     async Task<(string Text, bool Failed, UsageInfo Usage)> RunSubagentAsync(ToolRegistry registry, SemaphoreSlim slots, string model,
         string title, string task, List<Attachment> files, int steps, CancellationToken ct)
     {
-        var effort = SubagentEffort?.Invoke(model);
+        var effort = _noEffortModels.Contains(model) ? null : ReasoningEffort;
         var update = new SubagentUpdate(Guid.NewGuid().ToString("N"), title, "В очереди") { Model = model, Provider = Provider, Effort = effort };
         SubagentChanged?.Invoke(update);
         bool entered = false, failed = false;
@@ -228,7 +227,6 @@ partial class AgentRunner
             clock.Stop();
             if (entered) slots.Release();
         }
-        if (answer!.Length > 3600) answer = answer[..3600] + "\n… результат сокращён";
         var status = warning == SubagentStepStop ? "Лимит шагов" : failed ? "Ошибка" : "Готово";
         SubagentChanged?.Invoke(update with { Status = status, Elapsed = clock.Elapsed, Result = answer, Failed = failed, Action = null });
         return (title + "\n" + answer, failed, new(promptTokens, completionTokens));

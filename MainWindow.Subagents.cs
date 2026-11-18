@@ -10,6 +10,7 @@ public partial class MainWindow
         public readonly StackPanel Activity = new();
         public readonly Dictionary<string, TextBlock> Tools = new();
         public TextBlock? Commentary;
+        public ProgressSection? Searches;
     }
 
     readonly Dictionary<string, SubagentRow> _subagentRows = new();
@@ -44,7 +45,13 @@ public partial class MainWindow
         {
             var label = Activity(call.Name, call.ArgumentsJson).Trim();
             var text = new TextBlock { Text = label, ToolTip = label, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap };
-            row.Activity.Children.Add(new DockPanel
+            if (call.Name == "search_text")
+            {
+                text.Text = OneLine(ArgumentOf(call.ArgumentsJson, "query"));
+                text.Margin = new(0, 3, 0, 3);
+                ProgressSection.AddSearch(ref row.Searches, row.Activity, text);
+            }
+            else row.Activity.Children.Add(new DockPanel
             {
                 Margin = new(0, 0, 0, 14),
                 Children = { GlyphText(Describe(call.Name).Glyph, 13, Theme.TextMuted, new(0, 2, 8, 0), false), text },
@@ -54,7 +61,7 @@ public partial class MainWindow
         if (update.CompletedAction is { } done && row.Tools.Remove(done.Id, out var tool))
         {
             bool failed = done.IsError || done.IsWarning;
-            tool.Text = Describe(done.Name).Label + (failed ? " · ошибка" : " · выполнено");
+            tool.Text = (done.Name == "search_text" ? tool.Text : Describe(done.Name).Label) + (failed ? " · ошибка" : " · выполнено");
             tool.Foreground = failed ? Theme.Warning : Theme.TextMuted;
         }
         if (update.Failed && update.Elapsed != null)
@@ -146,6 +153,7 @@ public partial class MainWindow
             CloseSubagents();
             return;
         }
+        HideBrowser();
         SubagentsWorkspace.Visibility = Visibility.Visible;
         UpdateSubagentsLayout();
         ApplyPreviewLayout();
@@ -163,7 +171,7 @@ public partial class MainWindow
     void UpdateSubagentsLayout()
     {
         SubagentsExpandButton.Content = _subagentsExpanded ? Glyphs.BackToWindow : Glyphs.FullScreen;
-        SetHint(SubagentsExpandButton, _subagentsExpanded ? "Свернуть в боковую панель" : "Развернуть на всё рабочее пространство");
+        AutomationProperties.SetName(SubagentsExpandButton, _subagentsExpanded ? "Свернуть в боковую панель" : "Развернуть на всё рабочее пространство");
         KeyboardNavigation.SetTabNavigation(SubagentsWorkspace, _subagentsExpanded ? KeyboardNavigationMode.Cycle : KeyboardNavigationMode.Continue);
     }
 

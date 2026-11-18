@@ -74,7 +74,10 @@ public static class FileActions
     public static void OpenUrl(string url)
     {
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto")
+        {
+            if (AppNetwork.CustomRoute) RaiseNotify("Ссылка откроется во внешней программе с её сетевыми настройками.", false);
             Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }, "Не удалось открыть браузер: ");
+        }
         else Notify?.Invoke("Эту ссылку открыть нельзя: " + url, true);
     }
 

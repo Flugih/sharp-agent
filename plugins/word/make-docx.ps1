@@ -92,7 +92,7 @@ for ($i = 0; $i -lt $lines.Count;) {
 Close-Paragraph
 
 $main = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
-Write-OfficeFile $Target 'word/' ([ordered]@{
+Write-OfficeFile -Overwrite $Overwrite -Target $Target -Folder 'word/' -Parts ([ordered]@{
     'document.xml' = 'wordprocessingml.document.main', '', ("<w:document $main><w:body>$body" +
         '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="850" w:bottom="1134" w:left="1701" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>' +
         '</w:body></w:document>')

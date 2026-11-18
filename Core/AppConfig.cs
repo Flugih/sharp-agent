@@ -7,6 +7,7 @@ public sealed class AppConfig
     public const string DefaultBaseUrl = "https://tooken.club/v1";
     public const string DefaultModel = "claude-sonnet-5-5";
     public const string DefaultImageModel = "gpt-image-2";
+    public static readonly AgentProvider[] ImageProviders = [AgentProvider.Tooken, AgentProvider.Gemini, AgentProvider.Mistral, AgentProvider.OpenRouter];
     public static readonly string[] EffortLevels = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
     public AgentProvider Provider { get; private init; }
@@ -15,12 +16,15 @@ public sealed class AppConfig
     public string? GroqApiKey => ApiKeyFor(AgentProvider.Groq);
     public string BaseUrl { get; private init; } = DefaultBaseUrl;
     public string Model { get; private init; } = DefaultModel;
-    public string? ImageModel { get; private init; }
+    Dictionary<AgentProvider, string> ImageModels { get; init; } = [];
+    public string? ImageModel => ImageModels.GetValueOrDefault(AgentProvider.Tooken);
+    public bool ImagesLikeChat { get; private init; }
     public string? ReasoningEffort { get; private init; }
     public string WorkingDirectory { get; private init; } = "";
     public bool Sandbox { get; private init; }
     public bool UseSubagents { get; private init; }
     public bool ComputerUse { get; private init; }
+    internal NetworkSettings Network { get; private init; } = new();
     public int? MaxTokens { get; private init; }
     public long? DayLimit { get; private init; }
     public long? MonthLimit { get; private init; }
@@ -57,26 +61,52 @@ public sealed class AppConfig
             ApiKeys = Enum.GetValues<AgentProvider>().Where(p => p != AgentProvider.ChatGpt)
                 .ToDictionary(p => p, p => CleanKey(Get(KeyOf(p, "API_KEY")))),
             BaseUrl = NormalizeBaseUrl(Get("TOOKEN_BASE_URL") ?? DefaultBaseUrl),
-            Model = Get(KeyOf(provider, "MODEL")) ?? DefaultModelOf(provider),
-            ImageModel = Get("TOOKEN_IMAGE_MODEL"),
+            Model = ChatModelOf(provider, Get(KeyOf(provider, "MODEL"))),
+            ImageModels = ImageProviders.Where(p => Get(KeyOf(p, "IMAGE_MODEL")) != null).ToDictionary(p => p, p => Get(KeyOf(p, "IMAGE_MODEL"))!),
+            ImagesLikeChat = Get("AGENT_IMAGE_PROVIDER")?.ToLowerInvariant() == "chat",
             ReasoningEffort = Get(KeyOf(provider, "REASONING_EFFORT"))?.ToLowerInvariant() is { } effort && EffortLevels.Contains(effort) ? effort : null,
             WorkingDirectory = workDir,
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
+            Network = NetworkSettings.Load(key => vars.GetValueOrDefault(key)),
             MaxTokens = int.TryParse(Get("TOOKEN_MAX_TOKENS"), out var mt) && mt > 0 ? mt : null,
             DayLimit = ParseMillions(Get("AGENT_DAY_LIMIT_MLN")),
             MonthLimit = ParseMillions(Get("AGENT_MONTH_LIMIT_MLN")),
         };
     }
 
+    public string ImageModelOf(AgentProvider provider) => ImageModels.GetValueOrDefault(provider) ?? ImageModelsOf(provider)[0];
+
+    // Images follow the chat provider only where its API can draw; otherwise Tooken Club draws them.
+    public AgentProvider ImageProvider => ImagesLikeChat && Provider != AgentProvider.Tooken && ImageProviders.Contains(Provider) && ApiKeyFor(Provider) != null
+        ? Provider : AgentProvider.Tooken;
+
+    public static string[] ImageModelsOf(AgentProvider provider) => provider switch
+    {
+        AgentProvider.Gemini => ["gemini-nano-banana-2.1", "gemini-3.1-flash-lite-image", "gemini-3-pro-image"],
+        AgentProvider.Mistral => ["mistral-medium-latest", "mistral-large-latest"],
+        AgentProvider.OpenRouter => ["google/gemini-2.5-flash-image", "openai/gpt-image-2", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"],
+        _ => [DefaultImageModel],
+    };
+
     public static string KeyOf(AgentProvider provider, string setting) => provider.ToString().ToUpperInvariant() + "_" + setting;
+
+    internal static string ChatModelOf(AgentProvider provider, string? model)
+    {
+        if (provider == AgentProvider.Gemini && model != null)
+        {
+            if (model.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) model = model["models/".Length..];
+            if (model.Equals("gemini-2.5-flash", StringComparison.OrdinalIgnoreCase)) model = null;
+        }
+        return string.IsNullOrWhiteSpace(model) ? DefaultModelOf(provider) : model;
+    }
 
     public static string DefaultModelOf(AgentProvider provider) => provider switch
     {
         AgentProvider.ChatGpt => "gpt-6.1-sol",
         AgentProvider.Groq => "openai/gpt-oss-120b",
-        AgentProvider.Gemini => "gemini-2.5-flash",
+        AgentProvider.Gemini => "gemini-3.8-flash",
         AgentProvider.OpenRouter => "openrouter/auto",
         AgentProvider.Mistral => "mistral-small-latest",
         _ => DefaultModel,
@@ -116,7 +146,9 @@ public sealed class AppConfig
         TOOKEN_API_KEY=
         TOOKEN_BASE_URL={DefaultBaseUrl}
         TOOKEN_MODEL={DefaultModel}
-        # Модель, которой агент рисует картинки (всегда через Tooken Club)
+        # Кто рисует картинки: tooken — всегда Tooken Club; chat — провайдер чата (Gemini, Mistral, OpenRouter), иначе Tooken Club
+        AGENT_IMAGE_PROVIDER=tooken
+        # Модели, которыми агент рисует картинки, — для каждого провайдера своя
         TOOKEN_IMAGE_MODEL={DefaultImageModel}
         # Сила рассуждения для моделей, которые её поддерживают: low, medium или high (пусто — как решит модель)
         TOOKEN_REASONING_EFFORT=
@@ -131,12 +163,15 @@ public sealed class AppConfig
         GEMINI_API_KEY=
         GEMINI_MODEL={DefaultModelOf(AgentProvider.Gemini)}
         GEMINI_REASONING_EFFORT=
+        GEMINI_IMAGE_MODEL={ImageModelsOf(AgentProvider.Gemini)[0]}
         OPENROUTER_API_KEY=
         OPENROUTER_MODEL={DefaultModelOf(AgentProvider.OpenRouter)}
         OPENROUTER_REASONING_EFFORT=
+        OPENROUTER_IMAGE_MODEL={ImageModelsOf(AgentProvider.OpenRouter)[0]}
         MISTRAL_API_KEY=
         MISTRAL_MODEL={DefaultModelOf(AgentProvider.Mistral)}
         MISTRAL_REASONING_EFFORT=
+        MISTRAL_IMAGE_MODEL={ImageModelsOf(AgentProvider.Mistral)[0]}
         # Рабочая папка агента (относительный путь — от папки программы)
         AGENT_WORKDIR=workspace
         # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd отключены)

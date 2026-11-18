@@ -157,7 +157,22 @@ public partial class MainWindow
         return path;
     }
 
+    int _attachmentImports;
+
     async Task AddAttachmentsAsync(IEnumerable<string> paths)
+    {
+        if (_chatOperation != null || _waitingToClose) return;
+        _attachmentImports++;
+        UpdateSendButton();
+        try { await ImportAttachmentsAsync(paths); }
+        finally
+        {
+            _attachmentImports--;
+            UpdateSendButton();
+        }
+    }
+
+    async Task ImportAttachmentsAsync(IEnumerable<string> paths)
     {
         var problems = new List<string>();
         foreach (var raw in paths)
@@ -180,6 +195,12 @@ public partial class MainWindow
                 {
                     var copy = await CopyIntoSandboxAsync(path, problems);
                     if (copy == null) continue;
+                    if (_pendingAttachments.Count >= MaxAttachments)
+                    {
+                        File.Delete(copy);
+                        problems.Add($"к одному сообщению можно приложить не больше {MaxAttachments} файлов");
+                        break;
+                    }
                     path = copy;
                 }
                 if (Attachment.FromPath(path) is not { } attachment) problems.Add($"«{name}» не найден");
@@ -248,6 +269,7 @@ public partial class MainWindow
             });
         }
         AttachPanel.Visibility = VisibleIf(_pendingAttachments.Count > 0);
+        if (_cts == null && _pendingAttachments.Count > 0) _compactChat?.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");
         UpdateSendButton();
     }
 

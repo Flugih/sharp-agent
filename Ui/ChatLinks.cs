@@ -36,13 +36,13 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
 
     Inline WebLink(string url, string text)
     {
-        var link = new Hyperlink(new Run(text)) { ToolTip = url, Style = LinkStyle, TextDecorations = TextDecorations.Underline };
+        var link = new Hyperlink(new Run(text)) { ToolTip = "Открыть во внешнем браузере\n" + url, Style = LinkStyle, TextDecorations = TextDecorations.Underline };
         link.Click += (_, _) => FileActions.OpenUrl(url);
         link.ContextMenu = new ContextMenu
         {
             Items =
             {
-                FileActions.Item("Открыть ссылку", Glyphs.Globe, () => FileActions.OpenUrl(url)),
+                FileActions.Item("Открыть во внешнем браузере", Glyphs.Globe, () => FileActions.OpenUrl(url)),
                 FileActions.Item("Копировать ссылку", Glyphs.Copy, () => FileActions.Copy(url, "Ссылка скопирована")),
             },
         };

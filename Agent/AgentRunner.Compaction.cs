@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    const string SummaryField = "summary";
+    const string SummaryField = "summary", SummaryUsageField = "summary_usage";
     const int DefaultContextTokens = 128_000, SummaryTokens = 6_000, TranscriptLineChars = 300;
     const double CompactAt = 0.8;
     const string CompactPrompt = """
@@ -14,23 +14,27 @@ partial class AgentRunner
         4. Ошибки и проверки: что падало, как исправлено, результаты сборок и тестов.
         5. Текущее состояние: что сделано, что осталось, какой следующий шаг.
         Не выдумывай. Пропускай подробности, которые больше не понадобятся, но не теряй требования пользователя и незавершённую работу.
+        Остановленные поручения помечай как остановленные в разделе запросов. Их незавершённые действия не включай в следующие шаги.
         """;
 
-    int SummaryStart() => _history.FindLastIndex(m => Str(MetaOf(m)?[SummaryField]) != null);
+    int SummaryStart(int currentUser) => currentUser < 0 ? 0 :
+        Math.Max(0, _history.FindLastIndex(currentUser, m => Str(MetaOf(m)?[SummaryField]) != null));
 
-    // Folds older history into a model-written summary kept on the first message that stays in full.
-    async Task<bool> CompactAsync(string model, int room, CancellationToken ct)
+    async Task<int> CompactAsync(string model, int room, int from, int currentUser, HashSet<int> stoppedRequests, CancellationToken ct)
     {
-        int from = Math.Max(0, SummaryStart()), cut = _history.FindLastIndex(m => Role(m) != "tool");
+        if (currentUser <= from + 1) return from;
+        int cut = currentUser;
         for (int i = cut - 1, kept = HistoryCompressor.EstimateAll(_history.Skip(cut)); i > from; i--)
         {
             if ((kept += HistoryCompressor.Estimate(_history[i])) > room / 4) break;
-            if (Role(_history[i]) != "tool") cut = i;
+            if (Role(_history[i]) == "user") cut = i;
         }
-        if (cut <= from + 1) return false;
+        if (cut <= from + 1) return from;
         var transcript = new StringBuilder();
-        if (from > 0) transcript.AppendLine("Прежняя сводка:\n" + Str(MetaOf(_history[from])?[SummaryField]));
-        foreach (var message in _history.Skip(from).Take(cut - from))
+        var previous = from > 0 ? "Прежняя сводка:\n" + Str(MetaOf(_history[from])?[SummaryField]) + "\n" : "";
+        for (int i = from; i < cut; i++)
+        {
+            var message = _history[i];
             transcript.AppendLine(Role(message) switch
             {
                 "user" => "Пользователь: " + ExtractText(message["content"]) +
@@ -39,8 +43,12 @@ partial class AgentRunner
                 _ => "Агент: " + ExtractText(message["content"]) + string.Concat((message["tool_calls"] as JsonArray)?.OfType<JsonObject>()
                     .Select(ParseCall).Select(call => $"\n  → {call.Name} {Clip(call.ArgumentsJson, TranscriptLineChars)}") ?? []),
             });
+            if (stoppedRequests.Contains(i)) transcript.AppendLine(StoppedRequest);
+        }
         int limit = Math.Max(4_000, (room - SummaryTokens) * 3);
-        var text = transcript.Length <= limit ? transcript.ToString() : "…\n" + transcript.ToString(transcript.Length - limit, limit);
+        limit -= previous.Length;
+        if (limit <= 0) return from;
+        var text = previous + (transcript.Length <= limit ? transcript.ToString() : "…\n" + transcript.ToString(transcript.Length - limit, limit));
         Notice?.Invoke("Сжимаю контекст: модель составляет сводку давних шагов.");
         ChatResult result;
         try
@@ -48,20 +56,36 @@ partial class AgentRunner
             result = await Api!.CompleteAsync(model, [new JsonObject { ["role"] = "system", ["content"] = CompactPrompt },
                 new JsonObject { ["role"] = "user", ["content"] = text }], [], SummaryTokens, null, (_, _) => { }, _ => { }, ct);
         }
-        catch (ApiException) { return false; }
+        catch (ApiException) { return from; }
+        var summary = ExtractText(result.Message["content"])?.Trim();
+        bool summarized = !string.IsNullOrEmpty(summary);
+        if (!summarized && result.Usage == null) return from;
+        var meta = EnsureMeta((JsonObject)_history[cut]);
+        if (summarized) meta[SummaryField] = summary;
+        if (result.Usage is { } usage) RecordAdditionalUsage(meta, model, usage);
+        await SaveAsync();
         if (result.Usage != null) UsageReported?.Invoke(model, result.Usage);
-        if (ExtractText(result.Message["content"])?.Trim() is not { Length: > 0 } summary) return false;
-        EnsureMeta((JsonObject)_history[cut])[SummaryField] = summary;
-        Save();
-        return true;
+        return summarized ? cut : from;
     }
 
-    JsonObject SummaryMessage(int start, int currentUser)
+    void RecordAdditionalUsage(JsonObject meta, string model, UsageInfo usage)
     {
-        var text = "[Сводка программы: давние шаги этой переписки заменены сводкой, составленной моделью. Это контекст, а не новая просьба.]\n" +
-                   Str(MetaOf(_history[start])?[SummaryField]);
-        if (currentUser >= 0 && currentUser < start)
-            text += "\n\n[Текущий запрос пользователя, на котором ты работаешь]\n" + Clip(ExtractText(_history[currentUser]["content"]) ?? "", 4_000);
-        return new() { ["role"] = "user", ["content"] = text };
+        if (meta[SummaryUsageField] is not JsonArray entries) meta[SummaryUsageField] = entries = [];
+        var provider = Provider.ToString().ToLowerInvariant();
+        var entry = entries.OfType<JsonObject>().FirstOrDefault(item => Str(item["provider"]) == provider && Str(item["model"]) == model);
+        if (entry == null)
+        {
+            entry = new() { ["provider"] = provider, ["model"] = model };
+            entries.Add(entry);
+        }
+        entry["prompt_tokens"] = Long(entry["prompt_tokens"]) + usage.PromptTokens;
+        entry["completion_tokens"] = Long(entry["completion_tokens"]) + usage.CompletionTokens;
     }
+
+    JsonObject SummaryMessage(int start) => new()
+    {
+        ["role"] = "user",
+        ["content"] = "[Сводка программы: давние шаги этой переписки заменены сводкой, составленной моделью. Это контекст, а не новая просьба.]\n" +
+                      Str(MetaOf(_history[start])?[SummaryField]),
+    };
 }

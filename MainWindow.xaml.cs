@@ -49,7 +49,7 @@ public partial class MainWindow
     IChatProvider? _provider;
     CancellationTokenSource? _cts;
     Task? _run;
-    bool _closeConfirmed, _confirmOff;
+    bool _closeConfirmed, _waitingToClose, _confirmOff;
 
     public MainWindow()
     {
@@ -63,6 +63,7 @@ public partial class MainWindow
         FileActions.Notify += notice;
         Closed += (_, _) =>
         {
+            ResetBrowserNetwork(closing: true);
             FileActions.Notify -= notice;
             var compact = _compactChat;
             _compactChat = null;
@@ -91,7 +92,6 @@ public partial class MainWindow
         {
             ConfirmAsync = ConfirmAsync, ClarifyAsync = AskClarificationAsync, CanSpendAsync = CheckLimitsAsync,
             ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
-            SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
         };
         _agent.AssistantText += OnAssistantText;
         _agent.AssistantDelta += OnAssistantDelta;
@@ -119,7 +119,7 @@ public partial class MainWindow
         ApplyConfig();
         UpdateConfirmToggle();
         ApplySidebar();
-        OpenStartupChat();
+        _ = OpenStartupChatAsync();
         UpdateTrashCount();
         _ = LoadChatsAsync();
         _ = Task.Run(() => CommandLog.Prune(AppPaths.LogsFolder));
@@ -142,18 +142,34 @@ public partial class MainWindow
 
     async void Window_Closing(object? s, CancelEventArgs e)
     {
-        if (_run is { IsCompleted: false } run && !_closeConfirmed)
+        if (_waitingToClose)
         {
             e.Cancel = true;
-            if (!DarkDialog.Ask(ActiveChatWindow, "Агент ещё работает",
-                    "Если закрыть программу сейчас, текущая задача прервётся на середине. Переписка сохранится.",
-                    "Остановить и закрыть", "Не закрывать", true))
-                return;
-            _closeConfirmed = true;
-            SaveState();
-            StopAgent();
-            await Task.WhenAny(run, Task.Delay(5000));
-            _ = Dispatcher.InvokeAsync(Close);
+            return;
+        }
+        var run = !_closeConfirmed && _run is { IsCompleted: false } active ? active : null;
+        if (run != null || _chatOperation is { IsCompleted: false })
+        {
+            e.Cancel = true;
+            _waitingToClose = true;
+            try
+            {
+                if (run != null)
+                {
+                    if (!DarkDialog.Ask(ActiveChatWindow, "Агент ещё работает",
+                            "Если закрыть программу сейчас, текущая задача прервётся на середине. Переписка сохранится.",
+                            "Остановить и закрыть", "Не закрывать", true))
+                        return;
+                    _closeConfirmed = true;
+                    SaveState();
+                    StopAgent();
+                    await Task.WhenAny(run, Task.Delay(5000));
+                    await _agent.WaitForChatWritesAsync();
+                }
+                if (_chatOperation is { } operation) await operation;
+                _ = Dispatcher.InvokeAsync(Close);
+            }
+            finally { _waitingToClose = false; }
             return;
         }
         _recorder?.Cancel();
@@ -171,6 +187,11 @@ public partial class MainWindow
 
     void ApplyConfig()
     {
+        bool routeChanged = _browserNetwork != _config.Network;
+        if (routeChanged) ResetBrowserNetwork();
+        AppNetwork.Apply(_config.Network);
+        _browserNetwork = _config.Network;
+        if (routeChanged && _browserTab != null && IsShown(BrowserPane)) SelectBrowserTab(_browserTab);
         _agent.MaxTokens = _config.MaxTokens;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
         _toolContext.ComputerUse = _config.ComputerUse;
@@ -353,9 +374,9 @@ public partial class MainWindow
     void UpdateSendButton()
     {
         bool hasDraft = !string.IsNullOrWhiteSpace(InputBox.Text) || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
-        SendButton.IsEnabled = hasDraft || resume;
+        SendButton.IsEnabled = !ChatFileBusy && (hasDraft || resume);
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
-        SendButton.ToolTip = resume ? "Продолжить задачу (Enter)" : "Отправить (Enter). Новая строка — Shift+Enter";
+        SendButton.ToolTip = _attachmentImports > 0 ? "Подготавливаю вложения…" : resume ? "Продолжить задачу (Enter)" : "Отправить (Enter). Новая строка — Shift+Enter";
         AutomationProperties.SetName(SendButton, resume ? "Продолжить задачу" : "Отправить");
         UpdateCompactAction();
     }
@@ -375,6 +396,7 @@ public partial class MainWindow
 
     async Task SendAsync()
     {
+        if (ChatFileBusy || _waitingToClose) return;
         if (_cts != null)
         {
             ShowToast("Агент ещё работает. Дождитесь ответа или остановите его (Esc)", ToastKind.Warning);
@@ -394,7 +416,7 @@ public partial class MainWindow
         ScrollToLatest();
         var sentAt = DateTimeOffset.UtcNow;
         AddUserBubble(text, attachments);
-        await RunAgentAsync(ct => _agent.RunAsync(text, attachments, model, ct, sentAt));
+        await (_run = RunAgentAsync(ct => _agent.RunAsync(text, attachments, model, ct, sentAt)));
     }
 
     string? ModelForRequest()
@@ -413,30 +435,34 @@ public partial class MainWindow
 
     async Task RetryAsync()
     {
-        if (_cts != null || !_agent.CanContinue ||
+        if (ChatFileBusy || _waitingToClose || _cts != null || !_agent.CanContinue ||
             (_agent.PendingLocalCommand != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
         RemoveErrorCard();
+        HideChangeCards();
         if (_chatView.LastStopNotice != null) ChatPanel.Children.Remove(_chatView.LastStopNotice);
         _chatView.LastStopNotice = null;
         ScrollToLatest();
-        await RunAgentAsync(ct => _agent.ContinueAsync(model, ct));
+        await (_run = RunAgentAsync(ct => _agent.ContinueAsync(model, ct), continuation: true));
     }
 
-    async Task RunAgentAsync(Func<CancellationToken, Task> run)
+    async Task RunAgentAsync(Func<CancellationToken, Task> run, bool continuation = false)
     {
         var cts = _cts = new CancellationTokenSource();
+        bool completed = false;
         SetRunning(true);
         StartProgress();
-        var task = _run = run(cts.Token);
-        SyncCompactChat();
         try
         {
+            var task = run(cts.Token);
+            SyncCompactChat();
             await task;
+            completed = true;
+            WindowEffects.CompletionSound();
             WindowEffects.Flash(ActiveChatWindow);
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || _limitDeclined)
         {
-            _agent.RecordStop(cts.IsCancellationRequested ? "Агент остановлен." : "Агент остановлен: исчерпан ваш лимит расхода.");
+            await _agent.RecordStopAsync(cts.IsCancellationRequested ? "Агент остановлен." : "Агент остановлен: исчерпан ваш лимит расхода.");
         }
         catch (OperationCanceledException)
         {
@@ -464,7 +490,8 @@ public partial class MainWindow
             ClearDraft(interrupted: true);
             MarkUnfinishedToolRows();
             FinishProgress("Выполнение прервано");
-            FlushTurnFiles();
+            if (!continuation || completed) FlushTurnFiles();
+            SyncCompactChat();
             SetRunning(false);
             SyncCurrentChat(true);
             if (_compactChat == null && (!IsKeyboardFocusWithin || Keyboard.FocusedElement is not TextBoxBase)) ComposerFocus.Focus();
@@ -507,6 +534,7 @@ public partial class MainWindow
             else if (IsShown(SubagentsWorkspace)) CloseSubagents();
             else if (IsShown(QuestionHost)) StopAgent();
             else if (IsShown(PreviewPane)) ClosePreview();
+            else if (IsShown(BrowserPane) && (_browserExpanded || BrowserPane.IsKeyboardFocusWithin)) HideBrowser();
             else if (_cts != null) StopAgent();
             else return;
             e.Handled = true;

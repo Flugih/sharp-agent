@@ -24,20 +24,30 @@ public partial class MainWindow
         public readonly Panel? Target = target;
         public readonly Dictionary<string, ToolRow> ToolRows = new();
         public readonly List<ProducedFile> TurnFiles = [];
+        public readonly List<(FrameworkElement View, ProducedFile[] Files)> ChangeCards = [];
+        public readonly Dictionary<string, ProgressSection> FileEditGroups = new(StringComparer.OrdinalIgnoreCase);
         public StackPanel? LastAnswer;
         public FrameworkElement? LastStopNotice;
         public ProgressSection? Progress;
         public (ProgressSection Section, bool Commands)? ToolGroup;
         public RichTextBox? ReasoningRow, CommentaryRow;
         public TextBlock? ProgressHint;
+        public ToolCallEvent? PendingPlan;
     }
 
     ChatRenderState _chatView = new();
     Border? _lastErrorCard;
+    FrameworkElement? _stickyProgress;
+    Panel? _stickyProgressParent;
+    Border? _stickyProgressPlaceholder;
+    int _stickyProgressIndex = -1;
+    Thickness _stickyProgressMargin;
+    bool _stickyProgressChanging;
     bool _autoScroll = true, _suppressAnimation;
 
     void RenderCurrentChat()
     {
+        ReleaseStickyProgress();
         ClearSubagents();
         ClearDraft();
         ChatPanel.Children.Clear();
@@ -56,9 +66,12 @@ public partial class MainWindow
     void AddUserBubble(string text, IReadOnlyList<Attachment> attachments)
     {
         FlushTurnFiles();
+        _chatView.ChangeCards.Clear();
+        _chatView.FileEditGroups.Clear();
         _chatView.LastStopNotice = null;
         _chatView.Progress = null;
         _chatView.ProgressHint = null;
+        _chatView.PendingPlan = null;
         ResetProgressStep();
         _chatView.ToolRows.Clear();
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new(64, 16, 0, 8) };
@@ -204,6 +217,16 @@ public partial class MainWindow
     static FileDiff? Combine(FileDiff? first, FileDiff? second) => first == null || second == null ? second ?? first
         : new FileDiff(first.Unified.TrimEnd('\n') + "\n" + second.Unified, first.Added + second.Added, first.Removed + second.Removed);
 
+    void HideChangeCards()
+    {
+        foreach (var (view, files) in _chatView.ChangeCards)
+        {
+            if (view.Parent is Panel parent) parent.Children.Remove(view);
+            _chatView.TurnFiles.AddRange(files);
+        }
+        _chatView.ChangeCards.Clear();
+    }
+
     void FlushTurnFiles()
     {
         var files = _chatView.TurnFiles.Where(file => file.Change != null || file.Undone || File.Exists(file.Path))
@@ -216,6 +239,7 @@ public partial class MainWindow
                 : files[0].Undone ? new TextBlock { Text = "Изменение отменено", Foreground = Theme.TextMuted }
                 : FileCard(files[0].Path, files[0].Diff, files[0].Created);
             var cards = new Border { Margin = new(0, 14, 0, 2), Child = card };
+            _chatView.ChangeCards.Add((cards, files));
             if (_chatView.LastAnswer is { } answer) answer.Children.Insert(answer.Children.Count - 1, cards);
             else AppendToChat(cards);
         }
@@ -223,13 +247,13 @@ public partial class MainWindow
         _chatView.LastAnswer = null;
     }
 
-    (string Path, bool Created)? Produced(ToolRow row, string output) => row.Name switch
+    (string Path, bool Created)? Produced(string name, string arguments, string? path, string output) => name switch
     {
-        "write_file" or "edit_file" when row.FilePath != null => (row.FilePath, output.StartsWith("Файл создан", StringComparison.Ordinal)),
+        "write_file" or "edit_file" when path != null => (path, output.StartsWith("Файл создан", StringComparison.Ordinal)),
         "generate_image" when ImageTools.SavedPath(output) is { } image => (image, true),
         "copy_path" when ResultTarget(output) is { } file && File.Exists(file) => (file, true),
         "run_plugin" when !ToolRegistry.CommandFailed(output) &&
-            ResolvePath(ArgumentOf(ArgumentOf(row.ArgumentsJson, "arguments") ?? "{}", "Target")) is { } target && File.Exists(target) => (target, true),
+            ResolvePath(ArgumentOf(ArgumentOf(arguments, "arguments") ?? "{}", "Target")) is { } target && File.Exists(target) => (target, true),
         _ => null,
     };
 
@@ -310,11 +334,18 @@ public partial class MainWindow
     void OnToolCallStarted(ToolCallEvent e)
     {
         _compactChat?.SetStatus(Activity(e.Name, e.ArgumentsJson));
-        AddToolRow(e.Id, e.Name, e.ArgumentsJson);
+        if (e.Name == "update_plan") _chatView.PendingPlan = e;
+        else AddToolRow(e.Id, e.Name, e.ArgumentsJson);
     }
 
     void OnToolCallFinished(ToolResultEvent e)
     {
+        if (_chatView.PendingPlan is { } plan && plan.Id == e.Id)
+        {
+            _chatView.PendingPlan = null;
+            CompletePlan(plan.Id, plan.ArgumentsJson, e.Output, e.IsError);
+            return;
+        }
         if (!_chatView.ToolRows.TryGetValue(e.Id, out var row)) return;
         CompleteToolRow(row, e.Output, e.IsError, e.IsWarning, e.Diff, e.Change);
     }
@@ -359,6 +390,7 @@ public partial class MainWindow
         "click" => "Нажимаю",
         "type" => "Ввожу текст",
         "keys" => "Нажимаю клавиши",
+        "scroll" => "Прокручиваю к элементу",
         "screenshot" => "Делаю скриншот",
         "wait" => "Жду",
         "close" => "Закрываю окно",
@@ -392,6 +424,25 @@ public partial class MainWindow
         _ => (Glyphs.Tool, tool),
     };
 
+    void AddFileEditProgress(string name, string? path, UIElement item)
+    {
+        if (name is not ("write_file" or "edit_file") || path == null)
+        {
+            AddProgressTool(name, item);
+            return;
+        }
+        var progress = EnsureProgress();
+        if (!_chatView.FileEditGroups.TryGetValue(path, out var group))
+        {
+            group = _chatView.FileEditGroups[path] = new("Правки файла · " + ShortName(path), Glyphs.Edit);
+            group.View.IsExpanded = false;
+            group.View.Margin = new(-3, 2, 0, 2);
+            progress.Items.Children.Add(group.View);
+        }
+        group.Items.Children.Add(item);
+        group.SetTitle($"Правки файла · {ShortName(path)} · {group.Items.Children.Count}");
+    }
+
     ToolRow AddToolRow(string id, string name, string argumentsJson)
     {
         var (glyph, label) = Describe(name);
@@ -409,13 +460,17 @@ public partial class MainWindow
             Background = Brushes.Transparent,
             Children =
             {
-                GlyphText(glyph, 14, Theme.TextMuted, new(0, 1, 8, 0)),
-                new TextBlock { Text = label, FontSize = 13, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center },
                 spinner, status, expand,
             },
         };
         var subject = MakeSubject(name, argumentsJson);
-        if (subject != null) header.Children.Insert(2, subject);
+        if (name != "search_text")
+        {
+            header.Children.Insert(0, GlyphText(glyph, 14, Theme.TextMuted, new(0, 1, 8, 0)));
+            header.Children.Insert(1, new TextBlock { Text = label, FontSize = 13, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center });
+        }
+        else subject ??= TextChip("Запрос без текста");
+        if (subject != null) header.Children.Insert(name == "search_text" ? 0 : 2, subject);
         var root = new StackPanel { Margin = new(0, 4, 0, 4), Children = { header } };
         var row = new ToolRow(id, name, argumentsJson, root, header, spinner, status, expand)
         {
@@ -424,7 +479,7 @@ public partial class MainWindow
         header.MouseLeftButtonUp += (_, _) => ToggleDetails(row);
         expand.Click += (_, _) => ToggleDetails(row);
         _chatView.ToolRows[id] = row;
-        AddProgressTool(name, root);
+        AddFileEditProgress(name, row.FilePath, root);
         return row;
     }
 
@@ -457,26 +512,13 @@ public partial class MainWindow
             "delete_path" => TextChip(ShortName(Get("path"))),
             "move_path" or "copy_path" => TextChip($"{ShortName(Get("source"))} → {ShortName(Get("destination"))}"),
             "get_system_info" => null,
-            "update_plan" => TextChip(PlanProgress(argumentsJson)),
+            "update_plan" => null,
             _ => Get("path") is var path && ResolvePath(path) is { } full ? _links.FileChip(full, ShortName(path)) : TextChip(ShortName(path)),
         };
         if (element == null) return null;
-        element.Margin = new(8, 0, 0, 0);
+        if (tool != "search_text") element.Margin = new(8, 0, 0, 0);
         if (element is not Button) element.ToolTip = Shorten(PrettyJson(argumentsJson), 800);
         return element;
-    }
-
-    static string? PlanProgress(string argumentsJson)
-    {
-        try
-        {
-            if ((JsonNode.Parse(argumentsJson)?["items"] as JsonArray)?.OfType<JsonObject>().ToList() is not { Count: > 0 } items) return null;
-            var current = items.FirstOrDefault(item => JsonUtil.Str(item["status"]) == "in_progress") ??
-                          items.FirstOrDefault(item => JsonUtil.Str(item["status"]) != "done");
-            return $"{items.Count(item => JsonUtil.Str(item["status"]) == "done")}/{items.Count}" +
-                   (current != null ? " · " + OneLine(JsonUtil.Str(current["step"])) : "");
-        }
-        catch (JsonException) { return null; }
     }
 
     static FrameworkElement? TextChip(string? text, bool mono = false) => string.IsNullOrWhiteSpace(text) ? null : new Border
@@ -525,7 +567,7 @@ public partial class MainWindow
         row.Diff = isError ? null : diff;
         if (row.Diff != null) row.Header.Children.Insert(row.Header.Children.IndexOf(row.Spinner), DiffSummary(row.Diff.Added, row.Diff.Removed));
         if (!isError && change != null) NoteProduced(change.Path, row.Diff, change.Created, change, undone);
-        else if (!isError && !isWarning && Produced(row, output) is { } produced) NoteProduced(produced.Path, row.Diff, produced.Created, null, undone);
+        else if (!isError && !isWarning && Produced(row.Name, row.ArgumentsJson, row.FilePath, output) is { } produced) NoteProduced(produced.Path, row.Diff, produced.Created, null, undone);
         row.Expand.Visibility = Visibility.Visible;
         ShowExpandState(row, open: false);
     }
@@ -668,6 +710,7 @@ public partial class MainWindow
 
     void MarkUnfinishedToolRows()
     {
+        _chatView.PendingPlan = null;
         foreach (var row in _chatView.ToolRows.Values.Where(r => r.Output == null)) CompleteToolRow(row, "Выполнение прервано.", isError: true);
     }
 
@@ -714,10 +757,18 @@ public partial class MainWindow
                             var meta = result?[AgentRunner.MetaField] as JsonObject;
                             if (JsonUtil.Bool(meta?["read_reused"]) == true || JsonUtil.Bool(meta?["action_reused"]) == true) continue;
                             var function = call["function"] as JsonObject;
-                            var row = AddToolRow(id, JsonUtil.Str(function?["name"]) ?? "?", JsonUtil.Str(function?["arguments"]) ?? "{}");
+                            var name = JsonUtil.Str(function?["name"]) ?? "?";
+                            var arguments = JsonUtil.Str(function?["arguments"]) ?? "{}";
+                            var output = JsonUtil.Str(result?["content"]) ?? "";
+                            bool isError = JsonUtil.Bool(meta?["command_restricted"]) == true || ToolRegistry.IsErrorOutput(output);
+                            if (name == "update_plan")
+                            {
+                                if (result != null) CompletePlan(id, arguments, output, isError);
+                                continue;
+                            }
+                            var row = AddToolRow(id, name, arguments);
                             if (result == null) continue;
-                            var output = JsonUtil.Str(result["content"]) ?? "";
-                            CompleteToolRow(row, output, JsonUtil.Bool(meta?["command_restricted"]) == true || ToolRegistry.IsErrorOutput(output),
+                            CompleteToolRow(row, output, isError,
                                 row.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(output), AgentRunner.DiffOf(result),
                                 AgentRunner.FileChangeOf(result), AgentRunner.FileChangeUndone(result));
                         }
@@ -739,7 +790,7 @@ public partial class MainWindow
 
     void CopyLastAnswer_Click(object sender, RoutedEventArgs e)
     {
-        var last = _agent.History.OfType<JsonObject>().Where(m => JsonUtil.Str(m["role"]) == "assistant")
+        var last = _agent.History.OfType<JsonObject>().Where(m => JsonUtil.Str(m["role"]) == "assistant" && m["tool_calls"] == null && AgentRunner.ReviewOf(m) == null)
             .Select(m => AgentRunner.ExtractText(m["content"])).LastOrDefault(text => !string.IsNullOrWhiteSpace(text));
         if (last == null) ShowToast("В этом чате пока нет ответов");
         else if (TextClipboard.SetText(last.Trim())) ShowToast("Последний ответ скопирован", ToastKind.Success);
@@ -755,12 +806,68 @@ public partial class MainWindow
                 new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
     }
 
+    void ReleaseStickyProgress()
+    {
+        if (_stickyProgress is not { } view || _stickyProgressParent is not { } parent) return;
+        _stickyProgressChanging = true;
+        try
+        {
+            ChatStickyPanel.Children.Remove(view);
+            if (_stickyProgressPlaceholder is { } placeholder && placeholder.Parent is Panel placeholderParent)
+                placeholderParent.Children.Remove(placeholder);
+            int index = Math.Clamp(_stickyProgressIndex, 0, parent.Children.Count);
+            parent.Children.Insert(index, view);
+            view.Margin = _stickyProgressMargin;
+        }
+        finally
+        {
+            _stickyProgress = null;
+            _stickyProgressParent = null;
+            _stickyProgressPlaceholder = null;
+            _stickyProgressIndex = -1;
+            _stickyProgressChanging = false;
+            ChatStickyHost.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    void UpdateStickyProgress(double verticalChange)
+    {
+        if (_stickyProgressChanging) return;
+        if (verticalChange < 0)
+        {
+            ReleaseStickyProgress();
+            return;
+        }
+        if (verticalChange <= 0 || _stickyProgress != null) return;
+        var progress = _chatView.Progress;
+        if (progress is not { View.IsExpanded: true } || progress.View.Parent is not Panel parent) return;
+        if (progress.View.TransformToAncestor(ChatScroll).Transform(new Point(0, 0)).Y > 0) return;
+
+        _stickyProgressChanging = true;
+        try
+        {
+            var view = _stickyProgress = progress.View;
+            _stickyProgressParent = parent;
+            _stickyProgressIndex = parent.Children.IndexOf(view);
+            _stickyProgressMargin = view.Margin;
+            _stickyProgressPlaceholder = new Border { Height = view.ActualHeight, Margin = view.Margin };
+            parent.Children.RemoveAt(_stickyProgressIndex);
+            parent.Children.Insert(_stickyProgressIndex, _stickyProgressPlaceholder);
+            view.Margin = new(0, 0, 0, 0);
+            ChatStickyPanel.Children.Add(view);
+            ChatStickyHost.Visibility = Visibility.Visible;
+            ChatStickyPanel.UpdateLayout();
+        }
+        finally { _stickyProgressChanging = false; }
+    }
+
     void ChatScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (_changingHistory || !ReferenceEquals(e.OriginalSource, ChatScroll)) return;
         if (e.ExtentHeightChange != 0 && _autoScroll && _chatMotion == null) ChatScroll.ScrollToEnd();
         else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
         if (e.VerticalChange < 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckOlderHistory();
+        UpdateStickyProgress(e.VerticalChange);
         UpdateScrollDownButton();
     }
 

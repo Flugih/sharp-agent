@@ -41,8 +41,8 @@ for ($r = 0; $r -lt $rows.Count; $r++) {
         if (-not $value) { continue }
         $widths[$c] = [Math]::Max($widths[$c], $value.Length)
         $ref = (Get-ColumnName $c) + ($r + 1)
-        $number = $value -replace '\s'
-        if ($r -and $number -match '^-?[0-9]+([.,][0-9]+)?$' -and $number -notmatch '^-?0[0-9]') {
+        $number = $value
+        if ($r -and $number -match '^-?[0-9]+([.,][0-9]+)?$' -and $number -notmatch '^-?0[0-9]' -and ($number -replace '\D').Length -le 15) {
             [void]$data.Append("<c r=`"$ref`"><v>$($number.Replace(',', '.'))</v></c>")
         } else {
             [void]$data.Append("<c r=`"$ref`"$(if (-not $r) { ' s="1"' }) t=`"inlineStr`"><is><t xml:space=`"preserve`">$(Esc $value)</t></is></c>")
@@ -56,7 +56,7 @@ $name = ($Sheet -replace '[\[\]:*?/\\]', ' ').Trim()
 if (-not $name) { $name = 'Sheet1' }
 if ($name.Length -gt 31) { $name = $name.Substring(0, 31) }
 $main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-Write-OfficeFile $Target 'xl/' ([ordered]@{
+Write-OfficeFile -Overwrite $Overwrite -Target $Target -Folder 'xl/' -Parts ([ordered]@{
     'workbook.xml' = 'spreadsheetml.sheet.main', '',
         "<workbook $main xmlns:r=`"$OfficeRelations`"><sheets><sheet name=`"$(Esc $name)`" sheetId=`"1`" r:id=`"rId1`"/></sheets></workbook>"
     'worksheets/sheet1.xml' = 'spreadsheetml.worksheet', 'worksheet', ("<worksheet $main xmlns:r=`"$OfficeRelations`">" +

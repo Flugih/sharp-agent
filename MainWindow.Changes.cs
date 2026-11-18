@@ -99,9 +99,9 @@ public partial class MainWindow
             undo.ToolTip = undo.IsEnabled ? "Отменить изменения в этой группе" : "Для части файлов нет резервной копии";
             for (int i = 0; i < files.Length; i++) rowButtons[i].Opacity = files[i].Undone ? .55 : 1;
         }
-        undo.Click += (_, _) =>
+        undo.Click += async (_, _) =>
         {
-            UndoChanges(files);
+            await RunChatOperationAsync(() => UndoChangesAsync(files));
             Refresh();
         };
         review.Click += (_, _) => ReviewChanges(files, Math.Max(0, Array.FindIndex(files, file => file.Diff != null)));
@@ -148,7 +148,7 @@ public partial class MainWindow
         if (PreviewChangePicker.ContextMenu is { } menu) menu.IsOpen = true;
     }
 
-    void UndoChanges(ProducedFile[] files)
+    async Task UndoChangesAsync(ProducedFile[] files)
     {
         if (_cts != null)
         {
@@ -181,7 +181,7 @@ public partial class MainWindow
         {
             if (restored.Count > 0)
             {
-                _agent.MarkFileChangeUndone(restored);
+                await _agent.MarkFileChangeUndoneAsync(restored);
                 if (PreviewFileTab.IsChecked == true && _previewPath != null &&
                     files.Any(file => file.Undone && PathHelper.SamePath(file.Path, _previewPath))) RenderPreviewBody();
             }

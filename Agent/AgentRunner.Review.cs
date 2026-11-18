@@ -18,11 +18,16 @@ partial class AgentRunner
             : new($"План обновлён: выполнено {items.Count(item => item.Done)} из {items.Count}.", false);
     }
 
-    static List<(string Step, bool Done)> PlanItems(JsonObject? args) =>
-        (args?["items"] as JsonArray)?.OfType<JsonObject>().Select(item => (Step: TextArg(item["step"]) ?? "", Done: Str(item["status"]) == "done"))
+    internal readonly record struct PlanItem(string Step, string? Status)
+    {
+        public bool Done => Status == "done";
+    }
+
+    internal static List<PlanItem> PlanItems(JsonObject? args) =>
+        (args?["items"] as JsonArray)?.OfType<JsonObject>().Select(item => new PlanItem(TextArg(item["step"]) ?? "", Str(item["status"])))
         .Where(item => item.Step.Length > 0).Take(20).ToList() ?? [];
 
-    (List<(string Step, bool Done)> Items, int At)? CurrentPlan()
+    (List<PlanItem> Items, int At)? CurrentPlan()
     {
         for (int i = _history.Count - 1; i >= 0 && Role(_history[i]) != "user"; i--)
             if ((_history[i]["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall).LastOrDefault(call => call.Name == "update_plan") is { } plan)
@@ -42,8 +47,7 @@ partial class AgentRunner
         int since = reviews.Count > 0 ? _history.LastIndexOf(reviews[^1]) : start;
         int lastChange = -1, lastCheck = -1;
         var changed = new List<string>();
-        ToolCallEvent? check = null;
-        bool checkFailed = false;
+        var failed = new Dictionary<string, ToolCallEvent>();
         foreach (var (call, result) in CurrentActions())
         {
             int at = _history.IndexOf(result);
@@ -53,17 +57,23 @@ partial class AgentRunner
                 if (!changed.Contains(path, StringComparer.OrdinalIgnoreCase)) changed.Add(path);
             }
             else if (call.Name == "run_command" && VerificationCommand(call) || call.Name == ComputerTools.Name && Str(ArgsOf(call)?["action"]) == "launch")
-                (lastCheck, check, checkFailed) = (at, call, ToolRegistry.IsErrorOutput(Str(result["content"]) ?? "") || ToolRegistry.CommandFailed(Str(result["content"]) ?? ""));
+            {
+                lastCheck = at;
+                var key = call.Name == "run_command" ? Str(ArgsOf(call)?["command"])!.Trim() : call.ArgumentsJson;
+                var output = Str(result["content"]) ?? "";
+                if (at > since && (ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output))) failed[key] = call;
+                else failed.Remove(key);
+            }
         }
         var notes = new List<string>();
         if (CurrentPlan() is { } plan && (reviews.Count == 0 || plan.At > since) && plan.Items.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
             notes.Add("В плане остались невыполненные пункты: " + string.Join("; ", open) + ". Выполни их или обнови план, если они не нужны.");
         if (lastChange > since && lastCheck < lastChange && tools.Context.SandboxRoot == null)
             notes.Add($"Ты изменил код ({string.Join(", ", changed.TakeLast(6).Select(Path.GetFileName))}), но после этого не проверил результат. " +
-                      "Собери проект, запусти тесты или саму программу и исправь найденные ошибки. Если проверить нечем, скажи это в ответе.");
-        else if (checkFailed && lastCheck > since && lastCheck > lastChange)
-            notes.Add($"Последняя проверка ({HistoryCompressor.Describe(check!.Name, check.ArgumentsJson)}) завершилась ошибкой. Исправь причину и проверь снова " +
-                      "либо объясни в ответе, почему ошибка не связана с задачей.");
+                      "Проверь изменённое поведение на сценарии пользователя или целевым тестом. Если проверить нечем, скажи это в ответе.");
+        else if (lastCheck > since && lastCheck > lastChange && failed.Count > 0)
+            notes.Add("Остались ошибки проверки: " + string.Join(", ", failed.Values.TakeLast(4).Select(call => HistoryCompressor.Describe(call.Name, call.ArgumentsJson))) +
+                      ". Исправь причину и проверь снова либо объясни, что помешало.");
         return notes.Count == 0 ? null
             : "[Программа: проверка перед завершением] " + string.Join("\n", notes) +
               "\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, коротко повтори итоговый ответ.";

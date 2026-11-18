@@ -1,4 +1,5 @@
 using System.Windows.Documents;
+using System.Windows.Navigation;
 using Glyphs = SharpAgent.Ui.Glyphs;
 
 namespace SharpAgent;
@@ -12,6 +13,8 @@ public partial class MainWindow
     private readonly Dictionary<string, BannerInfo> _banners = new();
     private readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
     private AgentProvider _settingsProvider;
+    private readonly Dictionary<AgentProvider, string> _settingsImageModels = [];
+    private bool _settingsImagesLikeChat;
     private FrameworkElement? _settingsPage;
     private CancellationTokenSource? _signIn;
     private DispatcherTimer? _toastTimer;
@@ -137,14 +140,17 @@ public partial class MainWindow
             if (provider != AgentProvider.ChatGpt)
                 _settingsKeys[provider] = AppConfig.CleanKey(Value(AppConfig.KeyOf(provider, "API_KEY"), _config.ApiKeyFor(provider) ?? ""));
             _settingsModels[provider] = _savedModels[provider] =
-                provider == _config.Provider ? CurrentModel() : Value(AppConfig.KeyOf(provider, "MODEL"), AppConfig.DefaultModelOf(provider));
+                provider == _config.Provider ? CurrentModel() : AppConfig.ChatModelOf(provider, env.GetValueOrDefault(AppConfig.KeyOf(provider, "MODEL")));
         }
-        ImageModelButton.Content = Value("TOOKEN_IMAGE_MODEL", AppConfig.DefaultImageModel);
-        ImageModelButton.Tag = _imageModels ?? [(string)ImageModelButton.Content];
+        foreach (var provider in AppConfig.ImageProviders)
+            _settingsImageModels[provider] = Value(AppConfig.KeyOf(provider, "IMAGE_MODEL"), AppConfig.ImageModelsOf(provider)[0]);
+        _settingsImagesLikeChat = _config.ImagesLikeChat;
+        ImageSourceChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsImagesLikeChat ? "chat" : "tooken")).IsChecked = true;
         SubagentsToggle.IsChecked = _config.UseSubagents;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
         ThemeChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _state.Theme ?? "dark")).IsChecked = true;
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
+        LoadNetworkSettings(Value("AGENT_VPN_PROFILES"));
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
         PluginsText.Text = plugins.Count > 0
             ? $"Установлены: {string.Join(", ", plugins.Select(p => p.Name))}. Агент сам выбирает подходящий плагин по задаче."
@@ -159,10 +165,12 @@ public partial class MainWindow
         if (focus == null && _provider == null)
             focus = _settingsProvider == AgentProvider.ChatGpt ? ChatGptSignInButton : KeyPasswordBox;
         ShowSettingsPage(focus ?? _settingsPage ?? SettingsGeneral);
+        WorkArea.Visibility = Sidebar.Visibility = Visibility.Hidden;
         SettingsPage.Visibility = Visibility.Visible;
         if (Theme.AnimationsEnabled) SettingsPage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
         Dispatcher.InvokeAsync(() =>
         {
+            if (!SettingsOpen) return;
             focus?.BringIntoView();
             (focus ?? SettingsNav.Children.OfType<Button>().First(nav => Equals(nav.Tag, "current"))).Focus();
         }, DispatcherPriority.Input);
@@ -179,13 +187,18 @@ public partial class MainWindow
         SettingsScroll.ScrollToTop();
     }
 
-    private void SettingsNav_Click(object sender, RoutedEventArgs e) =>
-        ShowSettingsPage((FrameworkElement)FindName((string)((Button)sender).CommandParameter));
+    private void SettingsNav_Click(object sender, RoutedEventArgs e)
+    {
+        var nav = (Button)sender;
+        ShowSettingsPage((FrameworkElement)FindName((string)nav.CommandParameter));
+        nav.Focus();
+    }
 
     private void ProviderPill_Checked(object sender, RoutedEventArgs e)
     {
         if (sender is not RadioButton { Tag: AgentProvider provider } || provider == _settingsProvider) return;
         KeepProviderInput();
+        NetworkTestStatus.Text = "";
         _settingsProvider = provider;
         ShowProviderSettings();
     }
@@ -201,19 +214,30 @@ public partial class MainWindow
     {
         var provider = _settingsProvider;
         bool keyed = provider != AgentProvider.ChatGpt, groq = provider == AgentProvider.Groq;
+        TestKeyButton.Content = keyed ? "Проверить API-ключ" : "Проверить вход";
         KeyPanel.Visibility = VisibleIf(keyed);
         ChatGptPanel.Visibility = VisibleIf(!keyed);
         TookenPanel.Visibility = VisibleIf(provider == AgentProvider.Tooken);
+        ProviderKeysLink.NavigateUri = new Uri(provider switch
+        {
+            AgentProvider.ChatGpt => "https://platform.openai.com/api-keys",
+            AgentProvider.Groq => Groq.KeysUrl,
+            AgentProvider.Gemini => "https://aistudio.google.com/apikey",
+            AgentProvider.OpenRouter => "https://openrouter.ai/settings/keys",
+            AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
+            _ => "https://tooken.club/dashboard",
+        });
+        ProviderKeysLink.ToolTip = keyed ? null : "Ключи OpenAI API. Для подключения ChatGPT используйте вход в аккаунт ниже.";
         if (keyed)
         {
             ShowKeyToggle.IsChecked = false;
             KeyTextBox.Text = KeyPasswordBox.Password = _settingsKeys.GetValueOrDefault(provider, "");
             KeyLabel.Text = "API-ключ " + ProviderName(provider);
-            (KeyHint.Text, KeyLinkText.Text) = provider switch
+            KeyHint.Text = provider switch
             {
-                AgentProvider.Groq => ("Ключ создаётся в консоли Groq и начинается с gsk_. ", "Открыть страницу ключей"),
-                AgentProvider.Tooken => ("Ключ выдаётся в личном кабинете и начинается с tc_live_. ", "Открыть кабинет"),
-                _ => ("Создайте API-ключ в кабинете провайдера. ", "Открыть страницу ключей"),
+                AgentProvider.Groq => "Ключ создаётся в консоли Groq и начинается с gsk_.",
+                AgentProvider.Tooken => "Ключ выдаётся в личном кабинете и начинается с tc_live_.",
+                _ => "Создайте API-ключ в кабинете провайдера.",
             };
             AutomationProperties.SetName(KeyPasswordBox, KeyLabel.Text);
             AutomationProperties.SetName(KeyTextBox, KeyLabel.Text);
@@ -226,8 +250,36 @@ public partial class MainWindow
             : "Микрофон в поле ввода отправляет запись в Groq и вставляет распознанный текст — при любом провайдере. Запись нигде не сохраняется. " +
               "Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ";
         DefaultModelButton.Content = _settingsModels.GetValueOrDefault(provider) is { Length: > 0 } model ? model : AppConfig.DefaultModelOf(provider);
-        DefaultModelButton.Tag = _modelLists.GetValueOrDefault(provider) ?? (IEnumerable<string>)DefaultModelsOf(provider);
+        if (_state.ModelCatalogs?.GetValueOrDefault(provider) is { Models.Count: > 0 } catalog && catalog.Connection == SettingsCatalogKey())
+        {
+            RememberModelList(provider, catalog.Models);
+            DefaultModelButton.Tag = ChatModelChoices(provider);
+        }
+        else DefaultModelButton.Tag = DefaultModelsOf(provider);
         SetTestResult("", null);
+        ShowImageSettings();
+    }
+
+    private AgentProvider ImageTarget => _settingsImagesLikeChat && _settingsProvider != AgentProvider.Tooken &&
+        AppConfig.ImageProviders.Contains(_settingsProvider) ? _settingsProvider : AgentProvider.Tooken;
+
+    private void ShowImageSettings()
+    {
+        var target = ImageTarget;
+        var model = _settingsImageModels[target];
+        IEnumerable<string> models = target == AgentProvider.Tooken && _imageModels is { Count: > 0 } known ? known : AppConfig.ImageModelsOf(target);
+        ImageModelButton.Content = model;
+        ImageModelButton.Tag = models.Contains(model) ? models : models.Prepend(model);
+        ImageModelHint.Text = target != AgentProvider.Tooken ? $"Картинки рисует {ProviderName(target)} по ключу из этого раздела."
+            : _settingsImagesLikeChat && _settingsProvider != AgentProvider.Tooken
+                ? $"{ProviderName(_settingsProvider)} не рисует картинки через API, поэтому их рисует Tooken Club по его ключу и балансу."
+                : "Картинки рисует Tooken Club по его ключу и балансу при любом провайдере чата.";
+    }
+
+    private void ImageSource_Checked(object sender, RoutedEventArgs e)
+    {
+        _settingsImagesLikeChat = Equals(((RadioButton)sender).Tag, "chat");
+        ShowImageSettings();
     }
 
     private void ShowChatGptAccount()
@@ -300,6 +352,7 @@ public partial class MainWindow
 
     private static void OpenSignInPage(string url)
     {
+        if (AppNetwork.CustomRoute) FileActions.RaiseNotify("Для входа откроется внешний браузер с его сетевыми настройками.", false);
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose(); }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
@@ -337,7 +390,9 @@ public partial class MainWindow
 
     private void CloseSettings()
     {
+        _networkGeneration++;
         SettingsPage.Visibility = Visibility.Collapsed;
+        WorkArea.Visibility = Sidebar.Visibility = Visibility.Visible;
         KeyPasswordBox.Clear();
         KeyTextBox.Clear();
         VoiceKeyBox.Clear();
@@ -354,6 +409,10 @@ public partial class MainWindow
 
     private string EnteredKey() => AppConfig.CleanKey(ShowKeyToggle.IsChecked == true ? KeyTextBox.Text : KeyPasswordBox.Password);
 
+    private string SettingsTookenBaseUrl() => AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl);
+
+    private string? SettingsCatalogKey() => ModelCatalogKey(_settingsProvider, EnteredKey(), SettingsTookenBaseUrl());
+
     private void ShowKey_Changed(object sender, RoutedEventArgs e)
     {
         bool show = ShowKeyToggle.IsChecked == true;
@@ -368,6 +427,8 @@ public partial class MainWindow
     {
         var provider = _settingsProvider;
         var key = EnteredKey();
+        var baseUrl = SettingsTookenBaseUrl();
+        var connection = ModelCatalogKey(provider, key, baseUrl);
         if (provider == AgentProvider.ChatGpt ? !_chatGpt.PlanAllowed : key.Length == 0)
         {
             SetTestResult(provider != AgentProvider.ChatGpt ? "Сначала вставьте ключ."
@@ -378,7 +439,7 @@ public partial class MainWindow
         using IChatProvider client = provider switch
         {
             AgentProvider.ChatGpt => new ChatGptClient(_chatGpt),
-            AgentProvider.Tooken => new ChatApiClient(AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl), key),
+            AgentProvider.Tooken => new ChatApiClient(baseUrl, key),
             _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
         };
         TestKeyButton.IsEnabled = false;
@@ -388,18 +449,36 @@ public partial class MainWindow
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             if (provider == AgentProvider.OpenRouter && client is ChatApiClient router) await router.CheckOpenRouterKeyAsync(cts.Token);
             var models = await client.ListModelsAsync(cts.Token);
-            RememberModelList(provider, models);
             if (provider != _settingsProvider || !SettingsOpen) return;
-            var count = models.Count(m => m.Chat);
-            SetTestResult((provider == AgentProvider.ChatGpt ? "Вход выполнен." : "Ключ принят.") + (count > 0 ? $" Доступно моделей: {count}." : ""), true);
-            if (count > 0) DefaultModelButton.Tag = _modelLists[provider];
-            if (provider == AgentProvider.Tooken && _imageModels is { Count: > 0 }) ImageModelButton.Tag = _imageModels;
+            if (SettingsCatalogKey() != connection)
+            {
+                SetTestResult("", null);
+                return;
+            }
+            if (models.Count > 0)
+            {
+                CacheModelCatalog(provider, connection, models);
+                if (provider == _config.Provider && connection == ModelCatalogKey(provider))
+                {
+                    ApplyModelCatalog(provider, models);
+                    UpdateModelEffort();
+                }
+                else RememberModelList(provider, models);
+                DefaultModelButton.Tag = ChatModelChoices(provider);
+            }
+            int count = models.Count > 0 ? _modelLists[provider].Count : 0;
+            SetTestResult((provider == AgentProvider.ChatGpt ? "Вход выполнен." : "Ключ принят.") +
+                          (count > 0 ? $" Доступно моделей: {count}. Нажмите на название модели, чтобы открыть список." : ""), true);
+            if (provider == AgentProvider.Tooken) ShowImageSettings();
         }
         catch (Exception ex)
         {
-            if (provider != _settingsProvider || !SettingsOpen) return;
+            if (provider != _settingsProvider || !SettingsOpen || SettingsCatalogKey() != connection) return;
             SetTestResult(ex switch
             {
+                ApiException { StatusCode: HttpStatusCode.Unauthorized } => provider == AgentProvider.ChatGpt
+                    ? "Провайдер отклонил авторизацию (HTTP 401). Войдите в ChatGPT заново."
+                    : "Провайдер отклонил авторизацию (HTTP 401). Проверьте API-ключ и выбранного провайдера.",
                 ApiException => ex.Message,
                 OperationCanceledException => "Сервер не ответил за 20 секунд. Проверьте адрес API и подключение к интернету.",
                 _ => "Не удалось подключиться: " + ex.Message,
@@ -415,7 +494,11 @@ public partial class MainWindow
 
     private void DefaultModelButton_Click(object sender, RoutedEventArgs e) => PickModel(DefaultModelButton, _settingsProvider);
 
-    private void ImageModelButton_Click(object sender, RoutedEventArgs e) => PickModel(ImageModelButton, AgentProvider.Tooken);
+    private void ImageModelButton_Click(object sender, RoutedEventArgs e)
+    {
+        var target = ImageTarget;
+        ModelMenu(ImageModelButton, target, model => ImageModelButton.Content = _settingsImageModels[target] = model).IsOpen = true;
+    }
 
     private void SetTestResult(string text, bool? ok)
     {
@@ -426,7 +509,7 @@ public partial class MainWindow
         AutomationProperties.SetLiveSetting(TestKeyResult, AutomationLiveSetting.Polite);
     }
 
-    private void SettingsSave_Click(object sender, RoutedEventArgs e)
+    private async void SettingsSave_Click(object sender, RoutedEventArgs e)
     {
         Control? invalid = null;
         void Fail(string message, Control field)
@@ -447,6 +530,26 @@ public partial class MainWindow
         var monthLimit = MonthLimitBox.Text.Trim();
         if (monthLimit.Length > 0 && AppConfig.ParseMillions(monthLimit) == null)
             Fail("«Лимит в месяц» — число миллионов токенов, например 50. Чтобы снять лимит, оставьте поле пустым.", MonthLimitBox);
+        var network = ReadNetworkSettings();
+        try
+        {
+            network = network.Validate();
+            if (invalid == null)
+            {
+                SettingsPage.IsEnabled = false;
+                try
+                {
+                    if (await ApproveNetworkEngineAsync(network) is not { } approved) return;
+                    network = approved;
+                }
+                finally { SettingsPage.IsEnabled = true; }
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (network.Mode == NetworkMode.Vpn) FindNetworkEngine();
+            Fail(ex.Message, network.Mode != NetworkMode.Vpn ? NetworkHost : _vpnSelection == null ? NetworkSubscription : NetworkEngine);
+        }
         if (invalid != null)
         {
             ShowSettingsPage(invalid);
@@ -460,10 +563,13 @@ public partial class MainWindow
         {
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
             ["AGENT_COMPUTER_USE"] = ComputerUseToggle.IsChecked == true ? "true" : "false",
-            ["TOOKEN_BASE_URL"] = url, ["TOOKEN_IMAGE_MODEL"] = ImageModelButton.Content as string is { Length: > 0 } image ? image : AppConfig.DefaultImageModel,
+            ["TOOKEN_BASE_URL"] = url, ["AGENT_IMAGE_PROVIDER"] = _settingsImagesLikeChat ? "chat" : "tooken",
             ["TOOKEN_MAX_TOKENS"] = maxTokens, ["AGENT_DAY_LIMIT_MLN"] = dayLimit.Replace(',', '.'), ["AGENT_MONTH_LIMIT_MLN"] = monthLimit.Replace(',', '.'),
         };
         foreach (var (provider, key) in _settingsKeys) values[AppConfig.KeyOf(provider, "API_KEY")] = key;
+        network.WriteTo(values);
+        values["AGENT_VPN_PROFILES"] = string.Join(';', _vpnProfiles.Select(profile => profile.Save()));
+        foreach (var (provider, model) in _settingsImageModels) values[AppConfig.KeyOf(provider, "IMAGE_MODEL")] = model;
         foreach (var (provider, model) in _settingsModels)
             if (provider == _settingsProvider || model != _savedModels.GetValueOrDefault(provider))
                 values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
@@ -490,15 +596,11 @@ public partial class MainWindow
         AutomationProperties.SetLiveSetting(SettingsError, AutomationLiveSetting.Assertive);
     }
 
-    private void KeyLink_Click(object sender, RoutedEventArgs e) =>
-        FileActions.OpenUrl(_settingsProvider switch
-        {
-            AgentProvider.Groq => Groq.KeysUrl,
-            AgentProvider.Gemini => "https://aistudio.google.com/apikey",
-            AgentProvider.OpenRouter => "https://openrouter.ai/settings/keys",
-            AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
-            _ => "https://tooken.club/dashboard",
-        });
+    private void KeyLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        e.Handled = true;
+        FileActions.OpenUrl(e.Uri.AbsoluteUri);
+    }
 
     private void ThemePill_Checked(object sender, RoutedEventArgs e)
     {

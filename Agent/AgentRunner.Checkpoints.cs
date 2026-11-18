@@ -73,7 +73,7 @@ partial class AgentRunner
 
     internal static bool FileChangeUndone(JsonNode message) => Bool(FileChangeMeta(message)?["undone"]) == true;
 
-    internal void MarkFileChangeUndone(IEnumerable<(FileChange Change, int Steps)> changes)
+    internal async Task MarkFileChangeUndoneAsync(IEnumerable<(FileChange Change, int Steps)> changes)
     {
         foreach (var (change, steps) in changes)
         {
@@ -88,6 +88,6 @@ partial class AgentRunner
                 }
         }
         InvalidateProjectContext();
-        Save();
+        await SaveAsync();
     }
 }

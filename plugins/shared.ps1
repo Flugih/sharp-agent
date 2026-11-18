@@ -42,7 +42,7 @@ function Get-OfficeTarget([string]$Path, [string]$Overwrite) {
     $full
 }
 
-function Write-OfficeFile([string]$Target, [string]$Folder, $Parts) {
+function Write-OfficeFile([string]$Target, [string]$Folder, $Parts, [string]$Overwrite) {
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $prolog = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     $rels = "$prolog<Relationships xmlns=`"http://schemas.openxmlformats.org/package/2006/relationships`">"
@@ -60,13 +60,15 @@ function Write-OfficeFile([string]$Target, [string]$Folder, $Parts) {
     foreach ($name in $names) { $files[$Folder + $name] = $prolog + $Parts[$name][2] }
     $directory = [IO.Path]::GetDirectoryName($Target)
     if ($directory) { [void][IO.Directory]::CreateDirectory($directory) }
-    if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Force }
-    $zip = [IO.Compression.ZipFile]::Open($Target, [IO.Compression.ZipArchiveMode]::Create)
+    $stage = New-PluginStage $Target
     try {
-        foreach ($file in $files.GetEnumerator()) {
-            $writer = New-Object IO.StreamWriter($zip.CreateEntry($file.Key).Open(), (New-Object Text.UTF8Encoding($false)))
-            $writer.Write($file.Value)
-            $writer.Dispose()
-        }
-    } finally { $zip.Dispose() }
+        $zip = [IO.Compression.ZipFile]::Open($stage, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($file in $files.GetEnumerator()) {
+                $writer = New-Object IO.StreamWriter($zip.CreateEntry($file.Key).Open(), (New-Object Text.UTF8Encoding($false)))
+                try { $writer.Write($file.Value) } finally { $writer.Dispose() }
+            }
+        } finally { $zip.Dispose() }
+        $null = Publish-PluginFile $stage $Target $Overwrite
+    } finally { if ([IO.File]::Exists($stage)) { [IO.File]::Delete($stage) } }
 }

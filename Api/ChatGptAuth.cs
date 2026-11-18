@@ -13,7 +13,7 @@ public sealed class ChatGptAuth(string path)
     static readonly TimeSpan RefreshWindow = TimeSpan.FromMinutes(5), Skew = TimeSpan.FromSeconds(5);
     static readonly string[] DeadRefresh =
         ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"];
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30), DefaultRequestHeaders = { { "User-Agent", UserAgent } } };
+    static readonly HttpClient Http = AppNetwork.Client(TimeSpan.FromSeconds(30), headers: headers => headers.UserAgent.ParseAdd(UserAgent));
     static readonly JsonSerializerOptions FileFormat = new(JsonUtil.Pretty)
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault, IncludeFields = true,

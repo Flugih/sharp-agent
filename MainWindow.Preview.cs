@@ -76,6 +76,7 @@ public partial class MainWindow
 
     void ShowPreview(string path, FileDiff? diff = null, string? title = null, bool review = false)
     {
+        HideBrowser();
         CloseSubagents(focusChat: false);
         _previewPath = path;
         _previewDiff = diff;
@@ -129,6 +130,7 @@ public partial class MainWindow
             _state.SubagentsWidth = width;
             _state.Save();
         }
+        else if (IsShown(BrowserPane)) _browserWidth = width;
         else _previewWidth = width;
     }
 
@@ -151,12 +153,14 @@ public partial class MainWindow
 
     void ApplyPreviewLayout()
     {
-        bool subagents = IsShown(SubagentsWorkspace), side = subagents && !_subagentsExpanded;
-        bool open = !subagents && IsShown(PreviewPane), previewDocked = open && PreviewDocks, overlay = open && !previewDocked;
+        bool browser = IsShown(BrowserPane), subagents = IsShown(SubagentsWorkspace);
+        bool side = browser && !_browserExpanded || subagents && !_subagentsExpanded;
+        bool open = !browser && !subagents && IsShown(PreviewPane), previewDocked = open && PreviewDocks, overlay = open && !previewDocked;
         bool docked = side || previewDocked;
         RightPane.Visibility = VisibleIf(open);
         if (_previewWidth == 0) _previewWidth = Math.Clamp(MainWidth * 0.45, 340, 760);
-        var width = side && _state.SubagentsWidth is { } saved && double.IsFinite(saved) ? saved : side ? 360 : _previewWidth;
+        var width = browser ? (_browserWidth > 0 ? _browserWidth : MainWidth * 0.46)
+            : side && _state.SubagentsWidth is { } saved && double.IsFinite(saved) ? saved : side ? 360 : _previewWidth;
         PreviewColumn.MinWidth = side ? Math.Min(PaneMinWidth, MainWidth * 0.37) : previewDocked ? PaneMinWidth : 0;
         PreviewColumn.MaxWidth = side ? MainWidth - Math.Min(ChatMinWidth, MainWidth * 0.55) : previewDocked ? MainWidth - ChatMinWidth : 0;
         PreviewColumn.Width = new GridLength(docked ? Math.Clamp(width, PreviewColumn.MinWidth, PreviewColumn.MaxWidth) : 0);
@@ -164,6 +168,8 @@ public partial class MainWindow
         Grid.SetColumnSpan(RightPane, overlay ? 2 : 1);
         Grid.SetColumn(SubagentsWorkspace, side ? 1 : 0);
         Grid.SetColumnSpan(SubagentsWorkspace, side ? 1 : 2);
+        Grid.SetColumn(BrowserPane, _browserExpanded ? 0 : 1);
+        Grid.SetColumnSpan(BrowserPane, _browserExpanded ? 2 : 1);
         SubagentsWorkspace.BorderThickness = new Thickness(side ? 1 : 0, 1, 0, 0);
         PreviewSplitter.Visibility = VisibleIf(docked);
         UpdateLayoutWidths();
@@ -224,7 +230,7 @@ public partial class MainWindow
         action.Click += (_, e) =>
         {
             e.Handled = true;
-            FileActions.Open(this, path);
+            FileActions.Open(ActiveChatWindow, path);
         };
         Grid.SetColumn(texts, 1);
         Grid.SetColumn(action, 2);
@@ -240,7 +246,12 @@ public partial class MainWindow
             ContextMenu = FileActions.BuildMenu(this, path),
         };
         AutomationProperties.SetName(card, $"{title}, {subtitle}");
-        card.Click += (_, _) => { if (changed) ShowPreview(path, diff); else OpenInApp(path); };
+        card.Click += (_, _) =>
+        {
+            if (_compactChat is { IsVisible: true } compact) compact.Close();
+            if (changed) ShowPreview(path, diff);
+            else OpenInApp(path);
+        };
         FileActions.EnableDragOut(card, path);
         return card;
     }

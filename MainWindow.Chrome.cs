@@ -78,7 +78,7 @@ public partial class MainWindow
         RootBorder.Margin = new(maximized ? 8 : 0);
         RootBorder.BorderThickness = new(maximized ? 0 : 1);
         MaxButton.Content = maximized ? Glyphs.Restore : Glyphs.Maximize;
-        SetHint(MaxButton, maximized ? "Свернуть в окно" : "Развернуть");
+        AutomationProperties.SetName(MaxButton, maximized ? "Свернуть в окно" : "Развернуть");
     }
 
     void Window_SizeChanged(object s, SizeChangedEventArgs e)

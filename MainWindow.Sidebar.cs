@@ -150,15 +150,36 @@ public partial class MainWindow
         (buttons.Find(button => button?.Tag is "current") ?? buttons.FirstOrDefault())?.Focus();
     }
 
-    void OpenStartupChat()
+    Task? _chatOperation;
+    bool ChatFileBusy => _chatOperation != null || _attachmentImports > 0;
+
+    async Task RunChatOperationAsync(Func<Task> operation)
     {
-        string? path = null;
-        try { path = _agent.Store.ImportLegacy(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { App.LogError(ex); }
-        if (path == null && !string.IsNullOrEmpty(_state.CurrentChat)) path = Path.Combine(_agent.Store.Folder, Path.GetFileName(_state.CurrentChat));
-        if (File.Exists(path)) OpenChat(path);
-        else RenderCurrentChat();
+        if (ChatFileBusy || _waitingToClose) return;
+        var task = _chatOperation = Dispatcher.InvokeAsync(operation).Task.Unwrap();
+        UpdateSendButton();
+        try { await task; }
+        finally
+        {
+            _chatOperation = null;
+            UpdateSendButton();
+        }
     }
+
+    Task OpenStartupChatAsync() => RunChatOperationAsync(async () =>
+    {
+        var remembered = _state.CurrentChat;
+        var path = await Task.Run(() =>
+        {
+            string? path = null;
+            try { path = _agent.Store.ImportLegacy(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { App.LogError(ex); }
+            if (path == null && !string.IsNullOrEmpty(remembered)) path = Path.Combine(_agent.Store.Folder, Path.GetFileName(remembered));
+            return File.Exists(path) ? path : null;
+        });
+        if (path != null) await OpenChatAsync(path);
+        else RenderCurrentChat();
+    });
 
     async Task LoadChatsAsync()
     {
@@ -311,8 +332,9 @@ public partial class MainWindow
         e.Handled = true;
     }
 
-    void OpenChatFromUser(string path)
+    async void OpenChatFromUser(string path)
     {
+        if (ChatFileBusy || _waitingToClose) return;
         if (!IsCurrent(path))
         {
             if (_cts != null)
@@ -320,17 +342,18 @@ public partial class MainWindow
                 ShowToast("Агент работает. Остановите его (Esc), чтобы открыть другой чат", ToastKind.Warning);
                 return;
             }
-            OpenChat(path);
+            CloseOverlay();
+            await RunChatOperationAsync(() => OpenChatAsync(path));
         }
-        CloseOverlay();
+        else CloseOverlay();
         InputBox.Focus();
     }
 
-    void OpenChat(string path)
+    async Task OpenChatAsync(string path)
     {
         try
         {
-            _agent.Open(path);
+            await _agent.OpenAsync(path);
             HideBanner("chat");
         }
         catch (Exception ex)
@@ -347,6 +370,7 @@ public partial class MainWindow
             }
             else ShowBanner("chat", Glyphs.Warning, "Не удалось открыть чат", ex.Message, "Повторить", () => OpenChatFromUser(path), true);
         }
+        ClearPendingAttachments();
         _state.CurrentChat = Path.GetFileName(_agent.ChatPath);
         RenderCurrentChat();
     }
@@ -355,13 +379,14 @@ public partial class MainWindow
 
     void StartNewChat()
     {
-        if (SettingsOpen) return;
+        if (SettingsOpen || ChatFileBusy || _waitingToClose) return;
         if (_cts != null)
         {
             ShowToast("Агент работает. Остановите его (Esc), чтобы начать новый чат", ToastKind.Warning);
             return;
         }
         CloseOverlay();
+        ClearPendingAttachments();
         if (_agent.History.Count > 0 || _agent.ChatPath != null)
         {
             _agent.NewChat();
@@ -374,6 +399,7 @@ public partial class MainWindow
 
     void DeleteChat(ChatSummary chat)
     {
+        if (ChatFileBusy || _waitingToClose) return;
         bool current = IsCurrent(chat.Path);
         if (current && _cts != null)
         {
@@ -390,6 +416,7 @@ public partial class MainWindow
         _chats.RemoveAll(c => PathHelper.SamePath(c.Path, chat.Path));
         if (current)
         {
+            ClearPendingAttachments();
             _agent.NewChat();
             _state.CurrentChat = null;
             RenderCurrentChat();
@@ -401,7 +428,7 @@ public partial class MainWindow
 
     void BeginRename(ChatSummary chat, Grid row)
     {
-        if (_renaming != null) return;
+        if (_renaming != null || ChatFileBusy || _waitingToClose) return;
         var box = new TextBox { Style = Theme.Style("FieldTextBox"), Text = chat.Title, Height = 34, FontSize = 13, Padding = new(6, 0, 6, 0) };
         ContextMenuService.SetIsEnabled(box, false);
         AutomationProperties.SetName(box, "Новое название чата");
@@ -411,7 +438,7 @@ public partial class MainWindow
             _renaming = null;
             row.Children.Remove(box);
             var title = box.Text.Trim();
-            if (commit && title.Length > 0 && title != chat.Title) RenameChat(chat, title);
+            if (commit && title.Length > 0 && title != chat.Title) _ = RunChatOperationAsync(() => RenameChatAsync(chat, title));
             if (_renderPending) RenderChatList();
             if (refocus) FocusChatRow(chat.Path);
         }
@@ -431,12 +458,12 @@ public partial class MainWindow
     void FocusChatRow(string path) =>
         (ChatList.Children.OfType<Grid>().FirstOrDefault(r => r.Tag is ChatSummary c && PathHelper.SamePath(c.Path, path))?.Children[0] as Button)?.Focus();
 
-    void RenameChat(ChatSummary chat, string title)
+    async Task RenameChatAsync(ChatSummary chat, string title)
     {
         try
         {
-            if (IsCurrent(chat.Path)) _agent.Rename(title);
-            else _agent.Store.Rename(chat.Path, title);
+            if (IsCurrent(chat.Path)) await _agent.RenameAsync(title);
+            else await Task.Run(() => _agent.Store.Rename(chat.Path, title));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {

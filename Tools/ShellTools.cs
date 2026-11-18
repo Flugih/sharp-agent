@@ -87,6 +87,7 @@ public static class ShellTools
                     command + "\r\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\r\n"));
                 psi.FileName = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
             }
+            var proxyCredential = await AppNetwork.ConfigureCommandAsync(psi, ct);
             ct.ThrowIfCancellationRequested();
             using var process = new Process { StartInfo = psi };
             try { process.Start(); }
@@ -111,8 +112,14 @@ public static class ShellTools
                 timedOut = true;
             }
             await Task.WhenAny(reading, Task.Delay(TimeSpan.FromSeconds(3)));
-            var output = stdout.Text();
-            var errors = stderr.Text();
+            var output = Redact(stdout.Text());
+            var errors = Redact(stderr.Text());
+            string Redact(string value)
+            {
+                if (proxyCredential?.Password is not { Length: > 0 } secret) return value;
+                var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes(proxyCredential.UserName + ":" + secret));
+                return value.Replace(basic, "***").Replace(Uri.EscapeDataString(secret), "***").Replace(secret, "***");
+            }
             int? exitCode = timedOut ? null : process.ExitCode;
             var restriction = CommandRestriction.FromOutput(shell, output, errors, scriptPath, exitCode);
             if (errors.Length > 0) output += (output.Length > 0 ? "\n" : "") + "[stderr]\n" + errors;

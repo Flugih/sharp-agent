@@ -5,10 +5,8 @@ namespace SharpAgent.Ui;
 
 static partial class LinkTitles
 {
-    static readonly HttpClient Client = new(new HttpClientHandler
-    {
-        AllowAutoRedirect = false, UseCookies = false, AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
-    }) { Timeout = TimeSpan.FromSeconds(6), DefaultRequestHeaders = { { "User-Agent", "SharpAgent/1.0" } } };
+    static readonly HttpClient Client = AppNetwork.Client(TimeSpan.FromSeconds(6), redirects: false, cookies: false,
+        decompression: DecompressionMethods.All, headers: headers => headers.UserAgent.ParseAdd("SharpAgent/1.0"));
     static readonly ConcurrentDictionary<Uri, string> Cache = new();
 
     [GeneratedRegex(@"<title\b[^>]*>(.*?)</title\s*>", RegexOptions.IgnoreCase | RegexOptions.Singleline, 500)]
@@ -33,7 +31,12 @@ static partial class LinkTitles
                 if (response.Headers.Location is { } location && (int)response.StatusCode is >= 300 and < 400)
                 {
                     current = new Uri(current, location);
-                    if (IsWebUri(current) && await IsInternalAsync(current, ct) && !await IsInternalAsync(uri, ct)) return null;
+                    if (!IsWebUri(current)) return null;
+                    if (AppNetwork.CustomRoute)
+                    {
+                        if (!string.Equals(current.IdnHost, uri.IdnHost, StringComparison.OrdinalIgnoreCase)) return null;
+                    }
+                    else if (await IsInternalAsync(current, ct) && !await IsInternalAsync(uri, ct)) return null;
                     continue;
                 }
                 if (!response.IsSuccessStatusCode || response.Content.Headers.ContentType?.MediaType is not ("text/html" or "application/xhtml+xml"))

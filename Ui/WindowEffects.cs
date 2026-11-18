@@ -27,6 +27,19 @@ public static class WindowEffects
     internal static void ExcludeFromCapture(Window window) =>
         SetWindowDisplayAffinity(new WindowInteropHelper(window).Handle, WDA_EXCLUDEFROMCAPTURE);
 
+    public static void CompletionSound()
+    {
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                Console.Beep(880, 70);
+                Console.Beep(1175, 110);
+            }
+            catch { }
+        });
+    }
+
     public static void Flash(Window window)
     {
         if (window.IsActive) return;
