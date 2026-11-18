@@ -135,7 +135,7 @@ public partial class MainWindow
                     AgentProvider.ChatGpt => "ChatGPT не принял вход",
                     AgentProvider.Groq => "Groq не принял API-ключ",
                     _ => "Сервер не принял API-ключ",
-                }, ex.Message.Split('\n')[0], "Открыть настройки", ShowSettings, warning: true);
+                }, ex.Message.Split('\n')[0], "Открыть настройки", ShowKeySettings, warning: true);
         }
         catch { }
         finally

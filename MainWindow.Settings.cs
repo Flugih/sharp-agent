@@ -6,42 +6,44 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    private enum ToastKind { Info, Success, Warning, Error }
+    enum ToastKind { Info, Success, Warning, Error }
 
-    private sealed record BannerInfo(string Glyph, string Title, string Text, string ActionText, Action Action, bool Warning);
+    sealed record BannerInfo(string Glyph, string Title, string Text, string ActionText, Action Action, bool Warning);
 
-    private readonly Dictionary<string, BannerInfo> _banners = new();
-    private readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
-    private AgentProvider _settingsProvider;
-    private readonly Dictionary<AgentProvider, string> _settingsImageModels = [];
-    private bool _settingsImagesLikeChat;
-    private FrameworkElement? _settingsPage;
-    private CancellationTokenSource? _signIn;
-    private DispatcherTimer? _toastTimer;
-    private Action? _toastAction;
-    private int _toastVersion;
+    readonly Dictionary<string, BannerInfo> _banners = new();
+    readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
+    AgentProvider _settingsProvider;
+    readonly Dictionary<AgentProvider, string> _settingsImageModels = [], _savedImageModels = [];
+    bool _settingsImagesLikeChat;
+    string? _settingsTheme;
+    FrameworkElement? _settingsPage;
+    CancellationTokenSource? _signIn;
+    DispatcherTimer? _toastTimer;
+    Action? _toastAction;
+    int _toastVersion;
 
 
-    private static Hyperlink MakeLink(string text, Action click, string? tip = null)
+    static Hyperlink MakeLink(string text, Action click, string? tip = null)
     {
         var link = new Hyperlink(new Run(text)) { ToolTip = tip };
         link.Click += (_, _) => click();
         return link;
     }
 
-    private void ShowToast(string text, ToastKind kind = ToastKind.Info, string? actionText = null, Action? action = null)
+    void ShowToast(string text, ToastKind kind = ToastKind.Info, string? actionText = null, Action? action = null)
     {
         _compactChat?.SetStatus(text.ReplaceLineEndings(" "),
             kind switch { ToastKind.Success => "Success", ToastKind.Warning => "Warning", ToastKind.Error => "DangerText", _ => "TextMuted" });
         _toastVersion++;
         ToastText.Text = text;
-        (ToastIcon.Text, ToastIcon.Foreground) = kind switch
+        (ToastIcon.Text, var brush) = kind switch
         {
-            ToastKind.Success => (Glyphs.Check, Theme.Success),
-            ToastKind.Warning => (Glyphs.Warning, Theme.Warning),
-            ToastKind.Error => (Glyphs.Warning, Theme.DangerText),
-            _ => (Glyphs.Info, Theme.AccentText),
+            ToastKind.Success => (Glyphs.Check, "Success"),
+            ToastKind.Warning => (Glyphs.Warning, "Warning"),
+            ToastKind.Error => (Glyphs.Warning, "DangerText"),
+            _ => (Glyphs.Info, "AccentText"),
         };
+        ToastIcon.SetResourceReference(TextBlock.ForegroundProperty, brush);
         _toastAction = action;
         ToastAction.Content = actionText;
         ToastAction.Visibility = VisibleIf(action != null && actionText != null);
@@ -58,7 +60,7 @@ public partial class MainWindow
         _toastTimer.Start();
     }
 
-    private void HideToast()
+    void HideToast()
     {
         _toastTimer?.Stop();
         _toastAction = null;
@@ -73,27 +75,27 @@ public partial class MainWindow
         ToastHost.BeginAnimation(OpacityProperty, fade);
     }
 
-    private void ToastAction_Click(object sender, RoutedEventArgs e)
+    void ToastAction_Click(object sender, RoutedEventArgs e)
     {
         var action = _toastAction;
         HideToast();
         action?.Invoke();
     }
 
-    private void ShowBanner(string key, string glyph, string title, string text, string actionText, Action action, bool warning = false)
+    void ShowBanner(string key, string glyph, string title, string text, string actionText, Action action, bool warning = false)
     {
         _banners[key] = new(glyph, title, text, actionText, action, warning);
         RenderBanner();
     }
 
-    private void HideBanner(string key)
+    void HideBanner(string key)
     {
         if (_banners.Remove(key)) RenderBanner();
     }
 
-    private BannerInfo? TopBanner => _banners.Values.OrderByDescending(b => b.Warning).FirstOrDefault();
+    BannerInfo? TopBanner => _banners.Values.OrderByDescending(b => b.Warning).FirstOrDefault();
 
-    private void RenderBanner()
+    void RenderBanner()
     {
         var banner = TopBanner;
         Banner.Visibility = VisibleIf(banner != null);
@@ -107,13 +109,17 @@ public partial class MainWindow
             : (Theme.AccentText, Theme.Get("BannerBg"), Theme.AccentLine);
     }
 
-    private void BannerAction_Click(object sender, RoutedEventArgs e) => TopBanner?.Action();
+    void BannerAction_Click(object sender, RoutedEventArgs e) => TopBanner?.Action();
 
-    private void OpenSettings_Click(object sender, RoutedEventArgs e) => ShowSettings();
+    void OpenSettings_Click(object sender, RoutedEventArgs e) => ShowSettings();
 
-    private void ShowSettings() => OpenSettings(null);
+    void ShowSettings() => OpenSettings(_provider == null ? KeyField : null);
 
-    private void OpenSettings(Control? focus)
+    void ShowKeySettings() => OpenSettings(KeyField);
+
+    Control KeyField => _config.Provider == AgentProvider.ChatGpt ? ChatGptSignInButton : KeyPasswordBox;
+
+    void OpenSettings(Control? focus)
     {
         if (_cts != null)
         {
@@ -125,10 +131,12 @@ public partial class MainWindow
         CloseOverlay();
         SettingsError.Visibility = Visibility.Collapsed;
         var env = new Dictionary<string, string>();
+        bool unreadable = false;
         try { if (File.Exists(AppPaths.EnvPath)) env = DotEnv.Parse(AppPaths.EnvPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ShowSettingsError("Не удалось прочитать .env: " + ex.Message);
+            unreadable = true;
             env = new()
             {
                 ["TOOKEN_BASE_URL"] = _config.BaseUrl,
@@ -139,19 +147,21 @@ public partial class MainWindow
         foreach (var provider in Enum.GetValues<AgentProvider>())
         {
             if (provider != AgentProvider.ChatGpt)
-                _settingsKeys[provider] = AppConfig.CleanKey(Value(AppConfig.KeyOf(provider, "API_KEY"), _config.ApiKeyFor(provider) ?? ""));
+                _settingsKeys[provider] = AppConfig.CleanKey(unreadable ? _config.ApiKeyFor(provider) : Value(AppConfig.KeyOf(provider, "API_KEY")));
             _settingsModels[provider] = _savedModels[provider] =
                 provider == _config.Provider ? CurrentModel() : AppConfig.ChatModelOf(provider, env.GetValueOrDefault(AppConfig.KeyOf(provider, "MODEL")));
         }
         foreach (var provider in AppConfig.ImageProviders)
-            _settingsImageModels[provider] = Value(AppConfig.KeyOf(provider, "IMAGE_MODEL"), AppConfig.ImageModelsOf(provider)[0]);
+            _settingsImageModels[provider] = _savedImageModels[provider] = Value(AppConfig.KeyOf(provider, "IMAGE_MODEL"), AppConfig.ImageModelsOf(provider)[0]);
         _settingsImagesLikeChat = _config.ImagesLikeChat;
         ImageSourceChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsImagesLikeChat ? "chat" : "tooken")).IsChecked = true;
         SubagentsToggle.IsChecked = _config.UseSubagents;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
-        ThemeChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _state.Theme ?? "dark")).IsChecked = true;
+        _settingsTheme = _state.Theme;
+        var themes = ThemeChoices.Children.OfType<RadioButton>();
+        (themes.FirstOrDefault(button => Equals(button.Tag, _state.Theme)) ?? themes.First()).IsChecked = true;
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
-        LoadNetworkSettings(Value("AGENT_VPN_PROFILES"));
+        LoadNetworkSettings(unreadable ? _config.Network : NetworkSettings.Load(key => env.GetValueOrDefault(key)), Value("AGENT_VPN_PROFILES"));
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
         PluginsText.Text = plugins.Count > 0
             ? $"Установлены: {string.Join(", ", plugins.Select(p => p.Name))}. Агент сам выбирает подходящий плагин по задаче."
@@ -159,12 +169,10 @@ public partial class MainWindow
         MaxTokensBox.Text = Value("TOOKEN_MAX_TOKENS");
         DayLimitBox.Text = _config.DayLimit is { } day ? Tokens.ToMillions(day) : "";
         MonthLimitBox.Text = _config.MonthLimit is { } month ? Tokens.ToMillions(month) : "";
-        BaseUrlBox.Tag = MaxTokensBox.Tag = DayLimitBox.Tag = MonthLimitBox.Tag = null;
+        ClearInvalidFields();
         _settingsProvider = _config.Provider;
         ProviderChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsProvider)).IsChecked = true;
         ShowProviderSettings();
-        if (focus == null && _provider == null)
-            focus = _settingsProvider == AgentProvider.ChatGpt ? ChatGptSignInButton : KeyPasswordBox;
         ShowSettingsPage(focus ?? _settingsPage ?? SettingsGeneral);
         WorkArea.Visibility = Sidebar.Visibility = Visibility.Hidden;
         SettingsPage.Visibility = Visibility.Visible;
@@ -177,9 +185,9 @@ public partial class MainWindow
         }, DispatcherPriority.Input);
     }
 
-    private bool SettingsOpen => IsShown(SettingsPage);
+    bool SettingsOpen => IsShown(SettingsPage);
 
-    private void ShowSettingsPage(FrameworkElement target)
+    void ShowSettingsPage(FrameworkElement target)
     {
         var page = _settingsPage = SettingsFields.Children.OfType<FrameworkElement>().First(page => page == target || page.IsAncestorOf(target));
         foreach (var child in SettingsFields.Children.OfType<FrameworkElement>()) child.Visibility = VisibleIf(child == page);
@@ -188,14 +196,14 @@ public partial class MainWindow
         SettingsScroll.ScrollToTop();
     }
 
-    private void SettingsNav_Click(object sender, RoutedEventArgs e)
+    void SettingsNav_Click(object sender, RoutedEventArgs e)
     {
         var nav = (Button)sender;
         ShowSettingsPage((FrameworkElement)FindName((string)nav.CommandParameter));
         nav.Focus();
     }
 
-    private void ProviderPill_Checked(object sender, RoutedEventArgs e)
+    void ProviderPill_Checked(object sender, RoutedEventArgs e)
     {
         if (sender is not RadioButton { Tag: AgentProvider provider } || provider == _settingsProvider) return;
         KeepProviderInput();
@@ -204,14 +212,14 @@ public partial class MainWindow
         ShowProviderSettings();
     }
 
-    private void KeepProviderInput()
+    void KeepProviderInput()
     {
         if (_settingsProvider != AgentProvider.ChatGpt) _settingsKeys[_settingsProvider] = EnteredKey();
         if (_settingsProvider != AgentProvider.Groq) _settingsKeys[AgentProvider.Groq] = AppConfig.CleanKey(VoiceKeyBox.Password);
         _settingsModels[_settingsProvider] = DefaultModelButton.Content as string ?? "";
     }
 
-    private void ShowProviderSettings()
+    void ShowProviderSettings()
     {
         var provider = _settingsProvider;
         bool keyed = provider != AgentProvider.ChatGpt, groq = provider == AgentProvider.Groq;
@@ -219,16 +227,15 @@ public partial class MainWindow
         KeyPanel.Visibility = VisibleIf(keyed);
         ChatGptPanel.Visibility = VisibleIf(!keyed);
         TookenPanel.Visibility = VisibleIf(provider == AgentProvider.Tooken);
+        ProviderKeysHint.Visibility = VisibleIf(keyed);
         ProviderKeysLink.NavigateUri = new Uri(provider switch
         {
-            AgentProvider.ChatGpt => "https://platform.openai.com/api-keys",
             AgentProvider.Groq => Groq.KeysUrl,
             AgentProvider.Gemini => "https://aistudio.google.com/apikey",
             AgentProvider.OpenRouter => "https://openrouter.ai/settings/keys",
             AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
             _ => "https://tooken.club/dashboard",
         });
-        ProviderKeysLink.ToolTip = keyed ? null : "Ключи OpenAI API. Для подключения ChatGPT используйте вход в аккаунт ниже.";
         if (keyed)
         {
             ShowKeyToggle.IsChecked = false;
@@ -247,7 +254,7 @@ public partial class MainWindow
         VoiceKeyPanel.Visibility = VisibleIf(!groq);
         if (!groq) VoiceKeyBox.Password = _settingsKeys.GetValueOrDefault(AgentProvider.Groq, "");
         VoiceHint.Text = groq
-            ? "Микрофон в поле ввода отправляет запись в Groq по ключу из раздела «Подключение» и вставляет распознанный текст. Запись нигде не сохраняется. "
+            ? "Микрофон в поле ввода отправляет запись в Groq по API-ключу выше и вставляет распознанный текст. Запись нигде не сохраняется. "
             : "Микрофон в поле ввода отправляет запись в Groq и вставляет распознанный текст — при любом провайдере. Запись нигде не сохраняется. " +
               "Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ";
         DefaultModelButton.Content = _settingsModels.GetValueOrDefault(provider) is { Length: > 0 } model ? model : AppConfig.DefaultModelOf(provider);
@@ -261,10 +268,10 @@ public partial class MainWindow
         ShowImageSettings();
     }
 
-    private AgentProvider ImageTarget => _settingsImagesLikeChat && _settingsProvider != AgentProvider.Tooken &&
+    AgentProvider ImageTarget => _settingsImagesLikeChat && _settingsProvider != AgentProvider.Tooken &&
         AppConfig.ImageProviders.Contains(_settingsProvider) ? _settingsProvider : AgentProvider.Tooken;
 
-    private void ShowImageSettings()
+    void ShowImageSettings()
     {
         var target = ImageTarget;
         var model = _settingsImageModels[target];
@@ -272,18 +279,19 @@ public partial class MainWindow
         ImageModelButton.Content = model;
         ImageModelButton.Tag = models.Contains(model) ? models : models.Prepend(model);
         ImageModelHint.Text = target != AgentProvider.Tooken ? $"Картинки рисует {ProviderName(target)} по ключу из этого раздела."
-            : _settingsImagesLikeChat && _settingsProvider != AgentProvider.Tooken
+            : _settingsProvider == AgentProvider.Tooken ? "Картинки рисует Tooken Club по его ключу и балансу."
+            : _settingsImagesLikeChat
                 ? $"{ProviderName(_settingsProvider)} не рисует картинки через API, поэтому их рисует Tooken Club по его ключу и балансу."
                 : "Картинки рисует Tooken Club по его ключу и балансу при любом провайдере чата.";
     }
 
-    private void ImageSource_Checked(object sender, RoutedEventArgs e)
+    void ImageSource_Checked(object sender, RoutedEventArgs e)
     {
         _settingsImagesLikeChat = Equals(((RadioButton)sender).Tag, "chat");
         ShowImageSettings();
     }
 
-    private void ShowChatGptAccount()
+    void ShowChatGptAccount()
     {
         bool connected = _chatGpt.Connected, allowed = _chatGpt.PlanAllowed, waiting = _signIn != null;
         ChatGptAccountPanel.Visibility = VisibleIf(connected);
@@ -308,15 +316,15 @@ public partial class MainWindow
         if (_chatGpt.ClientId != null) AddSignInLink("Войти в другой аккаунт", "Подключить к Sharp Agent другой аккаунт ChatGPT", null);
     }
 
-    private void AddSignInLink(string text, string tip, string? clientId)
+    void AddSignInLink(string text, string tip, string? clientId)
     {
         ChatGptHint.Inlines.Add(new LineBreak());
         ChatGptHint.Inlines.Add(MakeLink(text, async () => await SignInChatGptAsync(clientId), tip));
     }
 
-    private async void ChatGptSignIn_Click(object sender, RoutedEventArgs e) => await SignInChatGptAsync(_chatGpt.ClientId);
+    async void ChatGptSignIn_Click(object sender, RoutedEventArgs e) => await SignInChatGptAsync(_chatGpt.ClientId);
 
-    private async Task SignInChatGptAsync(string? clientId)
+    async Task SignInChatGptAsync(string? clientId)
     {
         if (_signIn != null) return;
         var cts = _signIn = new CancellationTokenSource();
@@ -351,7 +359,7 @@ public partial class MainWindow
         if (welcome) ShowPlanWelcome();
     }
 
-    private static void OpenSignInPage(string url)
+    static void OpenSignInPage(string url)
     {
         if (AppNetwork.CustomRoute) FileActions.RaiseNotify("Для входа откроется внешний браузер с его сетевыми настройками.", false);
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose(); }
@@ -361,9 +369,9 @@ public partial class MainWindow
         }
     }
 
-    private void ChatGptCancel_Click(object sender, RoutedEventArgs e) => _signIn?.Cancel();
+    void ChatGptCancel_Click(object sender, RoutedEventArgs e) => _signIn?.Cancel();
 
-    private async void ChatGptSignOut_Click(object sender, RoutedEventArgs e)
+    async void ChatGptSignOut_Click(object sender, RoutedEventArgs e)
     {
         if (!DarkDialog.Ask(this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", "Выйти")) return;
         ChatGptSignOutButton.IsEnabled = false;
@@ -389,7 +397,7 @@ public partial class MainWindow
                 ToastKind.Warning, "Открыть", () => FileActions.OpenUrl(ChatGptClient.UsageUrl));
     }
 
-    private void CloseSettings()
+    void CloseSettings()
     {
         _networkGeneration++;
         SettingsPage.Visibility = Visibility.Collapsed;
@@ -398,23 +406,30 @@ public partial class MainWindow
         KeyTextBox.Clear();
         VoiceKeyBox.Clear();
         _settingsKeys.Clear();
+        if (_settingsTheme != _state.Theme) ApplyTheme();
         InputBox.Focus();
     }
 
-    private void SettingsCancel_Click(object sender, RoutedEventArgs e) => CloseSettings();
+    void SettingsCancel_Click(object sender, RoutedEventArgs e) => CloseSettings();
 
-    private void SettingsFields_TextChanged(object sender, TextChangedEventArgs e)
+    void SettingsFields_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (e.OriginalSource is Control field) field.Tag = null;
     }
 
-    private string EnteredKey() => AppConfig.CleanKey(ShowKeyToggle.IsChecked == true ? KeyTextBox.Text : KeyPasswordBox.Password);
+    void ClearInvalidFields()
+    {
+        foreach (var field in new Control[] { MaxTokensBox, BaseUrlBox, DayLimitBox, MonthLimitBox, NetworkHost, NetworkPort, NetworkUser, NetworkSubscription, NetworkEngine })
+            field.Tag = null;
+    }
 
-    private string SettingsTookenBaseUrl() => AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl);
+    string EnteredKey() => AppConfig.CleanKey(ShowKeyToggle.IsChecked == true ? KeyTextBox.Text : KeyPasswordBox.Password);
 
-    private string? SettingsCatalogKey() => ModelCatalogKey(_settingsProvider, EnteredKey(), SettingsTookenBaseUrl());
+    string SettingsTookenBaseUrl() => AppConfig.NormalizeBaseUrl(BaseUrlBox.Text.Trim() is { Length: > 0 } url ? url : AppConfig.DefaultBaseUrl);
 
-    private void ShowKey_Changed(object sender, RoutedEventArgs e)
+    string? SettingsCatalogKey() => ModelCatalogKey(_settingsProvider, EnteredKey(), SettingsTookenBaseUrl());
+
+    void ShowKey_Changed(object sender, RoutedEventArgs e)
     {
         bool show = ShowKeyToggle.IsChecked == true;
         if (show) KeyTextBox.Text = KeyPasswordBox.Password;
@@ -424,7 +439,7 @@ public partial class MainWindow
         AutomationProperties.SetName(ShowKeyToggle, show ? "Скрыть ключ" : "Показать ключ");
     }
 
-    private async void TestKey_Click(object sender, RoutedEventArgs e)
+    async void TestKey_Click(object sender, RoutedEventArgs e)
     {
         var provider = _settingsProvider;
         var key = EnteredKey();
@@ -493,24 +508,25 @@ public partial class MainWindow
         }
     }
 
-    private void DefaultModelButton_Click(object sender, RoutedEventArgs e) => PickModel(DefaultModelButton, _settingsProvider);
+    void DefaultModelButton_Click(object sender, RoutedEventArgs e) => PickModel(DefaultModelButton, _settingsProvider);
 
-    private void ImageModelButton_Click(object sender, RoutedEventArgs e)
+    void ImageModelButton_Click(object sender, RoutedEventArgs e)
     {
         var target = ImageTarget;
         ModelMenu(ImageModelButton, target, model => ImageModelButton.Content = _settingsImageModels[target] = model).IsOpen = true;
     }
 
-    private void SetTestResult(string text, bool? ok)
+    void SetTestResult(string text, bool? ok)
     {
         TestKeyResult.Text = text;
         TestKeyResult.Visibility = VisibleIf(text.Length > 0);
-        (TestKeyResult.Foreground, TestKeyIcon.Text) = ok switch { true => (Theme.Success, Glyphs.Check), false => (Theme.DangerText, Glyphs.Warning), _ => (Theme.TextMuted, "") };
-        TestKeyIcon.Foreground = ok == true ? Theme.Success : Theme.DangerText;
+        (var brush, TestKeyIcon.Text) = ok switch { true => ("Success", Glyphs.Check), false => ("DangerText", Glyphs.Warning), _ => ("TextMuted", "") };
+        TestKeyResult.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        TestKeyIcon.SetResourceReference(TextBlock.ForegroundProperty, ok == true ? "Success" : "DangerText");
         AutomationProperties.SetLiveSetting(TestKeyResult, AutomationLiveSetting.Polite);
     }
 
-    private async void SettingsSave_Click(object sender, RoutedEventArgs e)
+    async void SettingsSave_Click(object sender, RoutedEventArgs e)
     {
         Control? invalid = null;
         void Fail(string message, Control field)
@@ -519,12 +535,13 @@ public partial class MainWindow
             if (invalid == null) ShowSettingsError(message);
             invalid ??= field;
         }
+        ClearInvalidFields();
         var maxTokens = MaxTokensBox.Text.Trim();
         if (maxTokens.Length > 0 && (!int.TryParse(maxTokens, out var limit) || limit < 1))
             Fail("«Токенов в одном ответе» — целое число больше нуля или пустое поле.", MaxTokensBox);
         var url = BaseUrlBox.Text.Trim() is { Length: > 0 } text ? text : AppConfig.DefaultBaseUrl;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
-            Fail("Адрес API tooken.club должен начинаться с https://" + (_settingsProvider == AgentProvider.Tooken ? "" : " — исправьте его в разделе Tooken Club."), BaseUrlBox);
+            Fail("Адрес API tooken.club должен начинаться с https://" + (_settingsProvider == AgentProvider.Tooken ? "" : " — выберите Tooken Club в разделе «Провайдеры» и исправьте адрес."), BaseUrlBox);
         var dayLimit = DayLimitBox.Text.Trim();
         if (dayLimit.Length > 0 && AppConfig.ParseMillions(dayLimit) == null)
             Fail("«Лимит в день» — число миллионов токенов, например 5 или 0,5. Чтобы снять лимит, оставьте поле пустым.", DayLimitBox);
@@ -549,7 +566,13 @@ public partial class MainWindow
         catch (InvalidOperationException ex)
         {
             if (network.Mode == NetworkMode.Vpn) FindNetworkEngine();
-            Fail(ex.Message, network.Mode != NetworkMode.Vpn ? NetworkHost : _vpnSelection == null ? NetworkSubscription : NetworkEngine);
+            Fail(ex.Message, network switch
+            {
+                { Mode: NetworkMode.Vpn } => _vpnSelection == null ? NetworkSubscription : NetworkEngine,
+                _ when Uri.CheckHostName(network.Host.Trim('[', ']')) == UriHostNameType.Unknown => NetworkHost,
+                _ when !int.TryParse(network.Port, out var port) || port is < 1 or > 65_535 => NetworkPort,
+                _ => NetworkUser,
+            });
         }
         if (invalid != null)
         {
@@ -570,7 +593,9 @@ public partial class MainWindow
         foreach (var (provider, key) in _settingsKeys) values[AppConfig.KeyOf(provider, "API_KEY")] = key;
         network.WriteTo(values);
         values["AGENT_VPN_PROFILES"] = string.Join(';', _vpnProfiles.Select(profile => profile.Save()));
-        foreach (var (provider, model) in _settingsImageModels) values[AppConfig.KeyOf(provider, "IMAGE_MODEL")] = model;
+        foreach (var (provider, model) in _settingsImageModels)
+            if (model != _savedImageModels[provider])
+                values[AppConfig.KeyOf(provider, "IMAGE_MODEL")] = model;
         foreach (var (provider, model) in _settingsModels)
             if (provider == _settingsProvider || model != _savedModels.GetValueOrDefault(provider))
                 values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
@@ -580,6 +605,8 @@ public partial class MainWindow
             return;
         }
         _state.LimitOverrideDay = null;
+        _state.Theme = _settingsTheme;
+        _state.Save();
         ApplyConfig();
         CloseSettings();
         ShowToast(_provider != null ? "Настройки сохранены" : "Сохранено, но " + (_config.Provider switch
@@ -590,31 +617,32 @@ public partial class MainWindow
         }) + " — агент не сможет отвечать", _provider != null ? ToastKind.Success : ToastKind.Warning);
     }
 
-    private void ShowSettingsError(string message)
+    void ShowSettingsError(string message)
     {
         SettingsError.Text = message;
         SettingsError.Visibility = Visibility.Visible;
         AutomationProperties.SetLiveSetting(SettingsError, AutomationLiveSetting.Assertive);
     }
 
-    private void KeyLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    void KeyLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
     {
         e.Handled = true;
         FileActions.OpenUrl(e.Uri.AbsoluteUri);
     }
 
-    private void ThemePill_Checked(object sender, RoutedEventArgs e)
+    void ThemePill_Checked(object sender, RoutedEventArgs e)
     {
-        var mode = (string)((RadioButton)sender).Tag is var tag && tag == "dark" ? null : tag;
-        if (_state.Theme == mode) return;
-        _state.Theme = mode;
-        _state.Save();
+        _settingsTheme = (string)((RadioButton)sender).Tag is var tag && tag == "dark" ? null : tag;
+        // Preview only: state.json keeps the saved theme until «Сохранить».
+        var saved = _state.Theme;
+        _state.Theme = _settingsTheme;
         ApplyTheme();
+        _state.Theme = saved;
     }
 
-    private void GroqKeysLink_Click(object sender, RoutedEventArgs e) => FileActions.OpenUrl(Groq.KeysUrl);
+    void GroqKeysLink_Click(object sender, RoutedEventArgs e) => FileActions.OpenUrl(Groq.KeysUrl);
 
-    private void OpenPlugins_Click(object sender, RoutedEventArgs e)
+    void OpenPlugins_Click(object sender, RoutedEventArgs e)
     {
         var folder = _toolContext.PluginsFolder!;
         try

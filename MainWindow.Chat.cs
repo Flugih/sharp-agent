@@ -277,7 +277,7 @@ public partial class MainWindow
         (string Label, Action Run)? action = fix switch
         {
             ErrorFix.Retry when _agent.CanContinue => ("Повторить", () => _ = RetryAsync()),
-            ErrorFix.Settings => ("Открыть настройки", ShowSettings),
+            ErrorFix.Settings => ("Открыть настройки", ShowKeySettings),
             ErrorFix.Usage => ("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
             _ => null,
         };

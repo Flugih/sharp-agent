@@ -2,9 +2,9 @@ namespace SharpAgent.Api;
 
 public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
 {
-    public const string UsageUrl = "https://chatgpt.com/settings/usage";
+    public const string UsageUrl = "https://chatgpt.com/settings/usage", BaseUrl = "https://api.openai.com/v1";
     internal const string LimitCode = "subscription_sharing_usage_limit_exceeded", InvalidUserCode = "subscription_sharing_invalid_user";
-    const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible", BaseUrl = "https://api.openai.com/v1";
+    const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible";
     static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(300);
     readonly HashSet<string> _noSummaries = new(StringComparer.OrdinalIgnoreCase), _noStreaming = new(StringComparer.OrdinalIgnoreCase);
     readonly HttpClient _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.ParseAdd(ChatGptAuth.UserAgent));

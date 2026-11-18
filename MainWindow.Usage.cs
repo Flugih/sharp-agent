@@ -105,7 +105,7 @@ public partial class MainWindow
         else
         {
             AddHeader("Расход " + ProviderName(_config.Provider));
-            if (!AddPlaceholder(_agent.Totals().PromptTokens + _agent.Totals().CompletionTokens == 0, "Расход появится после первого ответа модели."))
+            if (!AddPlaceholder(_agent.Totals() is { PromptTokens: 0, CompletionTokens: 0 }, "Расход появится после первого ответа модели."))
                 AddChatSection();
         }
     }

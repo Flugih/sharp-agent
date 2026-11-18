@@ -2,14 +2,15 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
+    // All nodes go into one .env line and one menu, so a huge subscription is cut.
+    const int MaxVpnProfiles = 200;
     List<VpnProfile> _vpnProfiles = [];
     VpnProfile? _vpnSelection;
     (string Path, string Sha256) _networkEngineApproval;
     int _networkGeneration;
 
-    void LoadNetworkSettings(string savedProfiles)
+    void LoadNetworkSettings(NetworkSettings settings, string savedProfiles)
     {
-        var settings = _config.Network;
         _networkGeneration++;
         NetworkProxyType.Content = settings.Scheme is "http" or "https" or "socks5" ? settings.Scheme.ToUpperInvariant() : "SOCKS5";
         NetworkHost.Text = settings.Host;
@@ -20,7 +21,8 @@ public partial class MainWindow
         NetworkEngine.Text = File.Exists(settings.Engine) ? settings.Engine : "";
         _networkEngineApproval = (settings.Engine, settings.EngineSha256);
         _vpnSelection = VpnProfile.Restore(settings.Node);
-        _vpnProfiles = savedProfiles.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(VpnProfile.Restore).OfType<VpnProfile>().ToList();
+        _vpnProfiles = savedProfiles.Split(';', StringSplitOptions.RemoveEmptyEntries).Take(MaxVpnProfiles)
+            .Select(VpnProfile.Restore).OfType<VpnProfile>().ToList();
         if (_vpnSelection is { } saved)
         {
             _vpnSelection = _vpnProfiles.Find(profile => profile.Save() == settings.Node);
@@ -47,7 +49,7 @@ public partial class MainWindow
 
     void NetworkMode_Checked(object sender, RoutedEventArgs e)
     {
-        if (sender is not RadioButton button || NetworkVpnFields == null) return;
+        var button = (RadioButton)sender;
         NetworkProxyFields.Visibility = VisibleIf(Equals(button.Tag, "Proxy"));
         bool vpn = Equals(button.Tag, "Vpn");
         NetworkVpnFields.Visibility = VisibleIf(vpn);
@@ -81,11 +83,13 @@ public partial class MainWindow
             FindNetworkEngine();
             NetworkTestStatus.Text = "";
         }
-        catch (SingBoxException ex)
-        {
-            NetworkTestStatus.Foreground = Theme.DangerText;
-            NetworkTestStatus.Text = ex.Message;
-        }
+        catch (SingBoxException ex) { SetStatus(NetworkTestStatus, ex.Message, "DangerText"); }
+    }
+
+    static void SetStatus(TextBlock status, string text, string brush)
+    {
+        status.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        status.Text = text;
     }
 
     string ApprovedEngineHash(string path) => string.Equals(path, _networkEngineApproval.Path, StringComparison.OrdinalIgnoreCase)
@@ -110,7 +114,7 @@ public partial class MainWindow
         if (string.Equals(hash, settings.EngineSha256, StringComparison.OrdinalIgnoreCase)) return settings;
         if (!DarkDialog.Ask(this, "Разрешить запуск sing-box.exe?",
                 "Sharp Agent будет запускать этот файл для VPN. Подтвердите путь, если вы доверяете источнику файла.",
-                "Разрешить запуск", code: settings.Engine)) return null;
+                "Разрешить запуск", code: settings.Engine, delayed: true)) return null;
         _networkEngineApproval = (settings.Engine, hash);
         FindNetworkEngine();
         return settings with { EngineSha256 = hash };
@@ -123,7 +127,7 @@ public partial class MainWindow
         int generation = _networkGeneration;
         string source = NetworkSubscription.Password.Trim();
         NetworkImportButton.IsEnabled = false;
-        NetworkImportStatus.Text = "Загружаю подписку…";
+        SetStatus(NetworkImportStatus, "Загружаю подписку…", "TextMuted");
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(65));
@@ -135,17 +139,17 @@ public partial class MainWindow
             var (profiles, skipped) = await VpnSubscription.LoadAsync(source, _state.SubscriptionDeviceId.Value, timeout.Token);
             if (generation != _networkGeneration || !SettingsOpen || source != NetworkSubscription.Password.Trim()) return;
             string? current = _vpnSelection?.Save();
-            _vpnProfiles = profiles;
-            _vpnSelection = profiles.Find(profile => profile.Save() == current) ?? profiles[0];
+            _vpnProfiles = profiles.Take(MaxVpnProfiles).ToList();
+            _vpnSelection = _vpnProfiles.Find(profile => profile.Save() == current) ?? _vpnProfiles[0];
             ShowVpnSelection();
-            NetworkImportStatus.Foreground = Theme.Success;
-            NetworkImportStatus.Text = $"Серверов: {profiles.Count}." + (skipped > 0 ? $" Пропущено несовместимых записей: {skipped}." : "");
+            SetStatus(NetworkImportStatus, $"Серверов: {profiles.Count}." +
+                (profiles.Count > MaxVpnProfiles ? $" Сохранены первые {MaxVpnProfiles}." : "") +
+                (skipped > 0 ? $" Пропущено несовместимых записей: {skipped}." : ""), "Success");
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
         {
             if (generation != _networkGeneration || !SettingsOpen || source != NetworkSubscription.Password.Trim()) return;
-            NetworkImportStatus.Foreground = Theme.DangerText;
-            NetworkImportStatus.Text = ex is InvalidOperationException ? ex.Message : "Не удалось загрузить подписку.";
+            SetStatus(NetworkImportStatus, ex is InvalidOperationException ? ex.Message : "Не удалось загрузить подписку.", "DangerText");
         }
         finally
         {
@@ -162,7 +166,7 @@ public partial class MainWindow
 
     void NetworkSubscription_Changed(object sender, RoutedEventArgs e)
     {
-        if (NetworkVpnServer == null) return;
+        NetworkSubscription.Tag = null;
         _vpnProfiles = [];
         _vpnSelection = null;
         NetworkImportStatus.Text = "";
@@ -184,14 +188,14 @@ public partial class MainWindow
     string NetworkProbeUrl() => (_settingsProvider switch
     {
         AgentProvider.Tooken => SettingsTookenBaseUrl(),
-        AgentProvider.ChatGpt => "https://api.openai.com/v1",
+        AgentProvider.ChatGpt => ChatGptClient.BaseUrl,
         _ => AppConfig.DefaultBaseUrlOf(_settingsProvider),
     }).TrimEnd('/') + "/models";
 
     void ConnectionFieldChanged(object sender, RoutedEventArgs e)
     {
-        if (NetworkTestStatus != null) NetworkTestStatus.Text = "";
-        if (TestKeyResult != null && (sender == KeyPasswordBox || sender == KeyTextBox || sender == BaseUrlBox))
+        NetworkTestStatus.Text = "";
+        if (sender == KeyPasswordBox || sender == KeyTextBox || sender == BaseUrlBox)
             SetTestResult("", null);
     }
 
@@ -206,8 +210,7 @@ public partial class MainWindow
             settings = ReadNetworkSettings();
         }
         NetworkTestButton.IsEnabled = false;
-        NetworkTestStatus.Foreground = Theme.TextMuted;
-        NetworkTestStatus.Text = "Проверяю сетевой маршрут…";
+        SetStatus(NetworkTestStatus, "Проверяю сетевой маршрут…", "TextMuted");
         try
         {
             if (await ApproveNetworkEngineAsync(settings.Validate()) is not { } approved)
@@ -222,25 +225,21 @@ public partial class MainWindow
             var status = await AppNetwork.CheckAsync(settings, endpoint, timeout.Token);
             if (NetworkProbeUrl() != endpoint) return;
             if (generation != _networkGeneration || !SettingsOpen || ReadNetworkSettings() != settings) return;
-            (NetworkTestStatus.Foreground, NetworkTestStatus.Text) = status switch
-            {
-                HttpStatusCode.Unauthorized => (Theme.Warning, "Сервер доступен. API требует авторизацию (HTTP 401). Проверка маршрута выполняется без ключа."),
-                HttpStatusCode.Forbidden => (Theme.Warning, "Сервер отклонил запрос (HTTP 403). Проверьте доступ к API по этому маршруту."),
-                _ => (Theme.Success, "API доступен по выбранному маршруту."),
-            };
+            if (status == HttpStatusCode.Forbidden)
+                SetStatus(NetworkTestStatus, "Сервер отклонил запрос (HTTP 403). Проверьте доступ к API по этому маршруту.", "Warning");
+            else SetStatus(NetworkTestStatus, "API доступен по выбранному маршруту.", "Success");
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or OperationCanceledException)
         {
             if (generation != _networkGeneration || !SettingsOpen || ReadNetworkSettings() != settings || NetworkProbeUrl() != endpoint) return;
-            NetworkTestStatus.Foreground = Theme.DangerText;
-            NetworkTestStatus.Text = ex switch
+            SetStatus(NetworkTestStatus, ex switch
             {
                 InvalidOperationException or NetworkRouteException => ex.Message,
                 OperationCanceledException => "Проверка подключения не завершилась вовремя.",
-                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => "Не удалось разрешить адрес проверочного сервера.",
-                HttpRequestException { HttpRequestError: HttpRequestError.ProxyTunnelError } => "Прокси не смог открыть соединение с проверочным сервером.",
-                _ => "Нет ответа от проверочного сервера по выбранному маршруту.",
-            };
+                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => "Не удалось разрешить адрес сервера API.",
+                HttpRequestException { HttpRequestError: HttpRequestError.ProxyTunnelError } => "Прокси не смог открыть соединение с сервером API.",
+                _ => "Нет ответа от сервера API по выбранному маршруту.",
+            }, "DangerText");
             if (ex is NetworkRouteException { InvalidEngine: true })
             {
                 NetworkEngineFound.Visibility = Visibility.Collapsed;
