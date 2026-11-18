@@ -56,6 +56,8 @@ public static class ShellTools
             WorkingDirectory = workDir, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
+        var proxy = AppNetwork.ConfigureCommand(psi);
+        var proxyCredential = AppNetwork.ProxyCredential;
         string? scriptPath = null;
         async Task<string> WriteScriptAsync(string extension, byte[] script)
         {
@@ -84,10 +86,10 @@ public static class ShellTools
                 psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + await WriteScriptAsync(".ps1",
                     Encoding.UTF8.GetBytes("\uFEFF$ProgressPreference = 'SilentlyContinue'\r\n" +
                     "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [Console]::OutputEncoding } catch {}\r\n" +
+                    (proxy == null ? "" : "[Net.WebRequest]::DefaultWebProxy = New-Object Net.WebProxy" + (proxy.Length > 0 ? $" '{proxy}'" : "") + "\r\n") +
                     command + "\r\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\r\n"));
                 psi.FileName = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
             }
-            var proxyCredential = await AppNetwork.ConfigureCommandAsync(psi, ct);
             ct.ThrowIfCancellationRequested();
             using var process = new Process { StartInfo = psi };
             try { process.Start(); }
@@ -116,7 +118,7 @@ public static class ShellTools
             var errors = Redact(stderr.Text());
             string Redact(string value)
             {
-                if (proxyCredential?.Password is not { Length: > 0 } secret) return value;
+                if (proxyCredential?.Password is not { Length: >= 6 } secret) return value;
                 var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes(proxyCredential.UserName + ":" + secret));
                 return value.Replace(basic, "***").Replace(Uri.EscapeDataString(secret), "***").Replace(secret, "***");
             }

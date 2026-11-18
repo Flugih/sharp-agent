@@ -40,8 +40,11 @@ internal sealed record NetworkSettings(NetworkMode Mode = NetworkMode.System, st
         return new(new UriBuilder(Scheme, host, port).Uri) { Credentials = User.Length == 0 ? null : new NetworkCredential(User, Password) };
     }
 
+    internal string? Blocked { get; init; }
+
     internal NetworkSettings Validate()
     {
+        if (Blocked != null) throw new InvalidOperationException(Blocked);
         if (Mode == NetworkMode.Proxy) _ = Proxy();
         if (Mode != NetworkMode.Vpn) return this;
         if (Node.Length == 0) throw new InvalidOperationException("Загрузите подписку и выберите сервер VPN.");
@@ -58,9 +61,12 @@ internal sealed class NetworkRouteException(string message, bool invalidEngine =
 internal static class AppNetwork
 {
     static Route _current = new(new NetworkSettings());
+    static readonly Lazy<BrowserProxy> CommandRelay = new(() => new(commands: true));
+    static readonly IntPtr EngineJob = CreateEngineJob();
 
     internal static bool CustomRoute => Volatile.Read(ref _current).Settings.Mode is NetworkMode.Proxy or NetworkMode.Vpn;
     internal static CancellationToken RouteLifetime => Volatile.Read(ref _current).Lifetime;
+    internal static string? RouteFailure => Volatile.Read(ref _current).Failure;
 
     internal static async Task<WebProxy> BrowserProxyAsync(CancellationToken ct)
     {
@@ -75,26 +81,21 @@ internal static class AppNetwork
         Interlocked.Exchange(ref _current, new Route(settings)).Dispose();
     }
 
-    internal static async Task<NetworkCredential?> ConfigureCommandAsync(ProcessStartInfo start, CancellationToken ct)
+    // Commands get the address of a password-less local relay: null keeps system settings, "" means no proxy.
+    internal static string? ConfigureCommand(ProcessStartInfo start)
     {
-        var route = Volatile.Read(ref _current);
-        if (route.Settings.Mode == NetworkMode.System) return null;
-        var connection = await route.Connect().WaitAsync(ct).ConfigureAwait(false);
-        var proxy = connection.Proxy as WebProxy;
-        var credential = proxy?.Credentials as NetworkCredential;
-        var address = proxy?.Address == null ? null : new UriBuilder(proxy.Address)
-        {
-            UserName = Uri.EscapeDataString(credential?.UserName ?? ""),
-            Password = Uri.EscapeDataString(credential?.Password ?? ""),
-        }.Uri.AbsoluteUri;
-        foreach (var key in new[] { "http_proxy", "https_proxy", "all_proxy", "no_proxy" })
-        {
-            start.Environment.Remove(key);
-            if (address != null && key != "no_proxy") start.Environment[key] = address;
-        }
-        if (address == null) start.Environment["no_proxy"] = "*";
-        return credential;
+        var mode = Volatile.Read(ref _current).Settings.Mode;
+        if (mode == NetworkMode.System) return null;
+        var address = mode == NetworkMode.Direct ? "" : $"http://127.0.0.1:{CommandRelay.Value.Port}";
+        foreach (var key in new[] { "http_proxy", "https_proxy", "all_proxy" })
+            if (address.Length == 0) start.Environment.Remove(key);
+            else start.Environment[key] = address;
+        start.Environment["no_proxy"] = address.Length == 0 ? "*" : "localhost,127.0.0.1,::1";
+        return address;
     }
+
+    internal static NetworkCredential? ProxyCredential =>
+        Volatile.Read(ref _current).Settings is { Mode: NetworkMode.Proxy, User.Length: > 0 } settings ? new(settings.User, settings.Password) : null;
 
     internal static void Stop() => Apply(new NetworkSettings());
 
@@ -245,7 +246,11 @@ internal static class AppNetwork
                     }
                     response = _invoker.SendAsync(request, ct);
                 }
-                return await response.ConfigureAwait(false);
+                try { return await response.ConfigureAwait(false); }
+                catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.ProxyTunnelError)
+                {
+                    throw new NetworkRouteException(route.Failure ?? "Прокси или VPN не смог подключиться к серверу.");
+                }
             }
         }
 
@@ -291,6 +296,7 @@ internal static class AppNetwork
             };
             ct.ThrowIfCancellationRequested();
             var started = process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить sing-box.");
+            AssignProcessToJobObject(EngineJob, process.Handle);
             using var stopProcess = ct.Register(() => Kill(started));
             process.ErrorDataReceived += (_, e) => reportFailure(e.Data);
             process.OutputDataReceived += (_, e) => reportFailure(e.Data);
@@ -304,7 +310,9 @@ internal static class AppNetwork
             {
                 using var probe = new TcpClient();
                 try { await probe.ConnectAsync(IPAddress.Loopback, number, timeout.Token).ConfigureAwait(false); }
-                catch (SocketException)
+                catch (SocketException) { }
+                // Another program may grab the freed port first; it must not receive the SOCKS password.
+                if (!probe.Connected || BrowserProxy.Owner(number, ((IPEndPoint)probe.Client.LocalEndPoint!).Port) != process.Id)
                 {
                     await Task.Delay(100, timeout.Token).ConfigureAwait(false);
                     continue;
@@ -339,4 +347,18 @@ internal static class AppNetwork
         try { if (!process.HasExited) process.Kill(); }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception) { }
     }
+
+    // Windows closes the job handle when Sharp Agent exits in any way and then ends sing-box with it.
+    static IntPtr CreateEngineJob()
+    {
+        var job = CreateJobObject(IntPtr.Zero, null);
+        var limits = new long[18];
+        limits[2] = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE in BasicLimitInformation.LimitFlags
+        SetInformationJobObject(job, 9, limits, IntPtr.Size == 8 ? 144 : 112);
+        return job;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+    [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int type, long[] info, int size);
+    [DllImport("kernel32.dll")] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 }

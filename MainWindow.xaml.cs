@@ -127,7 +127,7 @@ public partial class MainWindow
         _ = LoadChatsAsync();
         _ = Task.Run(() => CommandLog.Prune(AppPaths.LogsFolder));
         if (_config.LoadError != null)
-            FolderBanner("env", "Не удалось прочитать файл настроек .env", "Пока действуют настройки по умолчанию. Причина: " + _config.LoadError);
+            FolderBanner("env", "Не удалось прочитать файл настроек .env", "Пока действуют настройки по умолчанию, а сеть отключена, чтобы запросы не прошли мимо выбранного VPN или прокси. Причина: " + _config.LoadError);
         if (!AppPaths.IsWritable(AppPaths.AppFolder))
             FolderBanner("readonly", $"Папка {FolderKind} недоступна для записи", "Настройки и переписка не сохранятся. " +
                 (AppPaths.IsInstalled ? "Проверьте права доступа к этой папке." : "Перенесите папку Sharp Agent, например, на Рабочий стол."));
@@ -468,6 +468,10 @@ public partial class MainWindow
         {
             if (_provider is ChatGptClient) App.LogError(ex);
             AddError(ex.Message, FixFor(ex));
+        }
+        catch (NetworkRouteException ex)
+        {
+            AddError(ex.Message, ErrorFix.Retry);
         }
         catch (HttpRequestException ex)
         {

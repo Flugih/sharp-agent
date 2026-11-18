@@ -132,15 +132,21 @@ internal static class VpnSubscription
         bool placeholder = false;
         if (input.StartsWith('{') || input.StartsWith('['))
         {
-            JsonNode? json;
-            try { json = JsonNode.Parse(input); }
-            catch (JsonException) { throw new InvalidOperationException("Сервер вернул повреждённый JSON подписки."); }
-            var nodes = json is JsonObject root ? root["outbounds"] as JsonArray : json as JsonArray;
-            foreach (var node in nodes ?? [])
+            JsonArray? nodes;
+            try
             {
-                if (node is JsonObject entry && Str(entry["type"]) is "selector" or "urltest" or "direct" or "block" or "dns") continue;
-                Add(node is JsonObject candidate ? Profile(candidate, Str(candidate["tag"])) : null);
+                var json = JsonNode.Parse(input);
+                nodes = json is JsonObject root ? root["outbounds"] as JsonArray : json as JsonArray;
             }
+            catch (Exception ex) when (ex is JsonException or ArgumentException) { throw new InvalidOperationException("Сервер вернул повреждённый JSON подписки."); }
+            foreach (var node in nodes ?? [])
+                // A repeated key inside an entry surfaces as ArgumentException on first access.
+                try
+                {
+                    if (node is JsonObject entry && Str(entry["type"]) is "selector" or "urltest" or "direct" or "block" or "dns") continue;
+                    Add(node is JsonObject candidate ? Profile(candidate, Str(candidate["tag"])) : null);
+                }
+                catch (ArgumentException) { skipped++; }
         }
         else
             foreach (var line in input.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -186,8 +192,10 @@ internal static class VpnSubscription
         if (type is "trojan" or "shadowsocks" or "hysteria2" or "tuic" or "anytls" && Str(source["password"]) is not { Length: > 0 }) return null;
         var outbound = (JsonObject)source.DeepClone();
         outbound.Remove("tag");
-        var label = string.IsNullOrWhiteSpace(name) ? host : name.ReplaceLineEndings(" ").Trim();
-        return new(label[..Math.Min(label.Length, 120)], outbound);
+        var clean = string.Concat((name ?? "").ReplaceLineEndings(" ").Where(c => char.GetUnicodeCategory(c) != UnicodeCategory.Format)
+            .Select(c => char.IsControl(c) ? ' ' : c)).Trim();
+        var label = new StringInfo(clean.Length == 0 ? host : clean);
+        return new(label.LengthInTextElements > 120 ? label.SubstringByTextElements(0, 120) : label.String, outbound);
     }
 
     static bool HasExternalReferences(JsonNode node) => node switch
@@ -207,10 +215,12 @@ internal static class VpnSubscription
             {
                 var vm = JsonNode.Parse(Decode(line["vmess://".Length..])) as JsonObject;
                 if (vm == null) return null;
-                var outbound = Server("vmess", Str(vm["add"]), Long(vm["port"]));
+                var alterId = Number(vm["aid"]);
+                if (alterId is < 0 or > 65_535) return null;
+                var outbound = Server("vmess", Str(vm["add"]), Number(vm["port"]));
                 outbound["uuid"] = Str(vm["id"]);
                 outbound["security"] = Str(vm["scy"]) ?? "auto";
-                outbound["alter_id"] = Long(vm["aid"]);
+                outbound["alter_id"] = alterId;
                 if (!AddTransport(outbound, Str(vm["net"]), Str(vm["host"]), Str(vm["path"]), null)) return null;
                 if (Str(vm["tls"]) == "tls") AddTls(outbound, Str(vm["sni"]) ?? Str(vm["host"]), null, Str(vm["fp"]), null, null);
                 return Profile(outbound, Str(vm["ps"]));
@@ -268,6 +278,9 @@ internal static class VpnSubscription
         outbound["password"] = pair[1];
         return Profile(outbound, Uri.UnescapeDataString(name.ElementAtOrDefault(1) ?? ""));
     }
+
+    // v2rayN links store numbers as strings.
+    static long Number(JsonNode? node) => long.TryParse(Str(node), out var value) ? value : Long(node);
 
     static JsonObject Server(string type, string? host, long port) => new() { ["type"] = type, ["server"] = host, ["server_port"] = port };
 

@@ -69,7 +69,9 @@ public sealed class AppConfig
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
-            Network = NetworkSettings.Load(key => vars.GetValueOrDefault(key)),
+            // The saved route is unknown, so a proxy route that never connects keeps traffic from bypassing a configured VPN.
+            Network = loadError == null ? NetworkSettings.Load(key => vars.GetValueOrDefault(key))
+                : new(NetworkMode.Proxy) { Blocked = "Сеть отключена: не удалось прочитать файл настроек .env." },
             MaxTokens = int.TryParse(Get("TOOKEN_MAX_TOKENS"), out var mt) && mt > 0 ? mt : null,
             DayLimit = ParseMillions(Get("AGENT_DAY_LIMIT_MLN")),
             MonthLimit = ParseMillions(Get("AGENT_MONTH_LIMIT_MLN")),
