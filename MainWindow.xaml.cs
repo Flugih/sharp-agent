@@ -31,7 +31,6 @@ public partial class MainWindow
     {
         AppFolder = AppPaths.AppFolder,
         InstallationFolder = AppPaths.IsInstalled ? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) : null,
-        PluginsFolder = AppPaths.PluginsFolder,
         LogsFolder = AppPaths.LogsFolder,
     };
     readonly UiState _state = UiState.Load();

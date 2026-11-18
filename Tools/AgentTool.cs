@@ -8,19 +8,22 @@ public sealed record ConfirmRequest(string Title, string Subject, string Action,
 
 public sealed class ToolContext
 {
-    string? _appFolder;
+    // The data folder of the installed version is guarded in both modes: a portable copy must not reach its secrets.
+    static readonly string InstalledData = FinalPath(AppPaths.InstalledDataFolder);
+    string? _appFolder, _installationFolder;
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public string? AppFolder { get => _appFolder; set => _appFolder = value != null ? FinalPath(value) : null; }
     public string? LogsFolder { get; set; }
     public string? SandboxRoot { get; set; }
-    public string? InstallationFolder { get; set; }
+    public string? InstallationFolder { get => _installationFolder; set => _installationFolder = value != null ? FinalPath(value) : null; }
     public bool ComputerUse { get; set; }
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
-    string? _pluginsFolder;
-    public string? PluginsFolder { get => _pluginsFolder ?? (AppFolder != null ? App("plugins") : null); set => _pluginsFolder = value; }
+    public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
 
     string App(string name) => Path.Combine(AppFolder!, name);
+
+    string[] DataFolders => [AppFolder!, InstalledData];
 
     static readonly AsyncLocal<bool> NetworkAllowed = new();
 
@@ -43,10 +46,13 @@ public sealed class ToolContext
     {
         if (AppFolder == null) return false;
         fullPath = FinalPath(fullPath);
-        return IsInside(App(".env"), fullPath) || SamePath(fullPath, App(".env.tmp")) || IsInside(App("auth"), fullPath) || IsInside(fullPath, App("auth")) ||
-               IsInside(fullPath, App(@"history\changes")) ||
-               IsInside(fullPath, AppFolder) && Path.GetFileName(fullPath).Equals(".env", StringComparison.OrdinalIgnoreCase);
+        return DataFolders.Any(folder => HoldsSecrets(folder, fullPath));
     }
+
+    static bool HoldsSecrets(string folder, string path) =>
+        IsInside(Path.Combine(folder, ".env"), path) || SamePath(path, Path.Combine(folder, ".env.tmp")) ||
+        IsInside(Path.Combine(folder, "auth"), path) || IsInside(path, Path.Combine(folder, "auth")) || IsInside(path, Path.Combine(folder, @"history\changes")) ||
+        IsInside(path, folder) && Path.GetFileName(path).Equals(".env", StringComparison.OrdinalIgnoreCase);
 
     public void GuardSecrets(string fullPath)
     {
@@ -59,14 +65,18 @@ public sealed class ToolContext
     {
         if (AppFolder == null) return;
         fullPath = FinalPath(fullPath);
-        if (SamePath(fullPath, App(".env")) || SamePath(fullPath, App(".env.tmp")) || IsInside(fullPath, App("auth")) || IsInside(fullPath, App("history")) ||
-            IsInside(fullPath, TempFolder) || IsInside(fullPath, PluginsFolder!) || IsInside(PluginsFolder!, fullPath) || SamePath(fullPath, App("state.json")) ||
-            SamePath(fullPath, App("errors.log")) ||
+        if (DataFolders.Any(folder => HoldsAppFiles(folder, fullPath)) ||
             InstallationFolder is { } install && (IsInside(fullPath, install) || IsInside(install, fullPath)) ||
-            Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)) || IsInside(AppFolder, fullPath))
+            IsInside(FinalPath(AppPaths.InstalledModePath), fullPath) ||
+            Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)))
             throw new ToolException("Это служебные файлы самой программы Sharp Agent (.env, auth, history, temp, plugins, state.json, exe " +
                 "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");
     }
+
+    static bool HoldsAppFiles(string folder, string path) =>
+        new[] { ".env", ".env.tmp", "state.json", "errors.log" }.Any(name => SamePath(path, Path.Combine(folder, name))) ||
+        new[] { "auth", "history", "temp" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
+        FinalPath(Path.Combine(folder, "plugins")) is var plugins && (IsInside(path, plugins) || IsInside(plugins, path)) || IsInside(folder, path);
 }
 
 public sealed class AgentTool

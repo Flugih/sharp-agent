@@ -41,9 +41,8 @@ for ($r = 0; $r -lt $rows.Count; $r++) {
         if (-not $value) { continue }
         $widths[$c] = [Math]::Max($widths[$c], $value.Length)
         $ref = (Get-ColumnName $c) + ($r + 1)
-        $number = $value
-        if ($r -and $number -match '^-?[0-9]+([.,][0-9]+)?$' -and $number -notmatch '^-?0[0-9]' -and ($number -replace '\D').Length -le 15) {
-            [void]$data.Append("<c r=`"$ref`"><v>$($number.Replace(',', '.'))</v></c>")
+        if ($r -and $value -match '^-?[0-9]+([.,][0-9]+)?$' -and $value -notmatch '^-?0[0-9]' -and ($value -replace '\D').Length -le 15) {
+            [void]$data.Append("<c r=`"$ref`"><v>$($value.Replace(',', '.'))</v></c>")
         } else {
             [void]$data.Append("<c r=`"$ref`"$(if (-not $r) { ' s="1"' }) t=`"inlineStr`"><is><t xml:space=`"preserve`">$(Esc $value)</t></is></c>")
         }

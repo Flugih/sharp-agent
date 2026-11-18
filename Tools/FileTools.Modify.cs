@@ -115,7 +115,6 @@ public static partial class FileTools
         if (Directory.Exists(source))
         {
             if (IsInside(FinalPath(target), FinalPath(source))) throw new ToolException("Нельзя копировать папку внутрь неё самой.");
-            EnsureParent(target);
             return $"Папка скопирована: {source} → {target} (файлов: {CopyDirectory(c, source, target, overwrite, ct)})";
         }
         if (!File.Exists(source)) throw new ToolException($"Источник не найден: {source}");
@@ -188,26 +187,34 @@ public static partial class FileTools
 
     static int CopyDirectory(ToolContext c, string source, string target, bool overwrite, CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
+        // The whole tree is checked before the first write, so a refusal never leaves a partial copy.
         RejectLink(source);
         if (Directory.Exists(target)) RejectLink(target);
-        Directory.CreateDirectory(target);
-        int count = 0;
-        foreach (var file in Directory.EnumerateFiles(source))
+        List<string> directories = [target];
+        List<(string From, string To)> files = [];
+        foreach (var entry in new DirectoryInfo(source).EnumerateFileSystemInfos("*", Everything))
         {
             ct.ThrowIfCancellationRequested();
-            var dest = Path.Combine(target, Path.GetFileName(file));
-            RejectLink(file);
-            if (File.Exists(dest)) RejectLink(dest);
-            GuardSecretCopy(c, file, dest);
+            var dest = Path.Join(target, Path.GetRelativePath(source, entry.FullName));
+            RejectLink(entry.FullName);
+            if (Path.Exists(dest)) RejectLink(dest);
+            if (entry is DirectoryInfo)
+            {
+                directories.Add(dest);
+                continue;
+            }
+            GuardSecretCopy(c, entry.FullName, dest);
             if (File.Exists(dest) && !overwrite)
                 throw new ToolException($"Файл уже существует: {dest}. Чтобы заменять файлы, укажите overwrite=true.");
-            File.Copy(file, dest, overwrite);
-            count++;
+            files.Add((entry.FullName, dest));
         }
-        foreach (var dir in Directory.EnumerateDirectories(source))
-            count += CopyDirectory(c, dir, Path.Combine(target, Path.GetFileName(dir)), overwrite, ct);
-        return count;
+        foreach (var dir in directories) Directory.CreateDirectory(dir);
+        foreach (var (from, to) in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            File.Copy(from, to, overwrite);
+        }
+        return files.Count;
     }
 
     static string DeletePath(ToolArgs a, ToolContext c, CancellationToken ct)

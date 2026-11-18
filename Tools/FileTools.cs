@@ -154,12 +154,12 @@ public static partial class FileTools
         string Page(TextReader reader, string source)
         {
             int number = 0;
-            while (number < offset - 1 && reader.ReadLine() != null)
+            while (number < offset - 1 && ReadLine(reader) != null)
             {
                 ct.ThrowIfCancellationRequested();
                 number++;
             }
-            var current = reader.ReadLine();
+            var current = ReadLine(reader);
             if (current == null)
             {
                 if (number == 0) return $"Файл: {path}\n(файл пуст)";
@@ -181,7 +181,7 @@ public static partial class FileTools
                 if (line.Length != current.Length) clipped++;
                 number++;
                 if (number - offset + 1 == limit) break;
-                current = reader.ReadLine();
+                current = ReadLine(reader);
             }
             bool more = current != null && (number - offset + 1 < limit || reader.Peek() != -1);
             return $"Файл: {path} | {FormatSize(new FileInfo(path).Length)} | {source}" +
@@ -189,6 +189,16 @@ public static partial class FileTools
                 (clipped > 0 ? $" | обрезано длинных строк: {clipped}" : "") +
                 (more ? $" | показано не всё — дальше читай с offset={number + 1}" : "") + "\n----------\n" + body;
         }
+    }
+
+    // Lines end only at \n, as in search_text and diffs: a lone \r stays inside the line.
+    static string? ReadLine(TextReader reader)
+    {
+        var line = new StringBuilder();
+        int ch;
+        while ((ch = reader.Read()) is not (-1 or '\n')) line.Append((char)ch);
+        if (ch == -1 && line.Length == 0) return null;
+        return line.Length > 0 && line[^1] == '\r' ? line.ToString(0, line.Length - 1) : line.ToString();
     }
 
     internal static (int Offset, int Limit) ReadRange(ToolArgs args) =>
