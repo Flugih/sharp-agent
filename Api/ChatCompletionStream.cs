@@ -8,6 +8,55 @@ static class ChatCompletionStream
         public JsonNode? ExtraContent;
     }
 
+    // Gemini's OpenAI layer may open the answer with its thought summary wrapped in <thought> tags.
+    internal sealed class ThoughtTags
+    {
+        const string Open = "<thought>", Close = "</thought>";
+        readonly StringBuilder _held = new();
+        int _state; // 0: the answer may still open with a thought, 1: inside the thought, 2: plain answer
+
+        public (string Text, string Thought) Push(string text)
+        {
+            if (_state == 2) return (text, "");
+            var s = _held.Append(text).ToString();
+            _held.Clear();
+            if (_state == 0)
+            {
+                var start = s.TrimStart();
+                if (!start.StartsWith(Open, StringComparison.Ordinal))
+                {
+                    if (Open.StartsWith(start, StringComparison.Ordinal))
+                    {
+                        _held.Append(s);
+                        return ("", "");
+                    }
+                    _state = 2;
+                    return (s, "");
+                }
+                _state = 1;
+                s = start[Open.Length..];
+            }
+            if (s.IndexOf(Close, StringComparison.Ordinal) is var end and >= 0)
+            {
+                _state = 2;
+                return (s[(end + Close.Length)..].TrimStart(), s[..end]);
+            }
+            int keep = Enumerable.Range(1, Math.Min(Close.Length - 1, s.Length)).LastOrDefault(n => s.EndsWith(Close[..n], StringComparison.Ordinal));
+            _held.Append(s[^keep..]);
+            return ("", s[..^keep]);
+        }
+
+        public (string Text, string Thought) Flush() => _state == 1 ? ("", _held.ToString()) : (_held.ToString(), "");
+
+        public static (string Text, string Thought) Split(string text)
+        {
+            var tags = new ThoughtTags();
+            var (head, thought) = tags.Push(text);
+            var (rest, restThought) = tags.Flush();
+            return (head + rest, thought + restThought);
+        }
+    }
+
     public static async Task<ChatResult> ReadAsync(HttpResponseMessage response, string? requestId, Action<string?, bool> reportText,
         Action<ModelProgress> reportProgress, CancellationToken ct)
     {
@@ -15,6 +64,7 @@ static class ChatCompletionStream
         StringBuilder content = new(), reasoning = new(), rawReasoning = new();
         var calls = new SortedDictionary<long, PendingCall>();
         var details = new JsonArray();
+        var tags = new ThoughtTags();
         var reasoningClock = Stopwatch.StartNew();
         string? finish = null, reasoningField = null;
         UsageInfo? usage = null;
@@ -45,7 +95,8 @@ static class ChatCompletionStream
                 pending.Name.Append(Str(function["name"]));
                 pending.Arguments.Append(Str(function["arguments"]));
             }
-            var text = AgentRunner.ExtractText(delta["content"]) ?? Str(delta["refusal"]) ?? "";
+            var raw = AgentRunner.ExtractText(delta["content"]) ?? Str(delta["refusal"]) ?? "";
+            var (text, thought) = Bool(((delta["extra_content"] as JsonObject)?["google"] as JsonObject)?["thought"]) == true ? ("", raw) : tags.Push(raw);
             content.Append(text);
             if (text.Length > 0 || !hadCalls && calls.Count > 0) reportText(text, calls.Count > 0);
             var updates = delta["reasoning_details"] as JsonArray;
@@ -57,7 +108,7 @@ static class ChatCompletionStream
                 reasoningField ??= field;
                 rawReasoning.Append(reason);
             }
-            else reason = ThinkingOf(delta["content"]) ?? DetailText(updates);
+            else reason = ThinkingOf(delta["content"]) ?? DetailText(updates) ?? thought;
             if (string.IsNullOrEmpty(reason)) continue;
             reasoning.Append(reason);
             if (reasoning.Length == reason.Length || reasoningClock.ElapsedMilliseconds >= 200)
@@ -68,6 +119,9 @@ static class ChatCompletionStream
         }
         if (!received || finish == null && (!done || calls.Count > 0))
             throw new ApiException("Связь с моделью оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
+        var (restText, restThought) = tags.Flush();
+        content.Append(restText);
+        reasoning.Append(restThought);
         var message = new JsonObject { ["role"] = "assistant", ["content"] = content.Length > 0 ? content.ToString() : null };
         if (reasoningField != null) message[reasoningField] = rawReasoning.ToString();
         if (details.Count > 0) message["reasoning_details"] = details;

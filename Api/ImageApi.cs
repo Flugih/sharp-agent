@@ -7,12 +7,26 @@ public static class ImageApi
     static readonly HttpClient Http = AppNetwork.Client(TimeSpan.FromMinutes(3), 64 << 20);
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> MistralAgents = new();
 
-    public static Task<byte[]> GenerateAsync(AgentProvider provider, string key, string model, string prompt, string size, CancellationToken ct) => provider switch
+    public static async Task<byte[]> GenerateAsync(AgentProvider provider, string key, string model, string prompt, string size, CancellationToken ct)
     {
-        AgentProvider.Gemini => GeminiAsync(key, model, prompt, size, ct),
-        AgentProvider.Mistral => MistralAsync(key, model, prompt, size, ct),
-        _ => OpenRouterAsync(key, model, prompt, size, ct),
-    };
+        try
+        {
+            return await (provider switch
+            {
+                AgentProvider.Gemini => GeminiAsync(key, model, prompt, size, ct),
+                AgentProvider.Mistral => MistralAsync(key, model, prompt, size, ct),
+                _ => OpenRouterAsync(key, model, prompt, size, ct),
+            });
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ApiException("Провайдер не прислал изображение за 3 минуты. Попробуйте ещё раз или упростите описание.", retryable: true);
+        }
+        catch (FormatException)
+        {
+            throw new ApiException("Провайдер прислал изображение в непонятном формате.");
+        }
+    }
 
     static string Aspect(string size) => size switch { "1536x1024" => "3:2", "1024x1536" => "2:3", _ => "1:1" };
 
@@ -27,16 +41,18 @@ public static class ImageApi
                     ["responseModalities"] = new JsonArray("TEXT", "IMAGE"), ["imageConfig"] = new JsonObject { ["aspectRatio"] = Aspect(size) },
                 },
             }, ct);
-        var parts = ((json["candidates"] as JsonArray)?.FirstOrDefault()?["content"]?["parts"] as JsonArray) ?? [];
+        var candidate = (json["candidates"] as JsonArray)?.FirstOrDefault();
+        var parts = candidate?["content"]?["parts"] as JsonArray ?? [];
         return parts.Select(part => Str(part?["inlineData"]?["data"])).FirstOrDefault(data => data != null) is { } image
-            ? Convert.FromBase64String(image) : throw NoImage(json);
+            ? Convert.FromBase64String(image)
+            : throw NoImage(AgentRunner.ExtractText(parts) is { Length: > 0 } said ? said : Str(candidate?["finishReason"]) ?? Str(json["promptFeedback"]?["blockReason"]));
     }
 
     static async Task<byte[]> OpenRouterAsync(string key, string model, string prompt, string size, CancellationToken ct)
     {
         var json = await SendAsync(HttpMethod.Post, "https://openrouter.ai/api/v1/images", ("Authorization", "Bearer " + key),
             new JsonObject { ["model"] = model, ["prompt"] = prompt, ["aspect_ratio"] = Aspect(size) }, ct);
-        return Str((json["data"] as JsonArray)?.FirstOrDefault()?["b64_json"]) is { Length: > 0 } image ? Convert.FromBase64String(image) : throw NoImage(json);
+        return Str((json["data"] as JsonArray)?.FirstOrDefault()?["b64_json"]) is { Length: > 0 } image ? Convert.FromBase64String(image) : throw NoImage(null);
     }
 
     // Mistral draws through its built-in image_generation tool, which needs an agent; one agent per model is reused.
@@ -46,7 +62,7 @@ public static class ImageApi
         var cacheKey = UsageTracker.KeyId(key, model);
         if (!MistralAgents.TryGetValue(cacheKey, out var agent) || agent == missing)
         {
-            var existing = await SendAsync(HttpMethod.Get, "https://api.mistral.ai/v1/agents?page_size=100", auth, null, ct);
+            var existing = await SendAsync(HttpMethod.Get, "https://api.mistral.ai/v1/agents?page_size=100&name=" + Uri.EscapeDataString(AgentName), auth, null, ct);
             agent = (existing as JsonArray ?? existing["data"] as JsonArray ?? [])
                 .FirstOrDefault(item => Str(item?["name"]) == AgentName && Str(item?["model"]) == model && Str(item?["id"]) != missing)?["id"] is { } found ? Str(found)! :
                 Str((await SendAsync(HttpMethod.Post, "https://api.mistral.ai/v1/agents", auth, new JsonObject
@@ -60,15 +76,16 @@ public static class ImageApi
         try
         {
             json = await SendAsync(HttpMethod.Post, "https://api.mistral.ai/v1/conversations", auth,
-                new JsonObject { ["agent_id"] = agent, ["inputs"] = $"{prompt}\nСоотношение сторон: {Aspect(size)}." }, ct);
+                new JsonObject { ["agent_id"] = agent, ["inputs"] = $"{prompt}\nСоотношение сторон: {Aspect(size)}.", ["store"] = false }, ct);
         }
         catch (ApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound && missing == null)
         {
             return await MistralAsync(key, model, prompt, size, ct, agent);
         }
-        var file = ((json["outputs"] as JsonArray) ?? []).SelectMany(output => output?["content"] as JsonArray ?? [])
+        var outputs = json["outputs"] as JsonArray ?? [];
+        var file = outputs.SelectMany(output => output?["content"] as JsonArray ?? [])
             .Where(chunk => Str(chunk?["type"]) == "tool_file").Select(chunk => Str(chunk?["file_id"])).LastOrDefault(id => id != null)
-            ?? throw NoImage(json);
+            ?? throw NoImage(string.Concat(outputs.Select(output => AgentRunner.ExtractText(output?["content"]))));
         using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.mistral.ai/v1/files/{Uri.EscapeDataString(file)}/content");
         request.Headers.TryAddWithoutValidation(auth.Item1, auth.Item2);
         using var response = await Http.SendAsync(request, ct);
@@ -90,5 +107,6 @@ public static class ImageApi
         catch (JsonException) { throw new ApiException("Сервер вернул не JSON: " + ApiException.Truncate(text, 300)); }
     }
 
-    static ApiException NoImage(JsonNode json) => new("Провайдер не вернул изображение: " + ApiException.Truncate(json.ToJsonString(), 400));
+    static ApiException NoImage(string? reason) => new("Провайдер не вернул изображение" +
+        (string.IsNullOrWhiteSpace(reason) ? ". Попробуйте изменить описание." : ": " + ApiException.Truncate(reason.Trim(), 400)));
 }

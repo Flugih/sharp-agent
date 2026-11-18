@@ -29,10 +29,20 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
 
     public static ApiException FromResponse(HttpStatusCode status, string body, string? requestId, TimeSpan? retryAfter = null)
     {
-        var error = ParseObject(body)?["error"] as JsonObject;
+        // Gemini wraps the error in a one-element array; Mistral puts its fields at the top level.
+        var root = ParseObject(body) ?? (body.Trim() is ['[', .. var inner, ']'] ? ParseObject(inner) : null);
+        var error = root?["error"] as JsonObject ?? root;
         string? Field(string name) => Str(error?[name]);
-        string? title = Field("title"), message = Field("message"), code = Field("code") ?? Field("type");
+        var details = (error?["details"] as JsonArray)?.OfType<JsonObject>().ToArray() ?? [];
+        bool badKey = details.Any(detail => Str(detail["reason"]) == "API_KEY_INVALID");
+        string? title = Field("title") ?? (badKey ? "Провайдер не принял API-ключ. Проверьте его в настройках" : null),
+            message = error?["message"] is JsonObject nested && nested["detail"] is JsonArray problems
+                ? string.Join("; ", problems.Select(problem => Str(problem?["msg"])).OfType<string>()) : Field("message"),
+            code = Field("status") ?? Field("code") ?? Field("type");
+        retryAfter ??= details.Select(detail => Str(detail["retryDelay"])).FirstOrDefault(delay => delay != null) is { } delay &&
+            double.TryParse(delay.TrimEnd('s'), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? TimeSpan.FromSeconds(seconds) : null;
         int number = (int)status;
+        if (badKey) status = HttpStatusCode.Unauthorized;
         var text = (title ?? $"Сервер ответил ошибкой (HTTP {number})") +
             (message != null ? ": " + message : title == null && body.Trim() is [not '<', ..] raw ? ": " + Truncate(raw, 400) : "") +
             (Field("action") is { } action ? "\n" + action : "") + (Field("billing") is { } billing ? "\n" + billing : "") +
@@ -127,7 +137,8 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             if (provider == AgentProvider.OpenRouter) body["reasoning"] = new JsonObject { ["effort"] = effort };
             else body["reasoning_effort"] = effort;
         }
-        if (provider == AgentProvider.Gemini && GeminiThinking(model))
+        // Gemini accepts either reasoning_effort or thinking_config, never both.
+        else if (provider == AgentProvider.Gemini && GeminiThinking(model))
             body["extra_body"] = new JsonObject
             {
                 ["google"] = new JsonObject { ["thinking_config"] = new JsonObject { ["include_thoughts"] = true } },
@@ -183,6 +194,10 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         foreach (var message in result.OfType<JsonObject>())
             if (Str(message["role"]) == "tool" && Str(message["tool_call_id"]) is { } id && ids.TryGetValue(id, out var mapped))
                 message["tool_call_id"] = mapped;
+        // Mistral rejects a user message right after a tool result (error 3230).
+        for (int i = result.Count - 1; i > 0; i--)
+            if (Str(result[i]?["role"]) == "user" && Str(result[i - 1]?["role"]) == "tool")
+                result.Insert(i, new JsonObject { ["role"] = "assistant", ["content"] = " " });
         return result;
     }
 
@@ -212,12 +227,15 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             if ((root?["choices"] as JsonArray)?.FirstOrDefault() is not JsonObject choice || choice["message"] is not JsonObject message)
                 throw new ApiException("Неожиданный ответ сервера (нет choices[0].message): " + ApiException.Truncate(text, 400));
             var answer = (JsonObject)message.DeepClone();
-            if (ChatCompletionStream.ThinkingOf(answer["content"]) is { Length: > 0 } thought)
+            var thought = ChatCompletionStream.ThinkingOf(answer["content"]);
+            if (thought != null) answer["content"] = AgentRunner.ExtractText(answer["content"]);
+            else if (answer["content"] is JsonValue content && Str(content) is { } plain &&
+                ChatCompletionStream.ThoughtTags.Split(plain) is { Thought.Length: > 0 } tagged)
             {
-                answer["content"] = AgentRunner.ExtractText(answer["content"]);
-                return new(answer, Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId, new(Reasoning: thought));
+                answer["content"] = tagged.Text is { Length: > 0 } reply ? reply : null;
+                thought = tagged.Thought;
             }
-            return new(answer, Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId);
+            return new(answer, Str(choice["finish_reason"]), ChatCompletionStream.Usage(root), requestId, thought != null ? new(Reasoning: thought) : null);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -244,9 +262,9 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             if (provider == AgentProvider.Gemini)
             {
                 bool chat = id.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase) &&
-                    !new[] { "embedding", "-tts", "-image", "live", "robotics", "computer-use", "native-audio", "aqa" }.Any(id.Contains);
+                    !new[] { "embedding", "-tts", "-image", "banana", "live", "robotics", "computer-use", "native-audio", "aqa" }.Any(id.Contains);
                 if (chat) result.Add(new(id, context > 0 ? context : null, true, true, false,
-                    GeminiThinking(id) ? ["minimal", .. StandardEfforts] : [], Str(obj?["name"])));
+                    GeminiThinking(id) ? StandardEfforts : [], Str(obj?["name"])));
                 continue;
             }
             if (provider == AgentProvider.OpenRouter)

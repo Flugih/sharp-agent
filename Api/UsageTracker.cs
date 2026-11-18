@@ -30,15 +30,17 @@ public sealed class UsageTracker(UiState state)
         var cache = state.Usage is { } saved && saved.KeyId == keyId ? saved : new UsageCache { KeyId = keyId };
         bool firstRun = cache.CoveredFrom == null;
         var today = DateTime.Now.Date;
+        var pruneBefore = today.AddDays(-62);
+        // Days older than the kept window are pruned anyway, so a long pause must not page through them.
         var refetchFrom = firstRun ? DateTime.MinValue
-            : (cache.RefreshedUtc?.ToLocalTime().Date is { } refreshed && refreshed < today ? refreshed : today).AddDays(-1);
+            : (cache.RefreshedUtc?.ToLocalTime().Date is { } refreshed && refreshed < today ? refreshed : today).AddDays(-1) is var from && from > pruneBefore ? from : pruneBefore;
         var fresh = new Dictionary<string, UsageDay>();
         var freshRates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         long spentSinceLast = 0, fetchedTotal = 0;
         DateTime? oldestDay = null;
         string? cursor = null;
         var cursors = new HashSet<string>(StringComparer.Ordinal);
-        for (int page = 0; !firstRun || page < 40; page++)
+        for (int page = 0; page < 40; page++)
         {
             var result = await api.GetUsageAsync(cursor, ct);
             cursor = result.NextCursor;
@@ -63,13 +65,12 @@ public sealed class UsageTracker(UiState state)
             if (!cursors.Add(cursor)) throw new ApiException("Сервер повторил страницу статистики расхода.");
         }
         bool capped = cursor != null;
-        var pruneBefore = today.AddDays(-62);
-        cache.Days = cache.Days.Where(d => ParseDay(d.Key) < refetchFrom).Concat(fresh).Where(d => ParseDay(d.Key) >= pruneBefore).ToDictionary();
-        if (firstRun)
-        {
-            cache.CoveredFrom = FormatDay(capped && oldestDay is { } oldest ? oldest.AddDays(1) : DateTime.MinValue);
-            cache.FullBalance = balance + fetchedTotal;
-        }
+        // A capped fetch only has whole days after the oldest fetched one; earlier days keep their cached totals.
+        var freshFrom = capped && oldestDay is { } oldest ? oldest.AddDays(1) : refetchFrom;
+        cache.Days = cache.Days.Where(d => ParseDay(d.Key) < freshFrom).Concat(fresh.Where(d => ParseDay(d.Key) >= freshFrom))
+            .Where(d => ParseDay(d.Key) >= pruneBefore).ToDictionary();
+        if (firstRun || capped) cache.CoveredFrom = FormatDay(capped ? freshFrom : DateTime.MinValue);
+        if (firstRun) cache.FullBalance = balance + fetchedTotal;
         else if (cache.LastBalance is { } previous && balance - (previous - spentSinceLast) > Math.Max(100_000, (cache.FullBalance ?? previous) / 50))
             cache.FullBalance = balance;
         cache.FullBalance = Math.Max(cache.FullBalance ?? balance, balance);

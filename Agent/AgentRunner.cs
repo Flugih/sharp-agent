@@ -320,7 +320,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             {
                 ResetModelProgress();
                 _noEffortModels.Add(model);
-                Notice?.Invoke($"Модель {model} не приняла выбранную силу рассуждения — она отвечает в обычном режиме.");
+                Notice?.Invoke($"Модель {model} не поддерживает силу рассуждения — она отвечает в обычном режиме.");
             }
             catch (ApiException ex) when (images > 0 && LooksLikeImageRejection(ex))
             {
@@ -465,6 +465,16 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     if (removeSignatures && clean["tool_calls"] is JsonArray cleaned)
                         foreach (var call in cleaned.OfType<JsonObject>()) call.Remove("extra_content");
                     node = clean;
+                }
+                // Gemini rejects a current-turn tool call without a thought signature, e.g. one made before a model switch.
+                if (i > currentUser && Provider is AgentProvider.Gemini or AgentProvider.Tooken && model.Contains("gemini", StringComparison.OrdinalIgnoreCase) &&
+                    node["tool_calls"] is JsonArray { Count: > 0 } && node["tool_calls"]![0]?["extra_content"] == null)
+                {
+                    if (ReferenceEquals(node, message)) node = message.DeepClone();
+                    node["tool_calls"]![0]!["extra_content"] = new JsonObject
+                    {
+                        ["google"] = new JsonObject { ["thought_signature"] = "skip_thought_signature_validator" },
+                    };
                 }
             }
             projected.Add(node);
