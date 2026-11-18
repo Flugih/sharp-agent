@@ -203,9 +203,9 @@ public sealed partial class ComposerBox : RichTextBox
         var remove = Theme.IconButton(Glyphs.Cancel, "Убрать ссылку: " + raw, 20, 9);
         var chip = new Border
         {
-            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, remove } }, Background = Theme.Surface2,
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, remove } },
             CornerRadius = new(6), ToolTip = raw,
-        };
+        }.Paint(Border.BackgroundProperty, "Surface2");
         AutomationProperties.SetName(chip, raw);
         remove.Click += (_, _) =>
         {

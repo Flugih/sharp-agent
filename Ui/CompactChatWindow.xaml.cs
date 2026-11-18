@@ -64,10 +64,9 @@ public partial class CompactChatWindow : Window
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
             else Transcript.Children.Add(new Border
             {
-                Background = Theme.Surface3, CornerRadius = new(10), HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new(18, 6, 2, 3), Padding = new(9, 5, 9, 5),
-                Child = new TextBlock { Text = UserText(message), Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap },
-            });
+                CornerRadius = new(10), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(18, 6, 2, 3), Padding = new(9, 5, 9, 5),
+                Child = new TextBlock { Text = UserText(message), TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextSoft"),
+            }.Paint(BackgroundProperty, "Surface3"));
         UpdateTranscript(scroll: true);
     }
 

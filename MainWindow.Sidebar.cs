@@ -253,8 +253,8 @@ public partial class MainWindow
         {
             ChatList.Children.Add(new TextBlock
             {
-                Text = "Здесь появятся ваши чаты.", FontSize = 12, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap, Margin = new(10, 4, 10, 0),
-            });
+                Text = "Здесь появятся ваши чаты.", FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new(10, 4, 10, 0),
+            }.Paint(ForegroundProperty, "TextMuted"));
             return;
         }
         AppendChatRows(_chats.OrderByDescending(c => c.Updated).ThenBy(c => c.Path, StringComparer.OrdinalIgnoreCase), null);
@@ -268,7 +268,7 @@ public partial class MainWindow
             var name = GroupOf(chat.Updated);
             if (name != group)
             {
-                ChatList.Children.Add(new TextBlock { Text = name, FontSize = 12, Foreground = Theme.TextMuted, Margin = new(10, group == null ? 4 : 16, 10, 6) });
+                ChatList.Children.Add(new TextBlock { Text = name, FontSize = 12, Margin = new(10, group == null ? 4 : 16, 10, 6) }.Paint(ForegroundProperty, "TextMuted"));
                 group = name;
             }
             ChatList.Children.Add(ChatRow(chat));

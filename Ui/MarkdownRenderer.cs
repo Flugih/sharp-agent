@@ -17,8 +17,8 @@ public sealed class MarkdownRenderer(MarkdownContext context)
     {
         var doc = new FlowDocument
         {
-            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 21, Foreground = Theme.Text, TextAlignment = TextAlignment.Left,
-        };
+            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 21, TextAlignment = TextAlignment.Left,
+        }.Paint(TextElement.ForegroundProperty, "Text");
         var blocks = doc.Blocks;
         var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
         Paragraph? open = null;
@@ -38,7 +38,7 @@ public sealed class MarkdownRenderer(MarkdownContext context)
                 }, text.TrimEnd('#').TrimEnd() is { Length: > 0 } title ? title : text[..1]));
             }
             else if (RuleRx.IsMatch(t))
-                blocks.Add(new Paragraph { BorderBrush = Theme.LineStrong, BorderThickness = new(0, 0, 0, 1), Margin = new(0, 4, 0, 16), FontSize = 2, LineHeight = 2 });
+                blocks.Add(new Paragraph { BorderThickness = new(0, 0, 0, 1), Margin = new(0, 4, 0, 16), FontSize = 2, LineHeight = 2 }.Paint(Block.BorderBrushProperty, "LineStrong"));
             else if (IsListItem(t)) next = ParseList(lines, i, blocks);
             else if (t.StartsWith('|') && next < lines.Length && TableSeparatorRx.IsMatch(lines[next].Trim())) next = ParseTable(lines, i, blocks);
             else if (t.Length > 0)
@@ -48,9 +48,8 @@ public sealed class MarkdownRenderer(MarkdownContext context)
                     blocks.Add(open = quote
                         ? new Paragraph
                         {
-                            Foreground = Theme.TextMuted, BorderBrush = Theme.LineStrong, BorderThickness = new(2, 0, 0, 0), Padding = new(12, 0, 0, 0),
-                            Margin = new(0, 0, 0, 12),
-                        }
+                            BorderThickness = new(2, 0, 0, 0), Padding = new(12, 0, 0, 0), Margin = new(0, 0, 0, 12),
+                        }.Paint(TextElement.ForegroundProperty, "TextMuted").Paint(Block.BorderBrushProperty, "LineStrong")
                         : new Paragraph { Margin = new(0, 0, 0, 12) });
                 else open.Inlines.Add(new LineBreak());
                 quoted = quote;
@@ -149,21 +148,21 @@ public sealed class MarkdownRenderer(MarkdownContext context)
     {
         var rows = lines.Skip(start + 2).TakeWhile(line => line.Trim().StartsWith('|')).Select(SplitRow).Prepend(SplitRow(lines[start])).ToList();
         int columns = rows.Max(row => row.Length);
-        var table = new Table { CellSpacing = 0, Margin = new(0, 0, 0, 12), BorderBrush = Theme.LineStrong, BorderThickness = new(1, 1, 0, 0) };
+        var table = new Table { CellSpacing = 0, Margin = new(0, 0, 0, 12), BorderThickness = new(1, 1, 0, 0) }.Paint(Block.BorderBrushProperty, "LineStrong");
         for (int c = 0; c < columns; c++) table.Columns.Add(new TableColumn());
         var group = new TableRowGroup();
         for (int r = 0; r < rows.Count; r++)
         {
             var row = new TableRow();
-            if (r == 0) row.Background = Theme.Surface2;
+            if (r == 0) row.Paint(TextElement.BackgroundProperty, "Surface2");
             for (int c = 0; c < columns; c++)
             {
                 var p = new Paragraph { Margin = new(0), FontSize = 13 };
                 if (r == 0) p.FontWeight = FontWeights.SemiBold;
                 row.Cells.Add(new TableCell(WithText(p, rows[r].ElementAtOrDefault(c) ?? ""))
                 {
-                    Padding = new(8, 4, 8, 4), BorderBrush = Theme.LineStrong, BorderThickness = new(0, 0, 1, 1),
-                });
+                    Padding = new(8, 4, 8, 4), BorderThickness = new(0, 0, 1, 1),
+                }.Paint(TableCell.BorderBrushProperty, "LineStrong"));
             }
             group.Rows.Add(row);
         }
@@ -228,7 +227,7 @@ public sealed class MarkdownRenderer(MarkdownContext context)
         context.Paths.Resolve(candidate, allowRelative: true) is { } path ? context.FileLink(path, text) : null;
 
     Inline Code(string code) =>
-        FileLinkTo(code, code.Trim()) ?? new Run(" " + code + " ") { FontFamily = Theme.Mono, FontSize = 13, Background = Theme.Surface3, Foreground = Theme.Text };
+        FileLinkTo(code, code.Trim()) ?? new Run(" " + code + " ") { FontFamily = Theme.Mono, FontSize = 13 }.Paint(TextElement.BackgroundProperty, "Surface3").Paint(TextElement.ForegroundProperty, "Text");
 
     Inline? Link(string label, string target) => IsWebUrl(target) ? context.WebLink(target, label)
         : FileLinkTo(Starts(target, "file:") && Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.IsFile && !uri.IsUnc ? uri.LocalPath

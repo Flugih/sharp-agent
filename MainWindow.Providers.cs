@@ -235,6 +235,12 @@ public partial class MainWindow
                 return show;
             }));
         }
+        else
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(FileActions.Item(_state.FastMode ? "Выключить быстрый режим" : "Включить быстрый режим", Glyphs.Lightning,
+                () => SetFastMode(!_state.FastMode)));
+        }
         menu.IsOpen = true;
     }
 
@@ -373,15 +379,8 @@ public partial class MainWindow
             ToolTip = "Параллельный поиск и чтение кода с обычной глубиной проверки",
         };
         AutomationProperties.SetName(lightning, "Быстрый режим");
-        void Toggle(object sender, RoutedEventArgs e)
-        {
-            _state.FastMode = lightning.IsChecked == true;
-            _state.Save();
-            ApplyFastMode();
-            ShowToast(_state.FastMode ? "Быстрый режим включён" : "Быстрый режим выключен");
-        }
-        lightning.Checked += Toggle;
-        lightning.Unchecked += Toggle;
+        lightning.Checked += (_, _) => SetFastMode(true);
+        lightning.Unchecked += (_, _) => SetFastMode(false);
         return new MenuItem
         {
             Header = new StackPanel
@@ -391,6 +390,14 @@ public partial class MainWindow
             },
             Style = Theme.Style("EffortHeader"),
         };
+    }
+
+    void SetFastMode(bool on)
+    {
+        _state.FastMode = on;
+        _state.Save();
+        ApplyFastMode();
+        ShowToast(on ? "Быстрый режим включён" : "Быстрый режим выключен");
     }
 
     private void ApplyFastMode()

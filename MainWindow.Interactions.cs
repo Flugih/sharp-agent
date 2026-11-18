@@ -12,8 +12,8 @@ public partial class MainWindow
             var button = new Button
             {
                 Style = Theme.Style("RowButton"), Content = new TextBlock { Text = choice, TextWrapping = TextWrapping.Wrap }, ToolTip = choice,
-                MaxWidth = 360, Background = Theme.Surface2, Margin = new(0, 0, 6, 5),
-            };
+                MaxWidth = 360, Margin = new(0, 0, 6, 5),
+            }.Paint(BackgroundProperty, "Surface2");
             AutomationProperties.SetName(button, choice);
             button.Click += (_, _) => reply.TrySetResult(choice);
             choices.Children.Add(button);
@@ -48,9 +48,8 @@ public partial class MainWindow
         _questionCard = new Border
         {
             Child = new ScrollViewer { Content = body, MaxHeight = 185, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-            Background = Theme.Surface, BorderBrush = Theme.LineStrong, BorderThickness = new(1), CornerRadius = new(10),
-            Padding = new(12, 8, 12, 8),
-        };
+            BorderThickness = new(1), CornerRadius = new(10), Padding = new(12, 8, 12, 8),
+        }.Paint(BackgroundProperty, "Surface").Paint(BorderBrushProperty, "LineStrong");
         _questionFocus = (Button)choices.Children[0];
         _compactChat?.SetStatus("Жду ответа");
         PlaceQuestion();

@@ -75,7 +75,7 @@ public static class SystemPrompt
 
         Окружение:
         - {Access(context.SandboxRoot)}
-        - Папка программы Sharp Agent: {context.AppFolder ?? "—"} (её служебные файлы .env, auth, history, temp, state.json не трогай)
+        - Папка {(context.InstallationFolder == null ? "программы" : "данных")} Sharp Agent: {context.AppFolder ?? "—"} (её служебные файлы .env, auth, history, temp, state.json не трогай){(context.InstallationFolder is { } installed ? $"\n- Папка установки Sharp Agent: {installed} (её файлы не трогай)" : "")}
         - Сегодня: {DateTime.Now:yyyy-MM-dd, dddd}
         - Пользователь: {UserName}, компьютер: {MachineName}
         - ОС: {RuntimeInformation.OSDescription}

@@ -62,9 +62,9 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
                 {
                     new TextBlock
                     {
-                        Text = GlyphFor(path), FontFamily = Theme.Icons, FontSize = 13, Foreground = Theme.TextMuted,
+                        Text = GlyphFor(path), FontFamily = Theme.Icons, FontSize = 13,
                         VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 1, 6, 0),
-                    },
+                    }.Paint(TextBlock.ForegroundProperty, "TextMuted"),
                     new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 260, TextTrimming = TextTrimming.CharacterEllipsis },
                 },
             },
@@ -109,9 +109,9 @@ sealed class CodeBlockView : Border
         var text = new TextBox
         {
             Text = code, IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, FontFamily = Theme.Mono, FontSize = 13,
-            TextWrapping = TextWrapping.Wrap, Background = Brushes.Transparent, BorderThickness = new(0), Foreground = Theme.TextSoft,
-            SelectionBrush = Theme.Accent, Padding = new(0, 7, 0, 0), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
-        };
+            TextWrapping = TextWrapping.Wrap, Background = Brushes.Transparent, BorderThickness = new(0),
+            Padding = new(0, 7, 0, 0), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
+        }.Paint(TextBox.ForegroundProperty, "TextSoft").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         var label = language != null ? $"Скопировать код ({language})" : "Скопировать код";
         var copy = Theme.IconButton(Glyphs.Copy, label, 24);
         copy.HorizontalContentAlignment = HorizontalAlignment.Center;
@@ -121,8 +121,8 @@ sealed class CodeBlockView : Border
         Grid.SetColumn(copy, 1);
         copy.VerticalAlignment = VerticalAlignment.Center;
         text.SizeChanged += (_, _) => copy.VerticalAlignment = text.LineCount > 1 ? VerticalAlignment.Top : VerticalAlignment.Center;
-        Background = Theme.Surface;
-        BorderBrush = Theme.Line;
+        SetResourceReference(BackgroundProperty, "Surface");
+        SetResourceReference(BorderBrushProperty, "Line");
         BorderThickness = new(1);
         CornerRadius = new(8);
         Padding = new(12, 6, 6, 6);

@@ -81,6 +81,9 @@
                 <Trigger Property="Tag" Value="danger">
                     <Setter TargetName="Hover" Property="Background" Value="{DynamicResource HoverDark}"/>
                 </Trigger>
+                <Trigger Property="Tag" Value="black">
+                    <Setter TargetName="Hover" Property="Background" Value="White"/>
+                </Trigger>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter TargetName="Hover" Property="Opacity" Value="0.1"/>
                 </Trigger>
@@ -127,6 +130,7 @@
             <Setter Property="Background" Value="Black"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Tag" Value="black"/>
         </Style>
 
         <Style x:Key="DangerPillButton" TargetType="Button" BasedOn="{StaticResource PillButton}">
@@ -674,7 +678,7 @@
             <Border Background="Transparent"/>
         </ControlTemplate>
         <ControlTemplate x:Key="EffortThumbTemplate" TargetType="Thumb">
-            <Ellipse Fill="White"/>
+            <Ellipse Fill="White" Stroke="{DynamicResource HoverLight}" StrokeThickness="1"/>
         </ControlTemplate>
         <ControlTemplate x:Key="EffortSliderTemplate" TargetType="ui:EffortSlider">
             <Track x:Name="PART_Track">
@@ -692,6 +696,7 @@
         <Style x:Key="EffortSlider" TargetType="ui:EffortSlider">
             <Setter Property="Height" Value="28"/>
             <Setter Property="Background" Value="{DynamicResource LineStrong}"/>
+            <Setter Property="Foreground" Value="{DynamicResource HoverLight}"/>
             <Setter Property="IsMoveToPointEnabled" Value="True"/>
             <Setter Property="IsSnapToTickEnabled" Value="True"/>
             <Setter Property="SmallChange" Value="1"/>

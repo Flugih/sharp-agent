@@ -33,6 +33,14 @@ public static class Theme
 
     public static bool AnimationsEnabled => SystemParameters.ClientAreaAnimation;
 
+    // A resource reference follows theme switches; a brush taken from the palette keeps the old colour.
+    public static T Paint<T>(this T target, DependencyProperty property, string key) where T : DependencyObject
+    {
+        if (target is FrameworkElement element) element.SetResourceReference(property, key);
+        else if (target is FrameworkContentElement content) content.SetResourceReference(property, key);
+        return target;
+    }
+
     public static Button IconButton(string glyph, string hint, double size = 28, double fontSize = 12)
     {
         var button = new Button { Style = Style("IconButton"), Content = glyph, Width = size, Height = size, FontSize = fontSize, ToolTip = hint };
@@ -66,11 +74,13 @@ public static class Theme
 
     public static bool IsLight { get; private set; }
 
-    public static void Apply(ResourceDictionary resources, string? mode)
+    // Returns whether any palette brush changed, so unrelated system setting changes cost nothing.
+    public static bool Apply(ResourceDictionary resources, string? mode)
     {
         IsLight = mode == "light" || mode == "system" && SystemUsesLight();
         _darkColors ??= LightColors.Keys.ToDictionary(key => key, key => ((SolidColorBrush)resources[key]).Color);
-        foreach (var (key, light) in LightColors) Set(resources, key, IsLight ? light : _darkColors[key]);
+        bool changed = false;
+        foreach (var (key, light) in LightColors) changed |= Set(resources, key, IsLight ? light : _darkColors[key]);
         Color ColorOf(string key) => ((SolidColorBrush)resources[key]).Color;
         Color surface = ColorOf("Surface"), surface2 = ColorOf("Surface2"), bg = ColorOf("Bg"), fill = ReadWindowsAccent();
         var toward = IsLight ? Colors.Black : Colors.White;
@@ -79,18 +89,20 @@ public static class Theme
         var soft = Mix(surface, fill, IsLight ? 0.12 : 0.22);
         var text = fill;
         for (int i = 0; i < 20 && (Contrast(text, soft) < 4.5 || Contrast(text, surface2) < 4.5); i++) text = Mix(text, toward, 0.08);
-        Set(resources, "Accent", fill);
-        Set(resources, "OnAccent", Contrast(Colors.White, fill) >= 4.5 || Contrast(Colors.White, fill) >= Contrast(dark, fill) ? Colors.White : dark);
-        Set(resources, "AccentSoft", soft);
-        Set(resources, "AccentLine", Mix(surface, fill, IsLight ? 0.45 : 0.55));
-        Set(resources, "AccentText", text);
-        Set(resources, "BannerBg", Mix(bg, fill, IsLight ? 0.1 : 0.14));
+        changed |= Set(resources, "Accent", fill);
+        changed |= Set(resources, "OnAccent", Contrast(Colors.White, fill) >= 4.5 || Contrast(Colors.White, fill) >= Contrast(dark, fill) ? Colors.White : dark);
+        changed |= Set(resources, "AccentSoft", soft);
+        changed |= Set(resources, "AccentLine", Mix(surface, fill, IsLight ? 0.45 : 0.55));
+        changed |= Set(resources, "AccentText", text);
+        return Set(resources, "BannerBg", Mix(bg, fill, IsLight ? 0.1 : 0.14)) | changed;
     }
 
     // XAML binds palette brushes as DynamicResource, so replacing an entry recolors the whole UI.
-    static void Set(ResourceDictionary resources, string key, Color color)
+    static bool Set(ResourceDictionary resources, string key, Color color)
     {
-        if (resources[key] is not SolidColorBrush brush || brush.Color != color) resources[key] = new SolidColorBrush(color).GetAsFrozen();
+        if (resources[key] is SolidColorBrush brush && brush.Color == color) return false;
+        resources[key] = new SolidColorBrush(color).GetAsFrozen();
+        return true;
     }
 
     static bool SystemUsesLight()

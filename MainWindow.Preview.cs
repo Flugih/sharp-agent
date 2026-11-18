@@ -195,18 +195,18 @@ public partial class MainWindow
         {
             Content = new TextBlock
             {
-                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12.5, Foreground = Theme.TextMuted,
+                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12.5,
                 TextAlignment = TextAlignment.Right, Padding = new Thickness(0, 0, 12, 24),
-            },
+            }.Paint(ForegroundProperty, "TextMuted"),
             VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false, IsHitTestVisible = false,
         };
         var body = new TextBox
         {
             Text = string.Join("\n", lines), IsReadOnly = true, IsReadOnlyCaretVisible = false, BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent, Foreground = Theme.Text, SelectionBrush = Theme.Accent, FontFamily = Theme.Mono, FontSize = 12.5,
+            Background = Brushes.Transparent, FontFamily = Theme.Mono, FontSize = 12.5,
             Padding = new Thickness(0), FocusVisualStyle = null, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
-        };
+        }.Paint(ForegroundProperty, "Text").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         body.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, e) => gutter.ScrollToVerticalOffset(e.VerticalOffset)));
         Grid.SetColumn(body, 1);
         return new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() }, Children = { gutter, body } };
@@ -220,7 +220,7 @@ public partial class MainWindow
         var subtitle = extension.Length > 0 ? $"{KindOf(path)} · {extension}" : KindOf(path);
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         texts.Children.Add(new TextBlock { Text = title, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis });
-        texts.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Foreground = Theme.TextMuted, Margin = new Thickness(0, 2, 0, 0) });
+        texts.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Margin = new Thickness(0, 2, 0, 0) }.Paint(ForegroundProperty, "TextMuted"));
         var action = new Button
         {
             Content = "Открыть", Height = 30, Margin = new Thickness(12, 0, 0, 0), ToolTip = "Открыть в программе по умолчанию",
@@ -236,7 +236,7 @@ public partial class MainWindow
         Grid.SetColumn(action, 2);
         var card = new Button
         {
-            Style = Theme.Style("FileCard"), Background = Theme.Surface2, BorderBrush = Theme.Get("ControlBorder"),
+            Style = Theme.Style("FileCard"),
             Content = new Grid
             {
                 ColumnDefinitions = { new() { Width = GridLength.Auto }, new(), new() { Width = GridLength.Auto } },
@@ -244,7 +244,7 @@ public partial class MainWindow
             },
             ToolTip = $"{path}\nЩелчок — {(changed ? "показать изменения" : "посмотреть")}, правая кнопка — другие действия",
             ContextMenu = FileActions.BuildMenu(this, path),
-        };
+        }.Paint(BackgroundProperty, "Surface2").Paint(BorderBrushProperty, "ControlBorder");
         AutomationProperties.SetName(card, $"{title}, {subtitle}");
         card.Click += (_, _) =>
         {
@@ -281,16 +281,16 @@ public partial class MainWindow
         bool picture = !changed && Attachment.IsImagePath(path);
         var page = new Border
         {
-            Width = 34, Height = 42, CornerRadius = new CornerRadius(5), Margin = new Thickness(2, 0, 16, 0), Background = Theme.Surface2,
-            BorderBrush = Theme.LineStrong, BorderThickness = new Thickness(1), RenderTransformOrigin = new Point(0.5, 0.5),
+            Width = 34, Height = 42, CornerRadius = new CornerRadius(5), Margin = new Thickness(2, 0, 16, 0),
+            BorderThickness = new Thickness(1), RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = new RotateTransform(-5),
             Child = new TextBlock
             {
                 Text = changed || CodeExtensions.Contains(Path.GetExtension(path)) ? Glyphs.Code : picture ? Glyphs.Picture : Glyphs.Document,
-                FontFamily = Theme.Icons, FontSize = 14, Foreground = Theme.TextMuted,
+                FontFamily = Theme.Icons, FontSize = 14,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-            },
-        };
+            }.Paint(ForegroundProperty, "TextMuted"),
+        }.Paint(BackgroundProperty, "Surface2").Paint(BorderBrushProperty, "LineStrong");
         if (picture) _ = ShowPageImageAsync(page, path);
         return page;
     }
@@ -305,10 +305,10 @@ public partial class MainWindow
         catch { }
     }
 
-    static TextBlock PreviewNote(string text) => new()
+    static TextBlock PreviewNote(string text) => new TextBlock
     {
-        Text = text, FontSize = 13, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 8, 0),
-    };
+        Text = text, FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 8, 0),
+    }.Paint(ForegroundProperty, "TextMuted");
 
     static StackPanel DiffView(FileDiff diff, int limit)
     {
@@ -322,12 +322,12 @@ public partial class MainWindow
                 var parts = line.Split(' ');
                 oldLine = int.Parse(parts[1][1..].Split(',')[0]);
                 newLine = int.Parse(parts[2][1..].Split(',')[0]);
-                if (rows.Children.Count > 0) rows.Children.Add(DiffRow(' ', "", "", "⋯", Theme.TextMuted));
+                if (rows.Children.Count > 0) rows.Children.Add(DiffRow(' ', "", "", "⋯", "TextMuted"));
                 continue;
             }
             if (line == TextDiff.Truncated || shown++ == limit)
             {
-                rows.Children.Add(DiffRow(' ', "", "", "… изменения показаны не полностью", Theme.TextMuted));
+                rows.Children.Add(DiffRow(' ', "", "", "… изменения показаны не полностью", "TextMuted"));
                 break;
             }
             char kind = line[0];
@@ -338,27 +338,29 @@ public partial class MainWindow
         return rows;
     }
 
-    static Border DiffRow(char kind, string oldNumber, string newNumber, string text, Brush? foreground = null) => new()
+    static Border DiffRow(char kind, string oldNumber, string newNumber, string text, string? foreground = null)
     {
-        Background = kind switch { '+' => Theme.Get("DiffAdd"), '-' => Theme.Get("DiffRemove"), _ => Brushes.Transparent },
-        Padding = new Thickness(4, 1, 8, 1),
-        Child = new DockPanel
+        var row = new Border
         {
-            Children =
+            Background = Brushes.Transparent, Padding = new Thickness(4, 1, 8, 1),
+            Child = new DockPanel
             {
-                new TextBlock
+                Children =
                 {
-                    Text = $"{oldNumber,5} {newNumber,5} {(kind == ' ' ? ' ' : kind == '-' ? '−' : '+')}", FontFamily = Theme.Mono, FontSize = 12.5,
-                    Foreground = kind switch { '+' => Theme.Success, '-' => Theme.DangerText, _ => Theme.TextMuted }, Margin = new Thickness(0, 0, 10, 0),
-                },
-                new TextBlock
-                {
-                    Text = text, FontFamily = Theme.Mono, FontSize = 12.5, TextWrapping = TextWrapping.Wrap,
-                    Foreground = foreground ?? (kind == ' ' ? Theme.TextSoft : Theme.Text),
+                    new TextBlock
+                    {
+                        Text = $"{oldNumber,5} {newNumber,5} {(kind == ' ' ? ' ' : kind == '-' ? '−' : '+')}", FontFamily = Theme.Mono, FontSize = 12.5,
+                        Margin = new Thickness(0, 0, 10, 0),
+                    }.Paint(ForegroundProperty, kind switch { '+' => "Success", '-' => "DangerText", _ => "TextMuted" }),
+                    new TextBlock
+                    {
+                        Text = text, FontFamily = Theme.Mono, FontSize = 12.5, TextWrapping = TextWrapping.Wrap,
+                    }.Paint(ForegroundProperty, foreground ?? (kind == ' ' ? "TextSoft" : "Text")),
                 },
             },
-        },
-    };
+        };
+        return kind is '+' or '-' ? row.Paint(BackgroundProperty, kind == '+' ? "DiffAdd" : "DiffRemove") : row;
+    }
 
     async Task ShowOfficePreviewAsync(string path)
     {
@@ -392,7 +394,7 @@ public partial class MainWindow
         var content = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         var previous = Theme.IconButton("\uE76B", "Предыдущая страница");
         var next = Theme.IconButton(Glyphs.ChevronRight, "Следующая страница");
-        var counter = new TextBlock { Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center, Width = 66, TextAlignment = TextAlignment.Center };
+        var counter = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Width = 66, TextAlignment = TextAlignment.Center }.Paint(ForegroundProperty, "TextMuted");
         var sheet = new Button
         {
             Style = Theme.Style("ModelPicker"), ToolTip = "Выбрать лист", HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 215,

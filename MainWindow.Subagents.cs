@@ -6,7 +6,7 @@ public partial class MainWindow
     {
         public SubagentUpdate State = update;
         public readonly TextBlock Status = new() { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
-        public readonly TextBlock Placeholder = new() { Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap };
+        public readonly TextBlock Placeholder = new TextBlock { TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextMuted");
         public readonly StackPanel Activity = new();
         public readonly Dictionary<string, TextBlock> Tools = new();
         public TextBlock? Commentary;
@@ -37,14 +37,14 @@ public partial class MainWindow
             if (row.Commentary == null)
                 row.Activity.Children.Add(row.Commentary = new TextBlock
                 {
-                    Foreground = Theme.Text, LineHeight = 22, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
-                });
+                    LineHeight = 22, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
+                }.Paint(ForegroundProperty, "Text"));
             if (row.Commentary.Text != commentary) row.Commentary.Text = commentary;
         }
         if (newTool && update.Action is { } call)
         {
             var label = Activity(call.Name, call.ArgumentsJson).Trim();
-            var text = new TextBlock { Text = label, ToolTip = label, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap };
+            var text = new TextBlock { Text = label, ToolTip = label, TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextMuted");
             if (call.Name == "search_text")
             {
                 text.Text = OneLine(ArgumentOf(call.ArgumentsJson, "query"));
@@ -54,7 +54,7 @@ public partial class MainWindow
             else row.Activity.Children.Add(new DockPanel
             {
                 Margin = new(0, 0, 0, 14),
-                Children = { GlyphText(Describe(call.Name).Glyph, 13, Theme.TextMuted, new(0, 2, 8, 0), false), text },
+                Children = { GlyphText(Describe(call.Name).Glyph, 13, "TextMuted", new(0, 2, 8, 0), false), text },
             });
             row.Tools.Add(call.Id, text);
         }
@@ -62,14 +62,14 @@ public partial class MainWindow
         {
             bool failed = done.IsError || done.IsWarning;
             tool.Text = (done.Name == "search_text" ? tool.Text : Describe(done.Name).Label) + (failed ? " · ошибка" : " · выполнено");
-            tool.Foreground = failed ? Theme.Warning : Theme.TextMuted;
+            tool.Paint(ForegroundProperty, failed ? "Warning" : "TextMuted");
         }
         if (update.Failed && update.Elapsed != null)
         {
             foreach (var pending in row.Tools.Values)
             {
                 pending.Text = "Остановлено · " + pending.Text;
-                pending.Foreground = Theme.Warning;
+                pending.Paint(ForegroundProperty, "Warning");
             }
             row.Tools.Clear();
         }
@@ -77,22 +77,21 @@ public partial class MainWindow
         {
             row.Activity.Children.Add(new TextBlock
             {
-                Text = update.Failed ? "Ошибка" : "Результат", Foreground = Theme.TextMuted, Margin = new(0, 8, 0, 12),
-            });
-            row.Activity.Children.Add(ChatText(result, update.Failed ? Theme.Warning : Theme.Text, "Результат субагента"));
+                Text = update.Failed ? "Ошибка" : "Результат", Margin = new(0, 8, 0, 12),
+            }.Paint(ForegroundProperty, "TextMuted"));
+            row.Activity.Children.Add(ChatText(result, update.Failed ? "Warning" : "Text", "Результат субагента"));
         }
         if (ReferenceEquals(_selectedSubagent, row)) UpdateSubagentHeader(row);
     }
 
     Button SubagentListRow(SubagentRow row)
     {
-        var arrow = GlyphText(Glyphs.ChevronRight, 11, Theme.TextMuted);
+        var arrow = GlyphText(Glyphs.ChevronRight, 11, "TextMuted");
         DockPanel.SetDock(arrow, Dock.Right);
         var title = new TextBlock
         {
-            Text = row.State.Title, Foreground = Theme.Text, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new(0, 0, 0, 3),
-        };
+            Text = row.State.Title, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new(0, 0, 0, 3),
+        }.Paint(ForegroundProperty, "Text");
         var button = new Button
         {
             Content = new DockPanel { Children = { arrow, new StackPanel { Margin = new(0, 0, 10, 0), Children = { title, row.Status } } } },
@@ -110,7 +109,7 @@ public partial class MainWindow
         var time = update.Elapsed ?? DateTimeOffset.Now - update.Started;
         var status = update.Action is { } action ? Activity(action.Name, action.ArgumentsJson).Trim() : update.Status;
         row.Placeholder.Text = row.Status.Text = time is { } elapsed ? $"{status} · {Tokens.Duration(elapsed)}" : status;
-        row.Status.Foreground = update.Failed ? Theme.Warning : Theme.TextMuted;
+        row.Status.Paint(ForegroundProperty, update.Failed ? "Warning" : "TextMuted");
     }
 
     void UpdateSubagentTimes()

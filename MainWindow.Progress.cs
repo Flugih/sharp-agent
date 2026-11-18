@@ -4,7 +4,7 @@ public partial class MainWindow
 {
     sealed class ProgressSection
     {
-        readonly TextBlock _label = new() { FontSize = 13, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center };
+        readonly TextBlock _label = new TextBlock { FontSize = 13, VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "TextMuted");
         readonly StackPanel _header = new() { Orientation = Orientation.Horizontal };
         FrameworkElement? _spinner;
         public readonly StackPanel Items = new();
@@ -14,14 +14,13 @@ public partial class MainWindow
 
         public ProgressSection(string title, string? glyph = null)
         {
-            if (glyph != null) _header.Children.Add(GlyphText(glyph, 13, Theme.TextMuted, new(0, 0, 8, 0)));
+            if (glyph != null) _header.Children.Add(GlyphText(glyph, 13, "TextMuted", new(0, 0, 8, 0)));
             _header.Children.Add(_label);
             View.Header = _header;
             View.Content = glyph == null ? Items : new Border
             {
-                BorderBrush = Theme.Line, BorderThickness = new(1, 0, 0, 0), Margin = new(11, 2, 0, 3),
-                Padding = new(13, 0, 0, 0), Child = Items,
-            };
+                BorderThickness = new(1, 0, 0, 0), Margin = new(11, 2, 0, 3), Padding = new(13, 0, 0, 0), Child = Items,
+            }.Paint(BorderBrushProperty, "Line");
             SetTitle(title);
         }
 
@@ -179,7 +178,7 @@ public partial class MainWindow
             _chatView.ProgressHint = null;
         }
         if (text == null) return;
-        _chatView.ProgressHint = new TextBlock { Text = text, FontSize = 13, Foreground = Theme.TextMuted, Margin = new(0, 5, 0, 5) };
+        _chatView.ProgressHint = new TextBlock { Text = text, FontSize = 13, Margin = new(0, 5, 0, 5) }.Paint(ForegroundProperty, "TextMuted");
         EnsureProgress().Items.Children.Add(_chatView.ProgressHint);
     }
 
@@ -220,7 +219,7 @@ public partial class MainWindow
             row = null;
         }
         else if (row == null) AddProgressItem(row = ProgressText(markdown, label));
-        else row.Document = ChatDocument(markdown, Theme.TextMuted);
+        else row.Document = ChatDocument(markdown, "TextMuted");
     }
 
     void OnAssistantDelta(string? text, bool usesTools)
@@ -247,7 +246,7 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(text)) return;
         if (_draftView == null)
         {
-            _draftView = SelectableText(text, Theme.Text);
+            _draftView = SelectableText(text, "Text");
             _draftView.Margin = new(0, 8, 0, 8);
             AutomationProperties.SetName(_draftView, "Ответ агента");
             if (!_draftIsProgress) AppendToChat(_draftView);
@@ -255,7 +254,7 @@ public partial class MainWindow
         if (_draftIsProgress && _draftView.Parent != EnsureProgress().Items)
         {
             ChatPanel.Children.Remove(_draftView);
-            _draftView.Foreground = Theme.TextMuted;
+            _draftView.Paint(ForegroundProperty, "TextMuted");
             AutomationProperties.SetName(_draftView, "Промежуточное сообщение");
             AddProgressItem(_draftView);
         }
@@ -301,7 +300,7 @@ public partial class MainWindow
 
     RichTextBox ProgressText(string markdown, string label)
     {
-        var text = ChatText(markdown, Theme.TextMuted, label);
+        var text = ChatText(markdown, "TextMuted", label);
         text.Margin = new(0, 6, 0, 6);
         return text;
     }

@@ -74,6 +74,9 @@ public partial class MainWindow
         RestoreWindowPlacement();
     }
 
+    // The installed build keeps its data in %LOCALAPPDATA%, not next to the program.
+    static string FolderKind => AppPaths.IsInstalled ? "данных" : "программы";
+
     static Visibility VisibleIf(bool show) => show ? Visibility.Visible : Visibility.Collapsed;
 
     static bool IsShown(UIElement element) => element.Visibility == Visibility.Visible;
@@ -126,8 +129,8 @@ public partial class MainWindow
         if (_config.LoadError != null)
             FolderBanner("env", "Не удалось прочитать файл настроек .env", "Пока действуют настройки по умолчанию. Причина: " + _config.LoadError);
         if (!AppPaths.IsWritable(AppPaths.AppFolder))
-            FolderBanner("readonly", "Папка программы недоступна для записи",
-                "Настройки и переписка не сохранятся. Перенесите папку Sharp Agent, например, на Рабочий стол.");
+            FolderBanner("readonly", $"Папка {FolderKind} недоступна для записи", "Настройки и переписка не сохранятся. " +
+                (AppPaths.IsInstalled ? "Проверьте права доступа к этой папке." : "Перенесите папку Sharp Agent, например, на Рабочий стол."));
         if (!string.IsNullOrEmpty(_state.Draft))
         {
             InputBox.Text = _state.Draft;
@@ -202,7 +205,7 @@ public partial class MainWindow
         ModeText.Text = _config.Sandbox ? "Песочница" : "Весь ПК";
         ModeIcon.Text = _config.Sandbox ? Glyphs.Lock : Glyphs.Globe;
         ModePill.ToolTip = (_config.Sandbox
-            ? $"Агент работает только внутри папки программы:\n{AppPaths.AppFolder}\nКоманды PowerShell и cmd отключены."
+            ? $"Агент работает только внутри папки {FolderKind}:\n{AppPaths.AppFolder}\nКоманды PowerShell и cmd отключены."
             : "Агент работает с любыми файлами пользователя, без прав администратора.") + "\nЩелчок — открыть настройки";
         AutomationProperties.SetName(ModePill, $"Режим: {ModeText.Text}. Открыть настройки");
     }
@@ -215,7 +218,7 @@ public partial class MainWindow
 
     public void ApplyTheme()
     {
-        Theme.Apply(Application.Current.Resources, _state.Theme);
+        if (!Theme.Apply(Application.Current.Resources, _state.Theme)) return;
         WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
         if (_config == null) return;
         ApplyModeColors();
@@ -223,7 +226,6 @@ public partial class MainWindow
         RenderBanner();
         RenderPendingAttachments();
         UpdateBalanceIndicator();
-        if (_cts == null) RenderCurrentChat();
     }
 
     string? SaveEnv(Dictionary<string, string?> values)
@@ -261,7 +263,7 @@ public partial class MainWindow
         bool inside = PathHelper.IsInside(folder, AppPaths.AppFolder);
         if (_config.Sandbox && !inside)
         {
-            ShowToast("В песочнице агенту доступна только папка программы. Выберите папку внутри неё или выключите песочницу в настройках.",
+            ShowToast($"В песочнице агенту доступна только папка {FolderKind}. Выберите папку внутри неё или выключите песочницу в настройках.",
                 ToastKind.Warning);
             return;
         }
@@ -326,11 +328,7 @@ public partial class MainWindow
             ConfirmToggle.ClearValue(ForegroundProperty);
             ConfirmToggle.ClearValue(BorderBrushProperty);
         }
-        else
-        {
-            ConfirmToggle.Foreground = Theme.Warning;
-            ConfirmToggle.BorderBrush = Theme.WarningLine;
-        }
+        else ConfirmToggle.Paint(ForegroundProperty, "Warning").Paint(BorderBrushProperty, "WarningLine");
     }
 
     Task<bool> ConfirmAsync(ConfirmRequest request)
@@ -577,7 +575,7 @@ public partial class MainWindow
             ("Enter", "отправить сообщение"), ("Shift+Enter", "новая строка"),
             ("Esc", "отменить голосовой ввод, остановить агента, закрыть панель"),
             ("Ctrl+N", "новый чат"), ("Ctrl+H", "показать или скрыть список чатов"), ("F2, Delete", "переименовать, удалить чат в списке"),
-            ("Ctrl+O", "прикрепить файлы"), ("Ctrl+V", "вставить файлы или снимок экрана из буфера"),
+            ("Ctrl+O", "прикрепить файлы"), ("Ctrl+V", "вставить файлы или скриншот из буфера"),
             ("Ctrl+Shift+O", "открыть рабочую папку"), ("Ctrl+Shift+C", "скопировать последний ответ"), ("Ctrl+B", "баланс и расход"),
             ("Ctrl+,", "настройки"), ("Ctrl+L", "перейти в поле ввода"), ("PageUp, PageDown", "листать переписку"), ("F10", "другие команды"),
         ];
@@ -604,10 +602,10 @@ public partial class MainWindow
             new TextBlock
             {
                 Text = "ИИ-агент для работы с файлами и папками на этом компьютере. Работает от вашего имени, " +
-                       "без прав администратора. Провайдер выбирается в настройках. Всё своё хранит в папке программы.",
+                       $"без прав администратора. Провайдер выбирается в настройках. Всё своё хранит в папке {FolderKind}.",
                 FontSize = 13, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
             },
-            new TextBlock { Text = "Папка программы", FontSize = 12, Foreground = Theme.TextMuted, Margin = new(0, 0, 0, 6) },
+            new TextBlock { Text = $"Папка {FolderKind}", FontSize = 12, Foreground = Theme.TextMuted, Margin = new(0, 0, 0, 6) },
             _links.FileChip(AppPaths.AppFolder, AppPaths.AppFolder),
         },
     }, 480);

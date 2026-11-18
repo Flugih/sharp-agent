@@ -21,14 +21,13 @@ public partial class MainWindow
         totals.Margin = new(0, 3, 0, 0);
         totals.HorizontalAlignment = HorizontalAlignment.Left;
         if (files.Any(file => file.Diff != null)) caption.Children.Add(totals);
-        var glyph = GlyphText(Glyphs.Edit, 17, Theme.TextMuted);
+        var glyph = GlyphText(Glyphs.Edit, 17, "TextMuted");
         glyph.HorizontalAlignment = HorizontalAlignment.Center;
         var icon = new Border
         {
-            Width = 40, Height = 40, Background = Theme.Get("SidebarBg"), CornerRadius = new(9), Margin = new(0, 0, 10, 0),
-            VerticalAlignment = VerticalAlignment.Center, Child = glyph,
-        };
-        var rows = new StackPanel { Background = Theme.Bg };
+            Width = 40, Height = 40, CornerRadius = new(9), Margin = new(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center, Child = glyph,
+        }.Paint(BackgroundProperty, "SidebarBg");
+        var rows = new StackPanel().Paint(BackgroundProperty, "Bg");
         var extra = new StackPanel();
         var reveal = new RevealPanel { Child = extra };
         var list = new StackPanel
@@ -36,7 +35,7 @@ public partial class MainWindow
             Children =
             {
                 new DockPanel { Margin = new(12, 10, 12, 10), Children = { icon, buttons, caption } },
-                new Border { BorderBrush = Theme.Line, BorderThickness = new(0, 1, 0, 0), Child = rows },
+                new Border { BorderThickness = new(0, 1, 0, 0), Child = rows }.Paint(BorderBrushProperty, "Line"),
             },
         };
         const int shown = 3;

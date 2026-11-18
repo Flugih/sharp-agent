@@ -58,7 +58,7 @@ public sealed class EffortSlider : Slider
         }
         drawing.PushOpacity(0.34);
         for (int i = 0; i <= (int)range; i++)
-            drawing.DrawEllipse(Brushes.White, null, new(ThumbRadius + i * travel / range, center), 2, 2);
+            drawing.DrawEllipse(Foreground, null, new(ThumbRadius + i * travel / range, center), 2, 2);
         drawing.Pop();
     }
 }

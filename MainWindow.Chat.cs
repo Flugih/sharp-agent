@@ -97,7 +97,7 @@ public partial class MainWindow
             {
                 FontFamily = Theme.Ui, Foreground = Brushes.White, FontSize = 14, PagePadding = new(0), LineHeight = 23,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            }, Brushes.White, "Сообщение пользователя");
+            }, "Сообщение пользователя");
             var menu = new ContextMenu();
             menu.Items.Add(FileActions.Item("Копировать", Glyphs.Copy,
                 () => TextClipboard.SetText(body.Selection.IsEmpty ? text : body.Selection.Text), "Ctrl+C"));
@@ -121,47 +121,41 @@ public partial class MainWindow
         InputBox.Focus();
     }
 
-    System.Windows.Documents.FlowDocument ChatDocument(string markdown, Brush foreground)
-    {
-        var document = _markdown.Render(markdown);
-        document.Foreground = foreground;
-        return document;
-    }
+    System.Windows.Documents.FlowDocument ChatDocument(string markdown, string foreground) =>
+        _markdown.Render(markdown).Paint(ForegroundProperty, foreground);
 
-    RichTextBox ChatText(string markdown, Brush foreground, string label) => ReadOnlyChatText(ChatDocument(markdown, foreground), foreground, label);
+    RichTextBox ChatText(string markdown, string foreground, string label) => ReadOnlyChatText(ChatDocument(markdown, foreground), label);
 
-    static RichTextBox ReadOnlyChatText(System.Windows.Documents.FlowDocument content, Brush foreground, string label)
+    static RichTextBox ReadOnlyChatText(System.Windows.Documents.FlowDocument content, string label)
     {
         var box = new RichTextBox
         {
             Document = content, IsReadOnly = true, IsDocumentEnabled = true, IsReadOnlyCaretVisible = false, IsTabStop = false,
-            Background = Brushes.Transparent, BorderThickness = new(0), Padding = new(0), Foreground = foreground,
-            SelectionBrush = Theme.Accent, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Background = Brushes.Transparent, BorderThickness = new(0), Padding = new(0),
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, FocusVisualStyle = null,
-        };
+        }.Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         AutomationProperties.SetName(box, label);
         return box;
     }
 
-    static TextBlock GlyphText(string glyph, double size, Brush? foreground, Thickness margin = default, bool center = true)
+    static TextBlock GlyphText(string glyph, double size, string? foreground, Thickness margin = default, bool center = true)
     {
         var block = new TextBlock
         {
             Text = glyph, FontFamily = Theme.Icons, FontSize = size, Margin = margin, VerticalAlignment = center ? VerticalAlignment.Center : VerticalAlignment.Stretch,
         };
-        if (foreground != null) block.Foreground = foreground;
-        return block;
+        return foreground == null ? block : block.Paint(ForegroundProperty, foreground);
     }
 
-    static Border SurfaceBox(UIElement child, double radius, Thickness padding = default, Thickness margin = default) => new()
+    static Border SurfaceBox(UIElement child, double radius, Thickness padding = default, Thickness margin = default) => new Border
     {
-        Background = Theme.Surface, BorderBrush = Theme.Line, BorderThickness = new(1), CornerRadius = new(radius),
-        Padding = padding, Margin = margin, Child = child,
-    };
+        BorderThickness = new(1), CornerRadius = new(radius), Padding = padding, Margin = margin, Child = child,
+    }.Paint(BackgroundProperty, "Surface").Paint(BorderBrushProperty, "Line");
 
     StackPanel AnswerView(string markdown, DateTimeOffset? sentAt)
     {
-        var document = ChatText(markdown, Theme.Text, "Ответ агента");
+        var document = ChatText(markdown, "Text", "Ответ агента");
         const string copyHint = "Скопировать ответ";
         var copy = Theme.IconButton(Glyphs.Copy, copyHint);
         copy.HorizontalAlignment = HorizontalAlignment.Left;
@@ -184,8 +178,8 @@ public partial class MainWindow
         {
             Text = sentAt?.ToLocalTime().ToString("HH:mm", Ru) ?? "—",
             ToolTip = sentAt?.ToLocalTime().ToString("d MMMM yyyy, HH:mm:ss", Ru) ?? "Время ответа не сохранено",
-            FontSize = 12, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0),
-        });
+            FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0),
+        }.Paint(ForegroundProperty, "TextMuted"));
         return new StackPanel { Margin = new(0, 8, 0, 8), Children = { document, footer } };
     }
 
@@ -236,7 +230,7 @@ public partial class MainWindow
         if (files.Length > 0)
         {
             FrameworkElement card = files.Length > 1 ? ChangesCard(files)
-                : files[0].Undone ? new TextBlock { Text = "Изменение отменено", Foreground = Theme.TextMuted }
+                : files[0].Undone ? new TextBlock { Text = "Изменение отменено" }.Paint(ForegroundProperty, "TextMuted")
                 : FileCard(files[0].Path, files[0].Diff, files[0].Created);
             var cards = new Border { Margin = new(0, 14, 0, 2), Child = card };
             _chatView.ChangeCards.Add((cards, files));
@@ -279,7 +273,7 @@ public partial class MainWindow
             return;
         }
         RemoveErrorCard();
-        var body = new StackPanel { Children = { SelectableText(text, Theme.DangerText) } };
+        var body = new StackPanel { Children = { SelectableText(text, "DangerText") } };
         (string Label, Action Run)? action = fix switch
         {
             ErrorFix.Retry when _agent.CanContinue => ("Повторить", () => _ = RetryAsync()),
@@ -296,14 +290,14 @@ public partial class MainWindow
         Grid.SetColumn(body, 1);
         var card = new Border
         {
-            Background = Theme.DangerSoft, BorderBrush = Theme.DangerLine, BorderThickness = new(1), CornerRadius = new(8),
+            BorderThickness = new(1), CornerRadius = new(8),
             Padding = new(16, 12, 16, 12), Margin = new(0, 8, 0, 8), Tag = text,
             Child = new Grid
             {
                 ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition() },
-                Children = { GlyphText(Glyphs.Warning, 16, Theme.DangerText, new(0, 2, 12, 0), false), body },
+                Children = { GlyphText(Glyphs.Warning, 16, "DangerText", new(0, 2, 12, 0), false), body },
             },
-        };
+        }.Paint(BackgroundProperty, "DangerSoft").Paint(BorderBrushProperty, "DangerLine");
         AutomationProperties.SetLiveSetting(card, AutomationLiveSetting.Assertive);
         AutomationProperties.SetName(card, "Ошибка: " + text);
         _lastErrorCard = card;
@@ -321,8 +315,8 @@ public partial class MainWindow
     {
         if (warning || !inProgress) _compactChat?.SetStatus(text.ReplaceLineEndings(" "));
         var row = new DockPanel { Margin = inProgress ? new(0, 6, 0, 6) : new(0, 8, 0, 8) };
-        if (warning) row.Children.Add(GlyphText(Glyphs.Warning, 13, Theme.Warning, new(0, 2, 8, 0), false));
-        row.Children.Add(SelectableText(text, inProgress ? Theme.TextMuted : Theme.Text, fontSize: inProgress ? 13 : 14));
+        if (warning) row.Children.Add(GlyphText(Glyphs.Warning, 13, "Warning", new(0, 2, 8, 0), false));
+        row.Children.Add(SelectableText(text, inProgress ? "TextMuted" : "Text", fontSize: inProgress ? 13 : 14));
         if (inProgress && _chatView.Progress != null && _cts != null) AddProgressItem(row);
         else
         {
@@ -466,8 +460,8 @@ public partial class MainWindow
         var subject = MakeSubject(name, argumentsJson);
         if (name != "search_text")
         {
-            header.Children.Insert(0, GlyphText(glyph, 14, Theme.TextMuted, new(0, 1, 8, 0)));
-            header.Children.Insert(1, new TextBlock { Text = label, FontSize = 13, Foreground = Theme.TextMuted, VerticalAlignment = VerticalAlignment.Center });
+            header.Children.Insert(0, GlyphText(glyph, 14, "TextMuted", new(0, 1, 8, 0)));
+            header.Children.Insert(1, new TextBlock { Text = label, FontSize = 13, VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "TextMuted"));
         }
         else subject ??= TextChip("Запрос без текста");
         if (subject != null) header.Children.Insert(name == "search_text" ? 0 : 2, subject);
@@ -523,24 +517,23 @@ public partial class MainWindow
 
     static FrameworkElement? TextChip(string? text, bool mono = false) => string.IsNullOrWhiteSpace(text) ? null : new Border
     {
-        Background = Theme.Surface2, BorderBrush = Theme.LineStrong, BorderThickness = new(1), CornerRadius = new(8),
-        Padding = new(8, 2, 8, 3), VerticalAlignment = VerticalAlignment.Center,
-        Child = new TextBlock { Text = text, FontSize = 13, Foreground = Theme.TextSoft, FontFamily = mono ? Theme.Mono : Theme.Ui },
-    };
+        BorderThickness = new(1), CornerRadius = new(8), Padding = new(8, 2, 8, 3), VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock { Text = text, FontSize = 13, FontFamily = mono ? Theme.Mono : Theme.Ui }.Paint(ForegroundProperty, "TextSoft"),
+    }.Paint(BackgroundProperty, "Surface2").Paint(BorderBrushProperty, "LineStrong");
 
     void CompleteToolRow(ToolRow row, string output, bool isError, bool isWarning = false, FileDiff? diff = null, FileChange? change = null, bool undone = false)
     {
         StopSpinner(row.Spinner);
         row.Status.Text = isError ? Glyphs.Cancel : isWarning ? Glyphs.Warning : Glyphs.Check;
-        row.Status.Foreground = isError ? Theme.DangerText : isWarning ? Theme.Warning : Theme.Success;
+        row.Status.Paint(ForegroundProperty, isError ? "DangerText" : isWarning ? "Warning" : "Success");
         row.Status.Visibility = Visibility.Visible;
         row.Status.ToolTip = isError ? "Не выполнено" : isWarning ? "Команда завершилась с ошибкой или по таймауту — раскройте подробности" : "Выполнено";
         if (isError || isWarning)
             row.Root.Children.Add(new TextBlock
             {
-                Text = Shorten(output.Split('\n')[0].Trim(), 220), Foreground = isError ? Theme.DangerText : Theme.Warning, FontSize = 13,
+                Text = Shorten(output.Split('\n')[0].Trim(), 220), FontSize = 13,
                 TextWrapping = TextWrapping.Wrap, Margin = new(22, 4, 0, 0),
-            });
+            }.Paint(ForegroundProperty, isError ? "DangerText" : "Warning"));
         else if (row.Name is "move_path" or "copy_path" && ResultTarget(output) is { } target)
         {
             if (row.Subject is { } subject && row.Header.Children.IndexOf(subject) is >= 0 and var index)
@@ -577,8 +570,8 @@ public partial class MainWindow
         Orientation = Orientation.Horizontal, Margin = new(8, 1, 0, 0), VerticalAlignment = VerticalAlignment.Center,
         Children =
         {
-            new TextBlock { Text = $"+{added}", FontSize = 12.5, Foreground = Theme.Success },
-            new TextBlock { Text = $"−{removed}", FontSize = 12.5, Foreground = Theme.DangerText, Margin = new(6, 0, 0, 0) },
+            new TextBlock { Text = $"+{added}", FontSize = 12.5 }.Paint(ForegroundProperty, "Success"),
+            new TextBlock { Text = $"−{removed}", FontSize = 12.5, Margin = new(6, 0, 0, 0) }.Paint(ForegroundProperty, "DangerText"),
         },
     };
 
@@ -587,9 +580,9 @@ public partial class MainWindow
         var preview = new Border
         {
             Width = 320, Height = 320, CornerRadius = new(8), Margin = new(22, 8, 0, 4), HorizontalAlignment = HorizontalAlignment.Left,
-            Background = Theme.Surface, Cursor = Cursors.Hand, ToolTip = $"{path}\nЩелчок — посмотреть, правая кнопка — другие действия",
+            Cursor = Cursors.Hand, ToolTip = $"{path}\nЩелчок — посмотреть, правая кнопка — другие действия",
             ContextMenu = FileActions.BuildMenu(this, path),
-        };
+        }.Paint(BackgroundProperty, "Surface");
         AutomationProperties.SetName(preview, "Изображение " + Path.GetFileName(path));
         preview.MouseLeftButtonUp += (_, _) => ShowPicture(path);
         FileActions.EnableDragOut(preview, path);
@@ -619,7 +612,7 @@ public partial class MainWindow
             Content = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Children = { chevron, GlyphText(Glyphs.Picture, 13, Theme.TextMuted, new(0, 1, 6, 0), false), new TextBlock { Text = "Просмотрено изображение", FontSize = 13, Foreground = Theme.TextMuted } },
+                Children = { chevron, GlyphText(Glyphs.Picture, 13, "TextMuted", new(0, 1, 6, 0), false), new TextBlock { Text = "Просмотрено изображение", FontSize = 13 }.Paint(ForegroundProperty, "TextMuted") },
             },
         };
         AutomationProperties.SetName(toggle, "Просмотрено изображение — показать скриншот");
@@ -665,7 +658,7 @@ public partial class MainWindow
             var log = row.Name is "run_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
             if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full) output = output.Split('\n', 2)[0] + "\n" + full;
             var raw = SelectableText(KeepEnds($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", 16_000),
-                Theme.TextSoft, mono: true, fontSize: 13);
+                "TextSoft", mono: true, fontSize: 13);
             raw.MaxHeight = 360;
             raw.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
             details.Children.Add(SurfaceBox(raw, 8, new(12, 8, 4, 8), new(22, 8, 0, 4)));
@@ -885,22 +878,22 @@ public partial class MainWindow
     static DependencyObject? ParentOf(DependencyObject node) =>
         node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
 
-    static TextBox SelectableText(string text, Brush foreground, bool mono = false, double fontSize = 14) => new()
+    static TextBox SelectableText(string text, string foreground, bool mono = false, double fontSize = 14) => new TextBox
     {
         Text = text, IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, BorderThickness = new(0),
-        Background = Brushes.Transparent, Foreground = foreground, SelectionBrush = Theme.Accent, TextWrapping = TextWrapping.Wrap,
+        Background = Brushes.Transparent, TextWrapping = TextWrapping.Wrap,
         Padding = new(0), FontSize = fontSize, FontFamily = mono ? Theme.Mono : Theme.Ui, FocusVisualStyle = null,
         ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
-    };
+    }.Paint(ForegroundProperty, foreground).Paint(TextBoxBase.SelectionBrushProperty, "Accent");
 
     static FrameworkElement MakeSpinner(double size)
     {
         var rotate = new RotateTransform();
         var ring = new System.Windows.Shapes.Ellipse
         {
-            Width = size, Height = size, Stroke = Theme.AccentText, StrokeThickness = 1.6, StrokeDashArray = new DoubleCollection { 7, 14 }, StrokeDashCap = PenLineCap.Round,
+            Width = size, Height = size, StrokeThickness = 1.6, StrokeDashArray = new DoubleCollection { 7, 14 }, StrokeDashCap = PenLineCap.Round,
             VerticalAlignment = VerticalAlignment.Center, RenderTransformOrigin = new(0.5, 0.5), RenderTransform = rotate,
-        };
+        }.Paint(System.Windows.Shapes.Shape.StrokeProperty, "AccentText");
         if (Theme.AnimationsEnabled)
             rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, 360, TimeSpan.FromSeconds(0.9)) { RepeatBehavior = RepeatBehavior.Forever });
         return ring;
