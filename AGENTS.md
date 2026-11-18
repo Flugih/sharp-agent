@@ -5,6 +5,7 @@ Rules for every change to Sharp Agent.
 ## Main rule: built-in tools only
 - No NuGet packages, vendored DLLs or downloaded tools. Use the .NET 8 BCL and WPF, Win32/COM through P/Invoke, and what ships with Windows (PowerShell 5.1, cmd).
 - Plugins may call optional tools the user installed (FFmpeg, Tesseract), but the app never downloads or bundles them.
+- The app itself only starts the sing-box executable the user picked in the network settings and uses the installed WebView2 Runtime for the built-in browser; it never downloads or bundles them either.
 
 ## .NET 8
 - Target `net8.0-windows`, C# 12. No .NET 9+ APIs (`System.Threading.Lock`, `Task.WhenEach`, ...) and no C# 13+ syntax (`field`, `\e`, partial properties).
@@ -22,8 +23,8 @@ Rules for every change to Sharp Agent.
 ## Keep stable
 - UI texts are Russian. Keep UI strings, the system prompt, tool names, descriptions, JSON schemas and output prefixes unchanged unless the change is the point.
 - Stored formats stay compatible: `.env` keys, `state.json`, `history/`, `auth/chatgpt.json`.
-- Portable builds keep data in the program folder (`AppPaths`). Installed builds store user data in `%LOCALAPPDATA%\SharpAgent`; preserve both modes and their secret/app-file guards.
-- Safety: every tool path goes through `ToolContext.Resolve` and the secret/app-file guards; risky actions ask when settings say so; sandbox mode disables commands and plugins; `.env`, `auth/` and keys never reach the model, logs or UI.
+- Portable builds keep data in the program folder (`AppPaths`). Installed builds store user data in `%LOCALAPPDATA%\SharpAgent`; preserve both modes and their secret/app-file guards. Apart from that, never write to `%APPDATA%`, `%TEMP%` or the registry.
+- Safety: every tool path goes through `ToolContext.Resolve` and the secret/app-file guards; risky actions ask when settings say so; sandbox mode disables commands, plugins and Computer Use; `.env`, `auth/` and keys never reach the model, logs or UI.
 
 ## Before finishing
 - `dotnet build SharpAgent.csproj -o <folder outside bin\Debug>` with 0 warnings (the owner may be running `bin\Debug`).

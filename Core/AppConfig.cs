@@ -174,7 +174,24 @@ public sealed class AppConfig
         MISTRAL_IMAGE_MODEL={ImageModelsOf(AgentProvider.Mistral)[0]}
         # Рабочая папка агента (относительный путь — от папки программы)
         AGENT_WORKDIR=workspace
-        # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd отключены)
+        # Маршрут сетевых запросов: system — как в Windows, direct — напрямую, proxy — через свой прокси, vpn — через подписку и sing-box
+        # Команды агента получают тот же маршрут через локальный посредник без пароля
+        AGENT_NETWORK_MODE=system
+        # Прокси: http, https или socks5
+        AGENT_PROXY_SCHEME=socks5
+        AGENT_PROXY_HOST=
+        AGENT_PROXY_PORT=1080
+        AGENT_PROXY_USER=
+        # Пароль прокси хранится здесь открытым текстом, как и ключи выше
+        AGENT_PROXY_PASSWORD=
+        # VPN: ссылка на подписку, путь к sing-box.exe (скачивается отдельно) и его SHA-256, выбранный сервер
+        AGENT_VPN_SUBSCRIPTION=
+        AGENT_VPN_ENGINE=
+        AGENT_VPN_ENGINE_SHA256=
+        AGENT_VPN_NODE=
+        # Сохранённые серверы VPN вместе с их ключами доступа (Base64, не шифрование) — заполняются в разделе «Сеть» настроек
+        AGENT_VPN_PROFILES=
+        # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd, плагины и Computer Use отключены)
         AGENT_SANDBOX=false
         AGENT_USE_SUBAGENTS=false
         # true — агент управляет программами на экране и смотрит скриншоты (скриншоты расходуют много токенов)

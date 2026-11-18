@@ -7,15 +7,24 @@ The interface is in Russian.
 
 ## Features
 
-- Models via [Tooken Club](https://tooken.club), your ChatGPT subscription (official "Sign in with ChatGPT")
-  or [GroqCloud](https://console.groq.com).
+- Models via [Tooken Club](https://tooken.club), your ChatGPT subscription (official "Sign in with ChatGPT"),
+  [GroqCloud](https://console.groq.com), [Google AI Studio](https://aistudio.google.com) (Gemini),
+  [OpenRouter](https://openrouter.ai) or [Mistral AI](https://console.mistral.ai).
 - Reads and edits files, including Word, Excel and PowerPoint; searches by file name and content.
 - Runs PowerShell and cmd commands; changes made by the agent can be undone.
 - Plugins for Word, Excel, PDF, images, audio and video, data and charts, code projects.
   Some of them need external tools such as FFmpeg or Tesseract.
-- Image generation, voice input, optional subagents for parallel analysis.
+- Image generation by Tooken Club or, if you choose so, by the chat provider (Gemini, Mistral, OpenRouter);
+  voice input; optional subagents for parallel analysis.
+- Optional Computer Use: the agent works with programs on the screen by screenshots, clicks and typing.
+- A built-in browser with tabs inside the window. It uses the installed Microsoft Edge WebView2 Runtime
+  (present on Windows 11 and most Windows 10 PCs); its profile is kept with the other sign-in data in `auth\browser`.
+- Network route of its own: Windows settings, direct, an HTTP or SOCKS5 proxy, or a VPN subscription run through a
+  [sing-box](https://sing-box.sagernet.org) executable you download yourself. Commands started by the agent get the same
+  route through the standard proxy variables, which point to a local relay without a password.
 - Attachments by drag and drop or from the clipboard, file previews and diffs right in the window.
-- Can ask before deleting, overwriting or running commands; deletes to the Recycle Bin; has a sandbox mode.
+- Can ask before deleting, overwriting or running commands; deletes to the Recycle Bin; has a sandbox mode
+  that keeps the agent inside the program folder and turns off commands, plugins and Computer Use.
 - Portable builds keep settings, chats and logs in the program folder. The Windows installer stores user data in `%LOCALAPPDATA%\SharpAgent`.
 
 ## Run
