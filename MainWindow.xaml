@@ -37,8 +37,13 @@
                             <StackPanel x:Name="ChatPanel"/>
                         </StackPanel>
                     </ScrollViewer>
-                    <Border x:Name="ChatStickyHost" Panel.ZIndex="5" HorizontalAlignment="Center" VerticalAlignment="Top" MaxWidth="768" Margin="24,0,24,0" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Visibility="Collapsed">
-                        <StackPanel x:Name="ChatStickyPanel"/>
+                    <Border x:Name="ChatStickyHost" Panel.ZIndex="5" VerticalAlignment="Top" MaxWidth="768" Margin="24,0,24,0" Padding="0,8,0,0" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Visibility="Collapsed" PreviewMouseWheel="ChatStickyHost_PreviewMouseWheel">
+                        <DockPanel>
+                            <TextBlock x:Name="ChatStickyTitle" DockPanel.Dock="Top" FontSize="14" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4"/>
+                            <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto" Focusable="False">
+                                <StackPanel x:Name="ChatStickyPanel"/>
+                            </ScrollViewer>
+                        </DockPanel>
                     </Border>
                     <Button x:Name="ScrollDownButton" Style="{StaticResource FloatButton}" Content="&#xE74B;" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" ToolTip="К последнему сообщению" AutomationProperties.Name="К последнему сообщению" Click="ScrollDown_Click"/>
                 </Grid>

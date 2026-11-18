@@ -131,13 +131,20 @@ public partial class MainWindow
         ShowToast("Чат возвращён в список", ToastKind.Success);
     }
 
-    void RemoveFromTrash(List<ChatSummary> chats)
+    async void RemoveFromTrash(List<ChatSummary> chats)
     {
-        foreach (var chat in chats)
+        var store = _agent.Store;
+        var error = await Task.Run(() =>
         {
-            try { _agent.Store.DeleteForever(chat.Path); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowToast("Не удалось удалить чат: " + ex.Message, ToastKind.Error); }
-        }
+            string? last = null;
+            foreach (var chat in chats)
+            {
+                try { store.DeleteForever(chat.Path); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { last = ex.Message; }
+            }
+            return last;
+        });
+        if (error != null) ShowToast("Не удалось удалить чат: " + error, ToastKind.Error);
         UpdateTrashCount();
         ShowTrash();
     }

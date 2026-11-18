@@ -7,6 +7,8 @@ public partial class MainWindow
         readonly TextBlock _label = new TextBlock { FontSize = 13, VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "TextMuted");
         readonly StackPanel _header = new() { Orientation = Orientation.Horizontal };
         FrameworkElement? _spinner;
+        TextBlock? _error;
+        int _errors;
         public readonly StackPanel Items = new();
         public readonly Expander View = new() { Style = Theme.Style("ProgressSection") };
         public PlanCard? Plan;
@@ -31,15 +33,26 @@ public partial class MainWindow
             View.ToolTip = title + " · раскрыть или свернуть";
         }
 
+        public void ShowError(string text)
+        {
+            if (_error == null)
+            {
+                _error = new TextBlock { FontSize = 13, Margin = new(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "DangerText");
+                _header.Children.Add(_error);
+            }
+            _error.Text = ++_errors > 1 ? $"Ошибок: {_errors} · {text}" : text;
+        }
+
+        public static ProgressSection Collapsed(string title, string glyph, Panel parent)
+        {
+            var group = new ProgressSection(title, glyph) { View = { IsExpanded = false, Margin = new(-3, 2, 0, 2) } };
+            parent.Children.Add(group.View);
+            return group;
+        }
+
         public static void AddSearch(ref ProgressSection? searches, Panel parent, UIElement item)
         {
-            if (searches == null)
-            {
-                searches = new("Поиск текста", Glyphs.Search);
-                searches.View.IsExpanded = false;
-                searches.View.Margin = new(-3, 2, 0, 2);
-                parent.Children.Add(searches.View);
-            }
+            searches ??= Collapsed("Поиск текста", Glyphs.Search, parent);
             searches.Items.Children.Add(item);
             searches.SetTitle($"Поиск текста · {searches.Items.Children.Count}");
         }

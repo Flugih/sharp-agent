@@ -440,13 +440,12 @@ public partial class MainWindow
         if (_chatView.LastStopNotice != null) ChatPanel.Children.Remove(_chatView.LastStopNotice);
         _chatView.LastStopNotice = null;
         ScrollToLatest();
-        await (_run = RunAgentAsync(ct => _agent.ContinueAsync(model, ct), continuation: true));
+        await (_run = RunAgentAsync(ct => _agent.ContinueAsync(model, ct)));
     }
 
-    async Task RunAgentAsync(Func<CancellationToken, Task> run, bool continuation = false)
+    async Task RunAgentAsync(Func<CancellationToken, Task> run)
     {
         var cts = _cts = new CancellationTokenSource();
-        bool completed = false;
         SetRunning(true);
         StartProgress();
         try
@@ -454,7 +453,6 @@ public partial class MainWindow
             var task = run(cts.Token);
             SyncCompactChat();
             await task;
-            completed = true;
             if (!ActiveChatWindow.IsActive) WindowEffects.CompletionSound();
             WindowEffects.Flash(ActiveChatWindow);
         }
@@ -488,7 +486,7 @@ public partial class MainWindow
             ClearDraft(interrupted: true);
             MarkUnfinishedToolRows();
             FinishProgress("Выполнение прервано");
-            if (!continuation || completed) FlushTurnFiles();
+            FlushTurnFiles();
             SyncCompactChat();
             SetRunning(false);
             SyncCurrentChat(true);

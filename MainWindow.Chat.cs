@@ -1,3 +1,4 @@
+using System.Windows.Data;
 using System.Windows.Shell;
 
 namespace SharpAgent;
@@ -15,6 +16,7 @@ public partial class MainWindow
         public FrameworkElement? Subject;
         public RevealPanel? Details;
         public FileDiff? Diff;
+        public ProgressSection? EditGroup;
     }
 
     sealed record ProducedFile(string Path, FileDiff? Diff, bool Created, FileChange? Change, bool Undone, bool Chained = false, int Steps = 1);
@@ -37,12 +39,7 @@ public partial class MainWindow
 
     ChatRenderState _chatView = new();
     Border? _lastErrorCard;
-    FrameworkElement? _stickyProgress;
-    Panel? _stickyProgressParent;
-    Border? _stickyProgressPlaceholder;
-    int _stickyProgressIndex = -1;
-    Thickness _stickyProgressMargin;
-    bool _stickyProgressChanging;
+    Border? _stickyPlanPlaceholder;
     bool _autoScroll = true, _suppressAnimation;
 
     void RenderCurrentChat()
@@ -65,6 +62,7 @@ public partial class MainWindow
 
     void AddUserBubble(string text, IReadOnlyList<Attachment> attachments)
     {
+        ReleaseStickyProgress();
         FlushTurnFiles();
         _chatView.ChangeCards.Clear();
         _chatView.FileEditGroups.Clear();
@@ -418,23 +416,19 @@ public partial class MainWindow
         _ => (Glyphs.Tool, tool),
     };
 
-    void AddFileEditProgress(string name, string? path, UIElement item)
+    ProgressSection? AddFileEditProgress(string name, string? path, UIElement item)
     {
         if (name is not ("write_file" or "edit_file") || path == null)
         {
             AddProgressTool(name, item);
-            return;
+            return null;
         }
         var progress = EnsureProgress();
         if (!_chatView.FileEditGroups.TryGetValue(path, out var group))
-        {
-            group = _chatView.FileEditGroups[path] = new("Правки файла · " + ShortName(path), Glyphs.Edit);
-            group.View.IsExpanded = false;
-            group.View.Margin = new(-3, 2, 0, 2);
-            progress.Items.Children.Add(group.View);
-        }
+            group = _chatView.FileEditGroups[path] = ProgressSection.Collapsed("Правки файла · " + ShortName(path), Glyphs.Edit, progress.Items);
         group.Items.Children.Add(item);
         group.SetTitle($"Правки файла · {ShortName(path)} · {group.Items.Children.Count}");
+        return group;
     }
 
     ToolRow AddToolRow(string id, string name, string argumentsJson)
@@ -473,7 +467,7 @@ public partial class MainWindow
         header.MouseLeftButtonUp += (_, _) => ToggleDetails(row);
         expand.Click += (_, _) => ToggleDetails(row);
         _chatView.ToolRows[id] = row;
-        AddFileEditProgress(name, row.FilePath, root);
+        row.EditGroup = AddFileEditProgress(name, row.FilePath, root);
         return row;
     }
 
@@ -529,11 +523,15 @@ public partial class MainWindow
         row.Status.Visibility = Visibility.Visible;
         row.Status.ToolTip = isError ? "Не выполнено" : isWarning ? "Команда завершилась с ошибкой или по таймауту — раскройте подробности" : "Выполнено";
         if (isError || isWarning)
+        {
+            var line = output.Split('\n')[0].Trim();
             row.Root.Children.Add(new TextBlock
             {
-                Text = Shorten(output.Split('\n')[0].Trim(), 220), FontSize = 13,
+                Text = Shorten(line, 220), FontSize = 13,
                 TextWrapping = TextWrapping.Wrap, Margin = new(22, 4, 0, 0),
             }.Paint(ForegroundProperty, isError ? "DangerText" : "Warning"));
+            if (isError) row.EditGroup?.ShowError(Shorten(line, 100));
+        }
         else if (row.Name is "move_path" or "copy_path" && ResultTarget(output) is { } target)
         {
             if (row.Subject is { } subject && row.Header.Children.IndexOf(subject) is >= 0 and var index)
@@ -801,57 +799,40 @@ public partial class MainWindow
 
     void ReleaseStickyProgress()
     {
-        if (_stickyProgress is not { } view || _stickyProgressParent is not { } parent) return;
-        _stickyProgressChanging = true;
-        try
+        ChatStickyHost.Visibility = Visibility.Collapsed;
+        var plan = ChatStickyPanel.Children.Count > 0 ? ChatStickyPanel.Children[0] : null;
+        ChatStickyPanel.Children.Clear();
+        if (plan != null && _stickyPlanPlaceholder?.Parent is Panel parent)
         {
-            ChatStickyPanel.Children.Remove(view);
-            if (_stickyProgressPlaceholder is { } placeholder && placeholder.Parent is Panel placeholderParent)
-                placeholderParent.Children.Remove(placeholder);
-            int index = Math.Clamp(_stickyProgressIndex, 0, parent.Children.Count);
-            parent.Children.Insert(index, view);
-            view.Margin = _stickyProgressMargin;
+            int at = parent.Children.IndexOf(_stickyPlanPlaceholder);
+            parent.Children.RemoveAt(at);
+            parent.Children.Insert(at, plan);
         }
-        finally
-        {
-            _stickyProgress = null;
-            _stickyProgressParent = null;
-            _stickyProgressPlaceholder = null;
-            _stickyProgressIndex = -1;
-            _stickyProgressChanging = false;
-            ChatStickyHost.Visibility = Visibility.Collapsed;
-        }
+        _stickyPlanPlaceholder = null;
     }
 
-    void UpdateStickyProgress(double verticalChange)
+    // Pins the header and the plan of the running section once the user scrolls its top out of view.
+    void UpdateStickyProgress(bool userScroll)
     {
-        if (_stickyProgressChanging) return;
-        if (verticalChange < 0)
+        if (_chatView.Progress is not { View.IsExpanded: true } progress || !progress.View.IsDescendantOf(ChatScroll) ||
+            progress.View.TransformToAncestor(ChatScroll).Transform(default).Y >= 0)
         {
             ReleaseStickyProgress();
             return;
         }
-        if (verticalChange <= 0 || _stickyProgress != null) return;
-        var progress = _chatView.Progress;
-        if (progress is not { View.IsExpanded: true } || progress.View.Parent is not Panel parent) return;
-        if (progress.View.TransformToAncestor(ChatScroll).Transform(new Point(0, 0)).Y > 0) return;
-
-        _stickyProgressChanging = true;
-        try
+        if (!IsShown(ChatStickyHost))
         {
-            var view = _stickyProgress = progress.View;
-            _stickyProgressParent = parent;
-            _stickyProgressIndex = parent.Children.IndexOf(view);
-            _stickyProgressMargin = view.Margin;
-            _stickyProgressPlaceholder = new Border { Height = view.ActualHeight, Margin = view.Margin };
-            parent.Children.RemoveAt(_stickyProgressIndex);
-            parent.Children.Insert(_stickyProgressIndex, _stickyProgressPlaceholder);
-            view.Margin = new(0, 0, 0, 0);
-            ChatStickyPanel.Children.Add(view);
+            if (!userScroll) return;
+            ChatStickyTitle.SetBinding(TextBlock.TextProperty, new Binding { Source = progress.View, Path = new(AutomationProperties.NameProperty) });
             ChatStickyHost.Visibility = Visibility.Visible;
-            ChatStickyPanel.UpdateLayout();
         }
-        finally { _stickyProgressChanging = false; }
+        if (_stickyPlanPlaceholder != null || progress.Plan?.View is not { Parent: Panel parent } plan) return;
+        _stickyPlanPlaceholder = new() { Margin = plan.Margin };
+        _stickyPlanPlaceholder.SetBinding(HeightProperty, new Binding(nameof(ActualHeight)) { Source = plan });
+        int at = parent.Children.IndexOf(plan);
+        parent.Children.RemoveAt(at);
+        parent.Children.Insert(at, _stickyPlanPlaceholder);
+        ChatStickyPanel.Children.Add(plan);
     }
 
     void ChatScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -860,8 +841,14 @@ public partial class MainWindow
         if (e.ExtentHeightChange != 0 && _autoScroll && _chatMotion == null) ChatScroll.ScrollToEnd();
         else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
         if (e.VerticalChange < 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckOlderHistory();
-        UpdateStickyProgress(e.VerticalChange);
+        UpdateStickyProgress(e.VerticalChange != 0 && !_autoScroll && _chatMotion == null);
         UpdateScrollDownButton();
+    }
+
+    void ChatStickyHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        ScrollChatBy(-e.Delta / 2.0);
+        e.Handled = true;
     }
 
     void ScrollDown_Click(object sender, RoutedEventArgs e) => ScrollToLatest();

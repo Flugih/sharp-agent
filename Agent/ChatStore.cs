@@ -61,7 +61,7 @@ public sealed class ChatStore(string folder, string logsFolder)
             if (DateTime.TryParseExact(Str(ReadRoot(path)["updated"]), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 updated = time;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+        catch { }
         var restored = MoveTo(path, folder, null);
         if (updated is { } previous)
             try { File.SetLastWriteTime(restored, previous); }
@@ -95,7 +95,7 @@ public sealed class ChatStore(string folder, string logsFolder)
             {
                 if (Summarize(file) is { } chat) result.Add(chat);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
+            catch { }
         return result;
     }
 
@@ -171,9 +171,9 @@ public sealed class ChatStore(string folder, string logsFolder)
                     CommandLog.IdOf(JsonUtil.Str(message["content"]) ?? "") is { } id ? CommandLog.PathOf(logsFolder, id) : null,
                     FileChanges.BackupPath(logsFolder, AgentRunner.FileChangeOf(message)?.Backup),
                 })
-                .OfType<string>();
+                .OfType<string>().ToList();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return []; }
+        catch { return []; }
     }
 
     static string MoveTo(string path, string directory, DateTime? touched)

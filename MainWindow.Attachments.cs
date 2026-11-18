@@ -50,7 +50,7 @@ public partial class MainWindow
         HideDropOverlay();
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
-        if (!accepted || SettingsOpen) return;
+        if (!accepted || SettingsOpen || _waitingToClose || WaitForChatFile(_chatOperation != null)) return;
         var paths = e.Data.GetData(DataFormats.FileDrop) as string[] ?? SaveVirtualFiles(e.Data);
         if (paths.Length == 0) return;
         _ = AddAttachmentsAsync(paths);
@@ -128,6 +128,7 @@ public partial class MainWindow
 
     bool TryAttachFromClipboard()
     {
+        if (ClipboardHasAttachment() && (_waitingToClose || WaitForChatFile(_chatOperation != null))) return true;
         try
         {
             string[] files = Clipboard.ContainsFileDropList() ? [.. Clipboard.GetFileDropList().Cast<string>()]
@@ -161,7 +162,7 @@ public partial class MainWindow
 
     async Task AddAttachmentsAsync(IEnumerable<string> paths)
     {
-        if (_chatOperation != null || _waitingToClose) return;
+        if (_waitingToClose || WaitForChatFile(_chatOperation != null)) return;
         _attachmentImports++;
         UpdateSendButton();
         try { await ImportAttachmentsAsync(paths); }

@@ -153,9 +153,15 @@ public partial class MainWindow
     Task? _chatOperation;
     bool ChatFileBusy => _chatOperation != null || _attachmentImports > 0;
 
+    bool WaitForChatFile(bool busy)
+    {
+        if (busy) ShowToast("Подождите: чат или вложения ещё обрабатываются");
+        return busy;
+    }
+
     async Task RunChatOperationAsync(Func<Task> operation)
     {
-        if (ChatFileBusy || _waitingToClose) return;
+        if (_waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         var task = _chatOperation = Dispatcher.InvokeAsync(operation).Task.Unwrap();
         UpdateSendButton();
         try { await task; }
@@ -334,7 +340,7 @@ public partial class MainWindow
 
     async void OpenChatFromUser(string path)
     {
-        if (ChatFileBusy || _waitingToClose) return;
+        if (_waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         if (!IsCurrent(path))
         {
             if (_cts != null)
@@ -379,7 +385,7 @@ public partial class MainWindow
 
     void StartNewChat()
     {
-        if (SettingsOpen || ChatFileBusy || _waitingToClose) return;
+        if (SettingsOpen || _waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         if (_cts != null)
         {
             ShowToast("Агент работает. Остановите его (Esc), чтобы начать новый чат", ToastKind.Warning);
@@ -399,7 +405,7 @@ public partial class MainWindow
 
     void DeleteChat(ChatSummary chat)
     {
-        if (ChatFileBusy || _waitingToClose) return;
+        if (_waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         bool current = IsCurrent(chat.Path);
         if (current && _cts != null)
         {
@@ -428,7 +434,7 @@ public partial class MainWindow
 
     void BeginRename(ChatSummary chat, Grid row)
     {
-        if (_renaming != null || ChatFileBusy || _waitingToClose) return;
+        if (_renaming != null || _waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         var box = new TextBox { Style = Theme.Style("FieldTextBox"), Text = chat.Title, Height = 34, FontSize = 13, Padding = new(6, 0, 6, 0) };
         ContextMenuService.SetIsEnabled(box, false);
         AutomationProperties.SetName(box, "Новое название чата");
