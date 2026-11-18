@@ -94,6 +94,7 @@ public partial class MainWindow
         {
             ConfirmAsync = ConfirmAsync, ClarifyAsync = AskClarificationAsync, CanSpendAsync = CheckLimitsAsync,
             ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
+            SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
         };
         _agent.AssistantText += OnAssistantText;
         _agent.AssistantDelta += OnAssistantDelta;

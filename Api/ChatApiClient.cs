@@ -13,7 +13,7 @@ public interface IChatProvider : IDisposable
 {
     event Action<int, int>? Retrying;
     Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct);
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true);
     Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct);
 }
 
@@ -120,7 +120,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
     public GroqLimits? Limits { get; private set; }
 
     public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct)
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools)
     {
         var body = new JsonObject
         {
@@ -129,7 +129,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         if (tools is { Count: > 0 })
         {
             body["tools"] = tools.DeepClone();
-            body["tool_choice"] = "auto";
+            body["tool_choice"] = callTools ? "auto" : "none";
         }
         if (maxTokens is > 0) body["max_tokens"] = maxTokens.Value;
         if (effort != null)

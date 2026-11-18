@@ -4,6 +4,8 @@ partial class AgentRunner
 {
     const string ReviewField = "review", AlreadySent = "Полный результат этого действия уже передан.";
     const int MaxReviews = 3;
+    // Standalone scripts are not pushed toward a check: the only check is to run them, and that may change data.
+    static readonly string[] Scripts = [".ps1", ".sql", ".py"];
 
     static readonly JsonNode PlanDefinition = JsonNode.Parse("""
         {"type":"function","function":{"name":"update_plan","description":"Записать или обновить план многошаговой задачи: весь список пунктов с их состоянием. Держи план актуальным: отмечай выполненное и добавляй найденную работу. Программа напомнит о невыполненных пунктах перед завершением.","parameters":{"type":"object","properties":{"items":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done"]}},"required":["step","status"]}}},"required":["items"]}}}
@@ -51,7 +53,8 @@ partial class AgentRunner
         foreach (var (call, result) in CurrentActions())
         {
             int at = _history.IndexOf(result);
-            if (Str(MetaOf(result)?["written_path"]) is { } path && ProjectSourceIndex.IsSource(path))
+            if (Str(MetaOf(result)?["written_path"]) is { } path && ProjectSourceIndex.IsSource(path) &&
+                !Scripts.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
             {
                 lastChange = at;
                 if (!changed.Contains(path, StringComparer.OrdinalIgnoreCase)) changed.Add(path);
@@ -62,7 +65,7 @@ partial class AgentRunner
                 var key = call.Name == "run_command" ? Str(ArgsOf(call)?["command"])!.Trim() : call.ArgumentsJson;
                 var output = Str(result["content"]) ?? "";
                 if (at > since && (ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output))) failed[key] = call;
-                else failed.Remove(key);
+                else foreach (var covered in failed.Keys.Where(earlier => Covers(key, earlier)).ToList()) failed.Remove(covered);
             }
         }
         var notes = new List<string>();
@@ -76,8 +79,12 @@ partial class AgentRunner
                       ". Исправь причину и проверь снова либо объясни, что помешало.");
         return notes.Count == 0 ? null
             : "[Программа: проверка перед завершением] " + string.Join("\n", notes) +
-              "\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, коротко повтори итоговый ответ.";
+              "\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, повтори итоговый ответ полностью: пользователь увидит только его.";
     }
+
+    // A passing check also settles narrower ones (`dotnet build` after `dotnet build App.csproj`) and tests settle builds.
+    static bool Covers(string check, string failed) => failed.StartsWith(check, StringComparison.OrdinalIgnoreCase) ||
+        failed.Replace("build", "test", StringComparison.OrdinalIgnoreCase).StartsWith(check, StringComparison.OrdinalIgnoreCase);
 
     HashSet<string> SupersededResults(int currentUser)
     {

@@ -11,7 +11,7 @@ partial class AgentRunner
         for (int i = currentUser - 1; i >= 0; i--)
         {
             var message = _history[i];
-            stopped |= MetaOf(message)?[StopField] != null;
+            stopped |= MetaOf(message) is { } meta && meta[StopField] != null && Bool(meta[ProgramStopField]) != true;
             if (Role(message) != "user") continue;
             if (stopped) requests.Add(i);
             stopped = false;

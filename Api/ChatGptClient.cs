@@ -30,10 +30,11 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     }
 
     public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct)
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools)
     {
         bool summary = !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
         var body = Request(model, messages, tools, maxTokens, effort, summary);
+        if (!callTools) body["tool_choice"] = "none";
         void Reset()
         {
             reportText(null, false);

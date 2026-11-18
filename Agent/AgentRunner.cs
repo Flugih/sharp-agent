@@ -16,7 +16,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public const string AttachmentsField = "attachments", MetaField = "meta";
     public const string RepeatReply = "\n\n[Программа: этот же вызов уже несколько раз вернул тот же результат. Не повторяй его — измени запрос, " +
         "сузь папку или переходи к следующему шагу.]";
-    const string ElapsedField = "elapsed_ms", StopField = "stopped", SentAtField = "sent_at";
+    const string ElapsedField = "elapsed_ms", StopField = "stopped", ProgramStopField = "stopped_by_program", SentAtField = "sent_at";
     const string TruncatedCallReply = "Ошибка: ответ оборвался на лимите токенов, аргументы вызова пришли не полностью — действие не выполнено. " +
         "Повтори его меньшими частями (например, write_file по частям с append=true).";
     const int ImageTokens = 1_000;
@@ -188,6 +188,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     Task LoopAsync(string model, CancellationToken ct) => Timed(async () =>
     {
         bool truncationReported = false;
+        _compactionFailed = false;
         for (int step = 1; ; step++)
         {
             ct.ThrowIfCancellationRequested();
@@ -245,7 +246,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             AssistantText?.Invoke(text?.Trim() ?? "", elapsed, sentAt);
             if (blockedCalls)
             {
-                await RecordStopAsync(SubagentStepStop);
+                await RecordStopAsync(SubagentStepStop, true);
                 return;
             }
             foreach (var call in skipped)
@@ -255,7 +256,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
             if (truncated && truncationReported)
             {
-                await RecordStopAsync("Агент остановлен: лимит токенов дважды прервал вызов инструмента. Увеличьте лимит ответа или упростите задачу.");
+                await RecordStopAsync("Агент остановлен: лимит токенов дважды прервал вызов инструмента. Увеличьте лимит ответа или упростите задачу.", true);
                 return;
             }
             truncationReported = truncated;
@@ -280,7 +281,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
             if (await ExecuteToolCallsAsync(calls, ct) is { } stuck)
             {
-                await RecordStopAsync(stuck);
+                await RecordStopAsync(stuck, true);
                 return;
             }
         }
@@ -290,7 +291,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     async Task<ChatResult> CompleteAsync(string model, int step, bool finalWorkerStep, CancellationToken ct)
     {
-        var definitions = finalWorkerStep ? new JsonArray() : Definitions();
+        var definitions = Definitions();
         bool withImages = AllowImages(model), droppedImages = false, harder = false;
         while (true)
         {
@@ -300,7 +301,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             try
             {
                 var result = await Api!.CompleteAsync(model, messages, definitions, MaxTokens, effort,
-                    (text, usesTools) => AssistantDelta?.Invoke(text, usesTools), progress => ProgressReported?.Invoke(progress), ct);
+                    (text, usesTools) => AssistantDelta?.Invoke(text, usesTools), progress => ProgressReported?.Invoke(progress), ct, !finalWorkerStep);
                 _sent = messages.Where(message => Role(message) == "tool").ToArray();
                 if (droppedImages)
                 {
@@ -352,7 +353,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     int InputBudget(string model)
     {
         long window = ModelContextTokens?.Invoke(model) is > 0 and var known ? known : DefaultContextTokens;
-        return (int)Math.Min(window - Math.Min(MaxTokens ?? 8_000, window / 2), _inputCaps.GetValueOrDefault(model, int.MaxValue));
+        long cap = delegated ? Math.Min(window / 4, SubagentInputTokens) : MaxInputTokens;
+        return (int)Math.Min(Math.Min(window - Math.Min(MaxTokens ?? 8_000, window / 2), cap), _inputCaps.GetValueOrDefault(model, int.MaxValue));
     }
 
     static bool Mentions(string? text, params string[] hints) =>
@@ -413,7 +415,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         room -= ((note?.Length ?? 0) + (project?.Length ?? 0)) / 3;
         int start = SummaryStart(currentUser);
         var stoppedRequests = StoppedRequests(currentUser);
-        if (!delegated && currentUser > start + 1 && HistoryCompressor.EstimateAll(_history.Skip(start)) > room * (harder ? 0.5 : CompactAt))
+        if (!delegated && !_compactionFailed && currentUser > start + 1 && HistoryCompressor.EstimateAll(_history.Skip(start)) > room * (harder ? 0.5 : CompactAt))
             start = await CompactAsync(model, room, start, currentUser, stoppedRequests, ct);
         var summary = start > 0 ? SummaryMessage(start) : null;
         if (summary != null) room -= HistoryCompressor.Estimate(summary);
@@ -484,6 +486,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 if (Role(projected[i - start]) == "tool") projected[i - start] = Shorten(projected[i - start]);
         bool compress = harder || HistoryCompressor.EstimateAll(projected) > room;
         IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, room, harder || delegated) : projected;
+        if (delegated) source = FitResults(source, room);
         var list = new List<JsonNode> { system };
         if (summary != null)
         {
@@ -529,16 +532,31 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         AddContext(list, project == null ? null : "\n\n" + project, "user");
         if ((compress || shortened) && PlanNote() is { } plan) note += "\n\n[Программа: часть шагов свёрнута]\n" + plan;
         AddContext(list, note, "tool", "user");
-        if (delegated && HistoryCompressor.EstimateAll(list) + HistoryCompressor.Estimate(definitions) + shown * ImageTokens > InputBudget(model))
-            throw new ApiException("Поручение не помещается в бюджет контекста субагента. Сузьте задачу или передайте меньше вложений.");
         return (list, shown, compress || shortened);
+    }
+
+    // A subagent never compacts its history, so results that still do not fit are cut evenly instead of failing the task.
+    static IReadOnlyList<JsonNode> FitResults(IReadOnlyList<JsonNode> messages, int room)
+    {
+        int excess = HistoryCompressor.EstimateAll(messages) - room;
+        var results = messages.Where(message => Role(message) == "tool").ToList();
+        if (excess <= 0 || results.Count == 0) return messages;
+        int chars = Math.Max(600, (HistoryCompressor.EstimateAll(results) - excess) * 3 / results.Count);
+        return [.. messages.Select(message => Role(message) == "tool" && Str(message["content"]) is { } content && content.Length > chars
+            ? new JsonObject
+            {
+                ["role"] = "tool", ["tool_call_id"] = message["tool_call_id"]?.DeepClone(),
+                ["content"] = Clip(content, chars) + "\n[Программа: результат сокращён, чтобы поместиться в память субагента; недостающее прочитай частями.]",
+            }
+            : message)];
     }
 
     (string Id, string Path)? LatestScreenshot()
     {
         var batch = _history.FindLastIndex(m => Role(m) != "tool");
         if (batch < 0 || _history[batch]["tool_calls"] is not JsonArray calls) return null;
-        var computer = calls.OfType<JsonObject>().Select(ParseCall).LastOrDefault(call => call.Name == ComputerTools.Name);
+        var computer = calls.OfType<JsonObject>().Select(ParseCall)
+            .LastOrDefault(call => call.Name == ComputerTools.Name && Str(ArgsOf(call)?["action"]) is not ("tree" or "windows"));
         if (computer == null || Str(ArgsOf(computer)?["action"]) != "screenshot") return null;
         var result = _history.Skip(batch + 1).FirstOrDefault(m => Str(m["tool_call_id"]) == computer.Id);
         return Str(result?["content"]) is { } content && content.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal)
@@ -673,7 +691,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     {
         if (!reused && outcome.Restriction == null && !ToolRegistry.IsReadOnly(call.Name))
         {
-            if (!outcome.IsError) _repeats.Clear();
+            if (!outcome.IsError && call.Name is not ("update_plan" or "ask_user")) _repeats.Clear();
             return 0;
         }
         string key = outcome.Restriction?.UnavailableShell is { } shell ? "shell:" + shell : identity ?? CallKey(call);
@@ -729,11 +747,21 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     internal static string? StopReasonOf(JsonObject message) => Str(MetaOf(message)?[StopField]);
 
-    internal async Task RecordStopAsync(string text)
+    internal async Task RecordStopAsync(string text, bool byProgram = false)
     {
         if (_history.LastOrDefault() is JsonObject last)
         {
-            EnsureMeta(last)[StopField] = text;
+            // Stopped while the answer was being checked: that answer is the result of the turn.
+            if (MetaOf(last)?.Remove(ReviewField) == true)
+            {
+                var elapsed = _turnClock.Elapsed;
+                last[MetaField]![ElapsedField] = (long)elapsed.TotalMilliseconds;
+                AssistantText?.Invoke(ExtractText(last["content"])?.Trim() ?? "", elapsed, SentAtOf(last) ?? DateTimeOffset.UtcNow);
+            }
+            var meta = EnsureMeta(last);
+            meta[StopField] = text;
+            if (byProgram) meta[ProgramStopField] = true;
+            else meta.Remove(ProgramStopField);
             await SaveAsync();
         }
         Stopped?.Invoke(text);

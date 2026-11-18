@@ -14,7 +14,7 @@ public sealed record SubagentUpdate(string Id, string Title, string Status, Date
 
 partial class AgentRunner
 {
-    const int SubagentOutputTokens = 1_200, SubagentAttachmentLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
+    const int SubagentInputTokens = 32_000, SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
     const string SubagentStepStop = "Достигнут лимит шагов субагента.";
     const string SubagentPrompt = """
         Ты — субагент Sharp Agent. Выполни порученную часть задачи. Пользуйся только доступными инструментами чтения и поиска.
@@ -25,12 +25,13 @@ partial class AgentRunner
     static readonly JsonNode AskDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"ask_user","description":"Уточнить существенную неоднозначность прямо у пользователя и дождаться ответа.","parameters":{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}},"required":["question","choices"]}}}""")!;
 
     static readonly JsonNode DelegateDefinition = JsonNode.Parse("""
-        {"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string","description":"Самодостаточное поручение с нужными требованиями пользователя."},"attachments":{"type":"array","description":"Только точные пути нужных вложений из текущего сообщения пользователя. По умолчанию вложения не передаются.","items":{"type":"string"},"maxItems":3},"steps":{"type":"integer","minimum":1,"maximum":8,"description":"Сколько шагов модели дать субагенту по сложности поручения: точечная проверка — 2–3, широкий анализ — 6–8."}},"required":["title","task","steps"]}}},"required":["tasks"]}}}
+        {"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string","description":"Самодостаточное поручение с нужными требованиями пользователя."},"attachments":{"type":"array","description":"Только точные пути нужных вложений из текущего сообщения пользователя. По умолчанию вложения не передаются.","items":{"type":"string"},"maxItems":3},"steps":{"type":"integer","minimum":2,"maximum":8,"description":"Сколько шагов модели дать субагенту по сложности поручения: точечная проверка — 2–3, широкий анализ — 6–8."}},"required":["title","task","steps"]}}},"required":["tasks"]}}}
         """)!;
 
     public bool UseSubagents { get; set; }
     public bool FastMode { get; set; }
     int SubagentStepLimit { get; init; } = MaxSubagentSteps;
+    public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
     public event Action<SubagentUpdate>? SubagentChanged;
 
@@ -129,7 +130,7 @@ partial class AgentRunner
                     if (!files.Contains(file)) files.Add(file);
                 }
             }
-            briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", 4), 1, MaxSubagentSteps)));
+            briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", 4), 2, MaxSubagentSteps)));
         }
         EnsureMeta(user)["delegated_tasks"] = (long)MaxSubagentTasks - remaining + briefs.Count;
         await SaveAsync();
@@ -149,7 +150,7 @@ partial class AgentRunner
     async Task<(string Text, bool Failed, UsageInfo Usage)> RunSubagentAsync(ToolRegistry registry, SemaphoreSlim slots, string model,
         string title, string task, List<Attachment> files, int steps, CancellationToken ct)
     {
-        var effort = _noEffortModels.Contains(model) ? null : ReasoningEffort;
+        var effort = _noEffortModels.Contains(model) ? null : SubagentEffort?.Invoke(model);
         var update = new SubagentUpdate(Guid.NewGuid().ToString("N"), title, "В очереди") { Model = model, Provider = Provider, Effort = effort };
         SubagentChanged?.Invoke(update);
         bool entered = false, failed = false;
@@ -174,7 +175,8 @@ partial class AgentRunner
             Report("Начинает работу");
             var worker = new AgentRunner(registry, store, true)
             {
-                Api = Api, Provider = Provider, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens),
+                // Providers count reasoning into the output limit, so the short answer gets room for thinking on top.
+                Api = Api, Provider = Provider, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens) + SubagentReasoningTokens,
                 ReasoningEffort = effort, SubagentStepLimit = steps, CanSpendAsync = CanSpendAsync,
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
             };
