@@ -24,15 +24,19 @@ public sealed class ComputerTools
     Process? _launched;
     Dictionary<int, AutomationElement> _refs = [];
     (Rect Window, int Left, int Top, int Width, int Height, double Scale)? _shot;
+    readonly HashSet<int> _started = [], _trusted = [];
+    int _asked;
+    CancellationToken _run;
 
-    public static IEnumerable<AgentTool> All() =>
-    [
-        new AgentTool
+    public static IEnumerable<AgentTool> All()
+    {
+        var tools = new ComputerTools();
+        return [new AgentTool
         {
             Name = Name,
             Description = "Управление программами на экране через UI Automation: запуск, окна, дерево элементов, нажатия, ввод текста, " +
                 "клавиши, скриншот. Работает с WPF, WinForms, Win32, Qt, UWP и другими; если элементов нет в дереве — щёлкай по координатам " +
-                "со скриншота. После действий программа сама сообщает заголовок окна, новые диалоги с их текстом и завершение процесса. " +
+                "со скриншота. После действий программа сама сообщает заголовок окна, до трёх его открытых диалогов с их текстом, открытое меню и завершение процесса. " +
                 "Сначала смотри tree — это дёшево; screenshot делай только для проверки внешнего вида или когда дерево пустое.",
             Parameters = Schema.Object(
                 new Prop("action", "string", "Действие.", Required: true,
@@ -44,25 +48,61 @@ public sealed class ComputerTools
                 new Prop("x", "integer", "click без element: X на последнем скриншоте."),
                 new Prop("y", "integer", "click без element: Y на последнем скриншоте."),
                 new Prop("button", "string", "click: left (по умолчанию), right или double.", Enum: ["left", "right", "double"]),
-                new Prop("text", "string", "type: текст (заменяет значение поля); keys: сочетания через пробел, например \"ctrl+s enter\"; " +
+                new Prop("text", "string", "type: текст (заменяет значение поля); keys: сочетания через пробел, например \"ctrl+a ctrl+c\"; " +
                     "tree: показать только элементы с этим текстом."),
                 new Prop("mode", "string", "type: заменить содержимое (по умолчанию) или вставить в позицию курсора.", Enum: ["replace", "insert"]),
                 new Prop("state", "string", "wait: условие для окна или элемента. Для value укажи точное ожидаемое значение в text.",
                     Enum: ["visible", "gone", "enabled", "disabled", "checked", "unchecked", "selected", "value"]),
                 new Prop("seconds", "integer", "wait: предел ожидания (по умолчанию 10, максимум 60).")),
-            Handler = new ComputerTools().RunAsync,
-            Confirmation = (a, c) => a.Optional("action") == "launch"
-                ? new ConfirmRequest("Запустить программу?", $"{a.Required("path")} {a.Optional("arguments")}".Trim(), "Запустить", Danger: true)
-                : null,
-        },
-    ];
+            Handler = tools.RunAsync,
+            Confirmation = tools.Confirm,
+        }];
+    }
+
+    ConfirmRequest? Confirm(ToolArgs a, ToolContext c)
+    {
+        var action = a.Optional("action");
+        if (action == "launch")
+            return new("Запустить программу?", $"{a.Required("path")} {a.Optional("arguments")}".Trim(), "Запустить", Danger: true);
+        if (action is not ("click" or "type" or "keys" or "scroll" or "close") || ResolveWindow(a.Optional("window")) is var window && window == IntPtr.Zero)
+            return null;
+        var pid = PidOf(window);
+        if (Allowed(action, pid)) return null;
+        _asked = pid;
+        var subject = $"«{TitleOf(window)}» — {ProcessName(pid)}";
+        return action == "close"
+            ? new("Закрыть окно другой программы?", subject, "Закрыть", Danger: true, Note: "Несохранённые данные в этом окне могут пропасть.")
+            : new("Управлять другой программой?", subject, "Разрешить", Danger: true,
+                Note: "До конца этого запуска агент сможет нажимать, вводить текст и отправлять сочетания клавиш в окна этой программы.");
+    }
+
+    // Programs this run launched are trusted; others need one approval per run, closing them needs its own.
+    bool Allowed(string action, int pid) => _started.Contains(pid) || action != "close" && _trusted.Contains(pid);
 
     async Task<string> RunAsync(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var action = a.Required("action");
         await _actions.WaitAsync(ct);
+        // UI Automation, ShowWindow and PrintWindow block on a hung program; Stop must not wait for them, the next action does.
+        var work = Task.Run(() => DispatchAsync(action, a, c, ct));
+        _ = work.ContinueWith(t =>
+        {
+            _ = t.Exception;
+            _actions.Release();
+        }, TaskScheduler.Default);
+        return await work.WaitAsync(ct);
+    }
+
+    async Task<string> DispatchAsync(string action, ToolArgs a, ToolContext c, CancellationToken ct)
+    {
         try
         {
+            if (ct != _run)
+            {
+                _run = ct;
+                _started.Clear();
+                _trusted.Clear();
+            }
             return action switch
             {
                 "launch" => await LaunchAsync(a, c, ct),
@@ -75,28 +115,32 @@ public sealed class ComputerTools
             };
         }
         catch (ElementNotAvailableException) { throw new ToolException("элемент исчез или окно закрылось — запроси tree заново."); }
-        catch (InvalidOperationException ex) { throw new ToolException("элемент не поддерживает это действие: " + ex.Message); }
-        finally { _actions.Release(); }
+        catch (ElementNotEnabledException) { throw new ToolException("выбранный элемент сейчас недоступен."); }
+        catch (InvalidOperationException) { throw new ToolException("элемент не поддерживает это действие."); }
     }
 
     async Task<string> LaunchAsync(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         string path = a.Required("path"), arguments = a.Optional("arguments") ?? "";
-        foreach (var part in arguments.Split([' ', '"'], StringSplitOptions.RemoveEmptyEntries).Append(arguments).Append(path))
-            if (Existing(part, c) is { } full)
-            {
-                c.GuardSecrets(full);
-                if (Environment.ProcessPath is { } self && PathHelper.SamePath(PathHelper.FinalPath(full), PathHelper.FinalPath(self))) throw OwnWindow();
-            }
-        if (Existing(path, c) != null) path = c.Resolve(path);
+        var program = PathPart(path, c.WorkingDirectory, c);
+        path = program ?? path;
+        var folder = Path.IsPathFullyQualified(path) && Path.GetDirectoryName(path) is { } dir ? dir : c.WorkingDirectory;
+        foreach (var full in arguments.Split([' ', '"'], StringSplitOptions.RemoveEmptyEntries).SelectMany(part => part.Split('=', 2)).Append(arguments)
+                     .Select(part => PathPart(part, folder, c)).Append(program).OfType<string>())
+        {
+            c.GuardSecrets(full);
+            c.GuardAppFiles(full);
+            if (Environment.ProcessPath is { } self && PathHelper.SamePath(PathHelper.FinalPath(full), PathHelper.FinalPath(self))) throw OwnWindow();
+        }
         var foreground = GetForegroundWindow();
         var before = TopWindows().Select(w => w.Handle).ToHashSet();
         Use(IntPtr.Zero);
         _launched?.Dispose();
-        var process = _launched = Process.Start(new ProcessStartInfo(path, arguments)
-        {
-            UseShellExecute = true, WorkingDirectory = Path.IsPathFullyQualified(path) && Path.GetDirectoryName(path) is { } dir ? dir : c.WorkingDirectory,
-        });
+        _launched = null;
+        var since = DateTime.Now;
+        Process? process;
+        try { process = _launched = Process.Start(new ProcessStartInfo(path, arguments) { UseShellExecute = true, WorkingDirectory = folder }); }
+        catch (Win32Exception ex) { throw new ToolException($"не удалось запустить «{path}»: {new Win32Exception(ex.NativeErrorCode).Message}"); }
         for (var clock = Stopwatch.StartNew(); clock.Elapsed.TotalSeconds < 30; await Task.Delay(300, ct))
         {
             var windows = TopWindows();
@@ -107,22 +151,32 @@ public sealed class ComputerTools
                 var active = GetForegroundWindow();
                 found = windows.FirstOrDefault(w => w.Handle == active && active != foreground && before.Contains(active) && SameExecutable(w.Pid, path));
             }
+            // Packaged and single-instance apps, explorer and dotnet run open their window in another process.
+            if (found.Handle == IntPtr.Zero && (process is not { HasExited: false } || clock.Elapsed.TotalSeconds > 2) &&
+                windows.Where(w => !before.Contains(w.Handle)).ToList() is { Count: > 0 } fresh)
+                found = fresh.Count == 1 ? fresh[0] : fresh.FirstOrDefault(w => w.Handle == GetForegroundWindow());
             if (found.Handle != IntPtr.Zero)
             {
+                // A program that was already running is not trusted just because launch surfaced its window.
+                if (StartedSince(found.Pid, since)) _started.Add(found.Pid);
+                GuardTitle(found.Handle);
                 Use(found.Handle);
                 return $"Запущено: «{found.Title}» (окно {Id(found.Handle)}, процесс {ProcessName(found.Pid)}, PID {found.Pid})\n" + Tree(found.Handle, null);
             }
-            if ((process == null || process.HasExited) && clock.Elapsed.TotalSeconds > 2) break;
+            if ((process == null || process.HasExited) && clock.Elapsed.TotalSeconds > 5) break;
             process?.Refresh();
         }
         var status = process is { HasExited: true } ? $"Процесс завершился с кодом {process.ExitCode}." : "Запрос запуска уже отправлен.";
         throw new ToolException(status + " Окно запуска не определено. Выбери подходящее окно по id.\n" + Windows());
     }
 
-    static string? Existing(string part, ToolContext c)
+    // Arguments are resolved from the folder the program starts in; network paths are refused by c.Resolve.
+    static string? PathPart(string part, string folder, ToolContext c)
     {
-        try { return c.Resolve(part) is var full && Path.Exists(full) ? full : null; }
+        string full;
+        try { full = PathHelper.Resolve(part, folder); }
         catch (ToolException) { return null; }
+        return Path.Exists(full) || part.IndexOfAny(['\\', '/']) >= 0 || Path.IsPathRooted(part) ? c.Resolve(full) : null;
     }
 
     string Windows()
@@ -156,7 +210,7 @@ public sealed class ComputerTools
             if (handle != IntPtr.Zero)
             {
                 if (handle != _window) element = null;
-                Use(handle);
+                if (state != "gone") Use(handle);
                 try
                 {
                     bool partial = clock.ElapsedMilliseconds >= nextPartial;
@@ -200,8 +254,17 @@ public sealed class ComputerTools
     {
         var found = ResolveWindow(window);
         if (found == IntPtr.Zero) throw new ToolException("окно не найдено — укажи id из windows.");
+        GuardTitle(found);
+        // Everything inside a minimized window reports itself as off-screen.
+        if (IsIconic(found)) ShowWindow(found, 4);
         Use(found);
         return found;
+    }
+
+    static void GuardTitle(IntPtr window)
+    {
+        if (Regex.IsMatch(TitleOf(window), @"\.env\b|chatgpt\.json", RegexOptions.IgnoreCase))
+            throw new ToolException("в этом окне открыт файл с секретами (.env с ключами или вход в ChatGPT) — смотреть и управлять им агенту нельзя.");
     }
 
     void Use(IntPtr window)
@@ -225,7 +288,8 @@ public sealed class ComputerTools
         {
             foreach (AutomationElement child in parent.CachedChildren)
             {
-                if (child.Cached.IsOffscreen)
+                // A full tree skips off-screen items; a text search also finds them so they can be scrolled into view.
+                if (child.Cached.IsOffscreen && filter == null)
                 {
                     hidden++;
                     continue;
@@ -236,19 +300,20 @@ public sealed class ComputerTools
                 else if (shown)
                 {
                     refs[++_nextRef] = child;
-                    lines.Add($"{new string(' ', filter == null ? depth * 2 : 0)}#{_nextRef} {line}");
+                    lines.Add($"{new string(' ', filter == null ? depth * 2 : 0)}#{_nextRef} {line}{(child.Cached.IsOffscreen ? " [вне экрана]" : "")}");
                 }
                 Walk(child, shown && filter == null ? depth + 1 : depth);
             }
         }
         Walk(Snapshot(window), 0);
+        foreach (var popup in PopupRoots(window)) Walk(popup, 0);
         _refs = refs;
         var head = $"Окно «{TitleOf(window)}» ({Id(window)}). Элементы (#номер — для click/type):";
         if (lines.Count == 0)
             return head + (filter != null ? $"\nЭлементов с текстом «{filter}» нет."
                 : "\nДерево пусто: программа не сообщает элементы UI Automation (игра или своя отрисовка). Сделай screenshot и щёлкай по координатам.");
         return head + "\n" + string.Join("\n", lines) + (omitted > 0 ? $"\n… ещё {omitted} элементов — сузь поиск параметром text." : "") +
-               (hidden > 0 ? $"\n(скрытых за пределами экрана пропущено: {hidden})" : "");
+               (hidden > 0 ? $"\n(вне экрана пропущено: {hidden}; найди нужный через text и покажи через scroll)" : "");
     }
 
     static AutomationElement Snapshot(IntPtr window)
@@ -256,6 +321,22 @@ public sealed class ComputerTools
         var request = new CacheRequest { TreeScope = TreeScope.Subtree, TreeFilter = Automation.ControlViewCondition };
         foreach (var property in Cached) request.Add(property);
         return AutomationElement.FromHandle(window).GetUpdatedCache(request);
+    }
+
+    // Open menus and lists that UI Automation does not already place inside the window's own tree.
+    static IEnumerable<AutomationElement> PopupRoots(IntPtr window)
+    {
+        foreach (var popup in Popups(window))
+        {
+            AutomationElement? root = null;
+            try
+            {
+                if (Automation.Compare(TreeWalker.ControlViewWalker.GetParent(AutomationElement.FromHandle(popup)), AutomationElement.RootElement))
+                    root = Snapshot(popup);
+            }
+            catch (Exception ex) when (ex is ElementNotAvailableException or ArgumentException) { }
+            if (root != null) yield return root;
+        }
     }
 
     static IEnumerable<AutomationElement> Flatten(AutomationElement root, bool offscreen = false) =>
@@ -285,27 +366,38 @@ public sealed class ComputerTools
             try { return BelongsTo(reference, window) && (offscreen || !reference.Current.IsOffscreen) ? reference : null; }
             catch (ElementNotAvailableException) { return null; }
         }
-        var root = AutomationElement.FromHandle(window);
         var exact = new OrCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, query, PropertyConditionFlags.IgnoreCase),
             new PropertyCondition(AutomationElement.NameProperty, query, PropertyConditionFlags.IgnoreCase));
         System.Windows.Automation.Condition condition = offscreen ? exact : new AndCondition(exact, new PropertyCondition(AutomationElement.IsOffscreenProperty, false));
         var inView = new AndCondition(condition, Automation.ControlViewCondition);
-        var found = root.FindFirst(TreeScope.Descendants, inView);
-        if (found != null && !found.Current.IsEnabled)
-            return root.FindFirst(TreeScope.Descendants, new AndCondition(inView, new PropertyCondition(AutomationElement.IsEnabledProperty, true))) ?? found;
-        if (found != null || !partial) return found;
-        return Flatten(Snapshot(window), offscreen).FirstOrDefault(e => e.Cached.Name.Contains(query, StringComparison.OrdinalIgnoreCase));
+        foreach (var root in PopupRoots(window).Prepend(AutomationElement.FromHandle(window)))
+            if (root.FindFirst(TreeScope.Descendants, inView) is { } found)
+                return found.Current.IsEnabled ? found
+                    : root.FindFirst(TreeScope.Descendants, new AndCondition(inView, new PropertyCondition(AutomationElement.IsEnabledProperty, true))) ?? found;
+        if (!partial) return null;
+        var matches = PopupRoots(window).Prepend(Snapshot(window)).SelectMany(root => Flatten(root, offscreen))
+            .Where(e => e.Cached.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).Take(5).ToList();
+        return matches.Count <= 1 ? matches.FirstOrDefault() : throw new ToolException(
+            $"«{query}» есть в названиях нескольких элементов: {string.Join("; ", matches.Select(Describe))} — укажи #номер из tree или точное имя.");
     }
 
     static bool BelongsTo(AutomationElement? element, IntPtr window)
     {
         for (; element != null; element = TreeWalker.RawViewWalker.GetParent(element))
-            if (element.Current.NativeWindowHandle is not 0 and var handle) return GetAncestor((IntPtr)handle, 2) == window;
+            if (element.Current.NativeWindowHandle is not 0 and var handle) return Related((IntPtr)handle, window);
         return false;
     }
 
+    // Menus and drop-down lists are separate untitled pop-up windows of the target's GUI thread.
+    static bool Related(IntPtr handle, IntPtr window) => (handle = GetAncestor(handle, 2)) == window || handle != IntPtr.Zero && Popups(window).Contains(handle);
+
     async Task<string> AfterAsync(IntPtr window, string action, ToolArgs a, CancellationToken ct)
     {
+        var pid = PidOf(window);
+        if (!Allowed(action, pid) && pid != _asked)
+            throw new ToolException("действие не выполнено: для этой программы нужно подтверждение пользователя — повтори вызов.");
+        if (action != "close") _trusted.Add(pid);
+        _asked = 0;
         if (!IsWindowEnabled(window))
             throw new ToolException("окно заблокировано. Выбери активный диалог из windows.");
         var element = a.Optional("element") is { } query
@@ -341,6 +433,18 @@ public sealed class ComputerTools
         return element.Current.IsOffscreen ? "Команда прокрутки отправлена; видимость проверь через wait." : "Элемент виден: " + Label(element);
     }
 
+    static string? Observed(object? pattern) => pattern switch
+    {
+        TogglePattern toggle => toggle.Current.ToggleState switch { ToggleState.On => "отмечен", ToggleState.Off => "не отмечен", _ => "частично отмечен" },
+        SelectionItemPattern selection => selection.Current.IsSelected ? "выбран" : "не выбран",
+        ExpandCollapsePattern expand => expand.Current.ExpandCollapseState switch
+        {
+            ExpandCollapseState.Expanded => "раскрыт", ExpandCollapseState.Collapsed => "свёрнут",
+            ExpandCollapseState.PartiallyExpanded => "раскрыт частично", _ => "без вложенных элементов",
+        },
+        _ => null,
+    };
+
     static string Label(AutomationElement e) => e.Current.Name is { Length: > 0 } name ? $"«{AgentRunner.Clip(name, 60)}»"
         : e.Current.AutomationId is { Length: > 0 } id ? id : e.Current.LocalizedControlType;
 
@@ -349,7 +453,10 @@ public sealed class ComputerTools
         if (element != null && button == "left")
         {
             object? pattern = null;
-            foreach (var kind in new[] { TogglePattern.Pattern, SelectionItemPattern.Pattern, ExpandCollapsePattern.Pattern, InvokePattern.Pattern })
+            AutomationPattern[] kinds = [TogglePattern.Pattern, SelectionItemPattern.Pattern, ExpandCollapsePattern.Pattern, InvokePattern.Pattern];
+            // A split button's and a menu item's own command is Invoke; Toggle on a WPF menu item only flips its check mark.
+            if (element.Current.ControlType is var type && (type == ControlType.SplitButton || type == ControlType.MenuItem)) kinds = [InvokePattern.Pattern, .. kinds];
+            foreach (var kind in kinds)
                 if (element.TryGetCurrentPattern(kind, out pattern)) break;
             Action? act = pattern switch
             {
@@ -362,6 +469,7 @@ public sealed class ComputerTools
             if (act != null)
             {
                 var label = Label(element);
+                var before = Observed(pattern);
                 var task = Task.Run(act, ct);
                 try { await task.WaitAsync(TimeSpan.FromSeconds(2), ct); }
                 catch (TimeoutException)
@@ -371,16 +479,13 @@ public sealed class ComputerTools
                 }
                 try
                 {
-                    return pattern switch
-                    {
-                        TogglePattern toggle => label + (toggle.Current.ToggleState switch
-                        {
-                            ToggleState.On => ": отмечен.", ToggleState.Off => ": не отмечен.", _ => ": частично отмечен.",
-                        }),
-                        SelectionItemPattern selection => label + (selection.Current.IsSelected ? ": выбран." : ": не выбран."),
-                        ExpandCollapsePattern expand => $"{label}: {expand.Current.ExpandCollapseState}.",
-                        _ => $"Действие передано элементу {label}.",
-                    };
+                    if (before == null) return $"Действие передано элементу {label}.";
+                    bool Confirmed(string? state) => pattern is SelectionItemPattern ? state == "выбран" : state != before;
+                    // Chromium, Electron and WebView2 apply the change asynchronously.
+                    var after = Observed(pattern);
+                    for (var clock = Stopwatch.StartNew(); !Confirmed(after) && clock.ElapsedMilliseconds < 1000; after = Observed(pattern))
+                        await Task.Delay(100, ct);
+                    return Confirmed(after) ? $"{label}: {after}." : $"{label}: отправлено, не подтверждено (сейчас {after}).";
                 }
                 catch (ElementNotAvailableException) { return $"Действие передано, элемент {label} исчез."; }
             }
@@ -403,20 +508,38 @@ public sealed class ComputerTools
             point = new(shot.Left + x / shot.Scale, shot.Top + y / shot.Scale);
         }
         else throw new ToolException("укажи element или сначала сделай screenshot этого окна и передай x, y по нему.");
-        var targetPoint = new NativePoint { X = (int)point.X, Y = (int)point.Y };
-        if (GetAncestor(WindowFromPoint(targetPoint), 2) != window || !SetCursorPos(targetPoint.X, targetPoint.Y) ||
-            !GetCursorPos(out var cursor) || !cursor.Equals(targetPoint) || GetAncestor(WindowFromPoint(cursor), 2) != window)
-            throw new ToolException("точка недоступна в выбранном окне — обнови screenshot или tree.");
-        var (down, up) = button == "right" ? (0x8, 0x10) : (0x2, 0x4);
-        var labelAtPoint = element != null ? Label(element) : $"точке {a.Int("x", 0)}, {a.Int("y", 0)} снимка";
-        Send(Enumerable.Repeat(new[] { Mouse(down), Mouse(up) }, button == "double" ? 2 : 1).SelectMany(x => x).ToArray());
-        return $"Щелчок ({button}) отправлен по {labelAtPoint}.";
+        var targetPoint = new System.Drawing.Point((int)point.X, (int)point.Y);
+        var covers = new List<IntPtr>();
+        try
+        {
+            // Own layered windows over the point (the mini window is hidden from screenshots) let this click pass through.
+            for (var hit = GetAncestor(WindowFromPoint(targetPoint), 2); IsOwn(PidOf(hit)) && (GetWindowLong(hit, -20) & 0x80020) == 0x80000;
+                 hit = GetAncestor(WindowFromPoint(targetPoint), 2))
+            {
+                SetWindowLong(hit, -20, GetWindowLong(hit, -20) | 0x20);
+                covers.Add(hit);
+            }
+            if (!Related(WindowFromPoint(targetPoint), window) || !SetCursorPos(targetPoint.X, targetPoint.Y) ||
+                !GetCursorPos(out var cursor) || !cursor.Equals(targetPoint) || !Related(WindowFromPoint(cursor), window))
+                throw new ToolException(IsOwn(PidOf(WindowFromPoint(targetPoint))) ? "точку закрывает окно Sharp Agent — выбери элемент по #номеру из tree."
+                    : "точка недоступна в выбранном окне — обнови screenshot или tree.");
+            var (down, up) = button == "right" ? (0x8, 0x10) : (0x2, 0x4);
+            var labelAtPoint = element != null ? Label(element) : $"точке {a.Int("x", 0)}, {a.Int("y", 0)} снимка";
+            Send(Enumerable.Repeat(new[] { Mouse(down), Mouse(up) }, button == "double" ? 2 : 1).SelectMany(x => x).ToArray());
+            return $"Щелчок ({button}) отправлен по {labelAtPoint}.";
+        }
+        finally
+        {
+            // Injected input is routed asynchronously, so the windows stay click-through until it has landed.
+            if (covers.Count > 0) await Task.Delay(150);
+            foreach (var cover in covers) SetWindowLong(cover, -20, GetWindowLong(cover, -20) & ~0x20);
+        }
     }
 
     static string Type(IntPtr window, AutomationElement? element, string text, string mode)
     {
         if (mode is not ("replace" or "insert")) throw new ToolException("неизвестный режим ввода.");
-        if (element == null) element = Focus(window, null);
+        element ??= Focus(window, null);
         if (element.Current.IsPassword) throw new ToolException("ввод в поле пароля недоступен.");
         var value = element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) ? (ValuePattern)pattern : null;
         if (value?.Current.IsReadOnly == true) throw new ToolException("поле доступно только для чтения.");
@@ -435,22 +558,32 @@ public sealed class ComputerTools
             else if (mode == "replace") Send(Key(0x08));
             if (mode == "insert") return "Вставка отправлена в выбранное поле.";
         }
-        string? actual = value?.Current.Value;
-        if (actual == null && element.TryGetCurrentPattern(TextPattern.Pattern, out var readable))
-            actual = ((TextPattern)readable).DocumentRange.GetText(text.Length + 4).TrimEnd('\r');
+        var readable = element.TryGetCurrentPattern(TextPattern.Pattern, out var found) ? (TextPattern)found : null;
+        string? Actual() => value?.Current.Value ?? readable?.DocumentRange.GetText(text.Length + 4).TrimEnd('\r');
+        var actual = Actual();
+        for (var clock = Stopwatch.StartNew(); actual != null && actual.ReplaceLineEndings() != text.ReplaceLineEndings() && clock.ElapsedMilliseconds < 1000; actual = Actual())
+            Thread.Sleep(100);
         if (actual == null) return "Замена отправлена; программа не предоставляет значение поля для проверки.";
-        if (actual.ReplaceLineEndings() != text.ReplaceLineEndings()) throw new ToolException("после замены значение поля отличается от ожидаемого.");
+        if (actual.ReplaceLineEndings() != text.ReplaceLineEndings())
+            throw new ToolException($"после замены значение поля отличается от ожидаемого: «{AgentRunner.Clip(actual.ReplaceLineEndings(" "), 200)}».");
         return "Содержимое поля заменено и проверено.";
     }
 
     static string Keys(IntPtr window, AutomationElement? element, string keys)
     {
+        var chords = keys.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(chord => (Text: chord, Codes: chord.Split('+', StringSplitOptions.RemoveEmptyEntries).Select(VirtualKey).ToArray())).ToList();
         Focus(window, element);
-        foreach (var chord in keys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        var sent = new List<string>();
+        foreach (var (chord, codes) in chords)
         {
-            var codes = chord.Split('+', StringSplitOptions.RemoveEmptyEntries).Select(VirtualKey).ToArray();
-            RequireFocus(window, element);
-            Send([.. codes.Select(code => Keyboard(code, 0)), .. codes.Reverse().Select(code => Keyboard(code, 2))]);
+            try
+            {
+                if (RequireFocus(window, element).Current.IsPassword) throw new ToolException("ввод в поле пароля недоступен.");
+                Send([.. codes.Select(code => Keyboard(code, 0)), .. codes.Reverse().Select(code => Keyboard(code, 2))]);
+            }
+            catch (ToolException ex) when (sent.Count > 0) { throw new ToolException($"{ex.Message} Уже нажато: {string.Join(" ", sent)}."); }
+            sent.Add(chord);
             element = null;
             Thread.Sleep(60);
         }
@@ -498,25 +631,42 @@ public sealed class ComputerTools
         var state = $"Окно: «{TitleOf(window)}»";
         foreach (var other in TopWindows().Where(w => GetWindow(w.Handle, 4) == window).Take(3))
         {
-            var texts = Flatten(Snapshot(other.Handle)).Where(e => e.Cached.ControlType == ControlType.Text || e.Cached.ControlType == ControlType.Button)
-                .Select(e => e.Cached.Name.Trim()).Where(name => name.Length > 0).Distinct();
+            List<string> texts;
+            // A dialog that closes while the state is read must not turn the finished action into an error.
+            try
+            {
+                texts = [.. Flatten(Snapshot(other.Handle)).Where(e => e.Cached.ControlType == ControlType.Text || e.Cached.ControlType == ControlType.Button)
+                    .Select(e => e.Cached.Name.Trim()).Where(name => name.Length > 0).Distinct()];
+            }
+            catch (Exception ex) when (ex is ElementNotAvailableException or ArgumentException) { continue; }
             state += $"\nТакже открыто окно «{other.Title}» ({Id(other.Handle)}): {AgentRunner.Clip(string.Join(" | ", texts), 400)}";
         }
+        foreach (var popup in PopupRoots(window))
+            if (string.Join(" | ", Flatten(popup).Select(e => e.Cached.Name.Trim()).Where(name => name.Length > 0).Distinct()) is { Length: > 0 } items)
+                state += $"\nОткрыто меню или список: {AgentRunner.Clip(items, 400)}";
         return state;
     }
 
     string Screenshot(IntPtr window, ToolContext c)
     {
-        if (IsIconic(window)) ShowWindow(window, 9);
         GetWindowRect(window, out var rect);
         if (DwmGetWindowAttribute(window, 9, out Rect frame, Marshal.SizeOf<Rect>()) != 0) frame = rect;
-        var image = Capture(window, rect, false);
+        var popups = Popups(window);
+        var area = rect;
+        foreach (var popup in popups)
+            if (GetWindowRect(popup, out var bounds))
+            {
+                area = Union(area, bounds);
+                frame = Union(frame, bounds);
+            }
+        var image = Stretched(window) ? null : Capture(window, popups, area, false);
         if (image == null || Blank(image))
         {
-            Activate(window);
-            image = Capture(window, rect, true) ?? throw new ToolException("не удалось снять окно.");
+            // Activating the window would close its open menu.
+            if (popups.Count == 0) Activate(window);
+            image = Capture(window, popups, area, true) ?? throw new ToolException("не удалось снять окно.");
         }
-        int left = Math.Max(0, frame.Left - rect.Left), top = Math.Max(0, frame.Top - rect.Top);
+        int left = Math.Max(0, frame.Left - area.Left), top = Math.Max(0, frame.Top - area.Top);
         var crop = new Int32Rect(left, top, Math.Min(frame.Right - frame.Left, image.PixelWidth - left), Math.Min(frame.Bottom - frame.Top, image.PixelHeight - top));
         BitmapSource shot = crop.Width > 0 && crop.Height > 0 ? new CroppedBitmap(image, crop) : image;
         double scale = Math.Min(1, (double)MaxShotSide / Math.Max(shot.PixelWidth, shot.PixelHeight));
@@ -524,12 +674,18 @@ public sealed class ComputerTools
         var path = Path.Combine(c.LogsFolder ?? c.TempFolder, $"screen_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, ImageEncoder.Encode(new PngBitmapEncoder(), shot));
-        _shot = (rect, rect.Left + left, rect.Top + top, shot.PixelWidth, shot.PixelHeight, scale);
+        _shot = (rect, area.Left + left, area.Top + top, shot.PixelWidth, shot.PixelHeight, scale);
         return $"{ShotPrefix}{path}\nОкно «{TitleOf(window)}», снимок {shot.PixelWidth}×{shot.PixelHeight}. Координаты x, y для click — по этому снимку. " +
                "Изображение передаётся тебе следующим сообщением, если модель видит картинки.";
     }
 
-    static BitmapSource? Capture(IntPtr window, Rect r, bool fromScreen)
+    // DWM stretches a window whose DPI differs from its monitor's, while PrintWindow returns it unstretched.
+    static bool Stretched(IntPtr window) => GetDpiForMonitor(MonitorFromWindow(window, 2), 0, out var dpi, out _) == 0 && GetDpiForWindow(window) != dpi;
+
+    static Rect Union(Rect a, Rect b) =>
+        new() { Left = Math.Min(a.Left, b.Left), Top = Math.Min(a.Top, b.Top), Right = Math.Max(a.Right, b.Right), Bottom = Math.Max(a.Bottom, b.Bottom) };
+
+    static BitmapSource? Capture(IntPtr window, List<IntPtr> popups, Rect r, bool fromScreen)
     {
         int width = r.Right - r.Left, height = r.Bottom - r.Top;
         if (width <= 0 || height <= 0) throw new ToolException("окно свёрнуто или не имеет размера.");
@@ -537,9 +693,13 @@ public sealed class ComputerTools
         var old = SelectObject(memory, bitmap);
         try
         {
-            bool ok = fromScreen ? BitBlt(memory, 0, 0, width, height, screen, r.Left, r.Top, 0x40CC0020) : PrintWindow(window, memory, 2);
+            bool ok = fromScreen ? BitBlt(memory, 0, 0, width, height, screen, r.Left, r.Top, 0x40CC0020) : Print(window, memory, screen, r);
+            if (ok && !fromScreen)
+                foreach (var popup in Enumerable.Reverse(popups)) Print(popup, memory, screen, r);
             SelectObject(memory, old);
-            return ok ? Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions()) : null;
+            // GDI leaves alpha at zero, which would make the image transparent once scaled or encoded.
+            return ok ? new FormatConvertedBitmap(Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions()),
+                PixelFormats.Bgr32, null, 0) : null;
         }
         finally
         {
@@ -549,47 +709,81 @@ public sealed class ComputerTools
         }
     }
 
+    // Each window is printed separately and placed at its screen position, so open menus land over the window.
+    static bool Print(IntPtr window, IntPtr target, IntPtr screen, Rect area)
+    {
+        if (!GetWindowRect(window, out var r)) return false;
+        int width = r.Right - r.Left, height = r.Bottom - r.Top;
+        IntPtr memory = CreateCompatibleDC(screen), bitmap = CreateCompatibleBitmap(screen, width, height);
+        var old = SelectObject(memory, bitmap);
+        try { return PrintWindow(window, memory, 2) && BitBlt(target, r.Left - area.Left, r.Top - area.Top, width, height, memory, 0, 0, 0xCC0020); }
+        finally
+        {
+            SelectObject(memory, old);
+            DeleteObject(bitmap);
+            DeleteDC(memory);
+        }
+    }
+
     static bool Blank(BitmapSource image)
     {
         var pixels = new int[image.PixelWidth * image.PixelHeight];
-        new FormatConvertedBitmap(image, PixelFormats.Bgr32, null, 0).CopyPixels(pixels, image.PixelWidth * 4, 0);
+        image.CopyPixels(pixels, image.PixelWidth * 4, 0);
         return pixels.All(p => (p & 0xFFFFFF) == 0);
     }
 
-    static List<(IntPtr Handle, string Title, int Pid)> TopWindows()
+    static List<IntPtr> VisibleWindows()
     {
-        var list = new List<(IntPtr, string, int)>();
+        var list = new List<IntPtr>();
         EnumWindows((handle, _) =>
         {
-            if (IsWindowVisible(handle) && TitleOf(handle) is { Length: > 0 } title &&
-                !(DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 && cloaked != 0) && PidOf(handle) is var pid && !IsOwn(pid))
-                list.Add((handle, title, pid));
+            if (IsWindowVisible(handle) && !(DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 && cloaked != 0)) list.Add(handle);
             return true;
         }, IntPtr.Zero);
         return list;
     }
 
-    static bool IsOwn(int pid)
+    static List<(IntPtr Handle, string Title, int Pid)> TopWindows() =>
+        [.. VisibleWindows().Select(handle => (Handle: handle, Title: TitleOf(handle), Pid: PidOf(handle))).Where(w => w.Title.Length > 0 && !IsOwn(w.Pid))];
+
+    // Untitled pop-ups of the same GUI thread, skipping click-through decorations such as glow frames; topmost first.
+    static List<IntPtr> Popups(IntPtr window)
     {
-        return pid == Environment.ProcessId || Environment.ProcessPath is { } self && SameExecutable(pid, self);
+        var thread = GetWindowThreadProcessId(window, out _);
+        return [.. VisibleWindows().Where(handle => handle != window && GetWindowTextLength(handle) == 0 && GetWindowThreadProcessId(handle, out _) == thread &&
+            (GetWindowLong(handle, -16) & 0x80000000) != 0 && (GetWindowLong(handle, -20) & 0x20) == 0)];
     }
 
-    static bool SameExecutable(int pid, string path)
+    static bool StartedSince(int pid, DateTime time)
     {
         try
         {
             using var process = Process.GetProcessById(pid);
-            return process.MainModule?.FileName is { } file && PathHelper.SamePath(file, path);
+            return process.StartTime >= time;
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or ArgumentException) { return false; }
     }
 
+    static bool IsOwn(int pid) => pid == Environment.ProcessId || Environment.ProcessPath is { } self && SameExecutable(pid, self);
+
+    static bool SameExecutable(int pid, string path) => ImagePath(pid) is { } file && PathHelper.SamePath(file, path);
+
     static ToolException OwnWindow() => new("управлять окнами самой программы Sharp Agent нельзя.");
 
-    static string ProcessName(int pid)
+    static string ProcessName(int pid) => Path.GetFileNameWithoutExtension(ImagePath(pid)) ?? "?";
+
+    // A limited-rights query is cheap, works for elevated processes and needs no Process object per window.
+    static string? ImagePath(int pid)
     {
-        try { return Process.GetProcessById(pid).ProcessName; }
-        catch (ArgumentException) { return "?"; }
+        var process = OpenProcess(0x1000, false, pid);
+        if (process == IntPtr.Zero) return null;
+        try
+        {
+            var path = new StringBuilder(1024);
+            int size = path.Capacity;
+            return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString() : null;
+        }
+        finally { CloseHandle(process); }
     }
 
     static int PidOf(IntPtr window)
@@ -636,9 +830,6 @@ public sealed class ComputerTools
     struct Rect { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
-    struct NativePoint { public int X, Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
     struct MouseInput { public int Dx, Dy, Data, Flags, Time; public IntPtr Extra; }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -666,18 +857,26 @@ public sealed class ComputerTools
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
-    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr window, int index);
+    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr window, int index, int value);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(System.Drawing.Point point);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr window);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
-    [DllImport("user32.dll")] static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out System.Drawing.Point point);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref int size);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr item);
