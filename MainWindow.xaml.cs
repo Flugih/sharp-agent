@@ -455,7 +455,7 @@ public partial class MainWindow
             SyncCompactChat();
             await task;
             completed = true;
-            WindowEffects.CompletionSound();
+            if (!ActiveChatWindow.IsActive) WindowEffects.CompletionSound();
             WindowEffects.Flash(ActiveChatWindow);
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || _limitDeclined)
@@ -530,9 +530,9 @@ public partial class MainWindow
             else if (_overlayOpen) CloseOverlay();
             else if (VoiceShown) CancelVoice();
             else if (IsShown(SubagentsWorkspace)) CloseSubagents();
+            else if (IsShown(BrowserPane) && (_browserExpanded || BrowserPane.IsKeyboardFocusWithin)) HideBrowser();
             else if (IsShown(QuestionHost)) StopAgent();
             else if (IsShown(PreviewPane)) ClosePreview();
-            else if (IsShown(BrowserPane) && (_browserExpanded || BrowserPane.IsKeyboardFocusWithin)) HideBrowser();
             else if (_cts != null) StopAgent();
             else return;
             e.Handled = true;

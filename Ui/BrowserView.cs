@@ -2,9 +2,9 @@ using System.Windows.Interop;
 
 namespace SharpAgent.Ui;
 
-internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? proxy) : HwndHost
+internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? proxy, string downloads) : HwndHost
 {
-    static readonly Lazy<CreateEnvironment> Loader = new(FindLoader);
+    static readonly Lazy<CreateEnvironment> Loader = new(FindLoader, LazyThreadSafetyMode.PublicationOnly);
     Callbacks? _callbacks;
     IEdgeController? _controller;
     IEdgePage? _page;
@@ -56,8 +56,12 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
         : $"Не удалось открыть браузер (0x{ex.HResult:X8}).";
 
     [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
-    sealed class Callbacks(BrowserView view, BrowserProxy? relay) : IEnvironmentReady, IControllerReady, ISourceChanged, ITitleChanged, IHistoryChanged, INavigationStarting, IPopupRequested
+    sealed class Callbacks(BrowserView view, BrowserProxy? relay)
+        : IEnvironmentReady, IControllerReady, ISourceChanged, ITitleChanged, IHistoryChanged, INavigationStarting, IPopupRequested, IPermissionRequested, IDownloadStarting
     {
+        int _popups;
+        long _lastPopup;
+
         void IEnvironmentReady.Invoke(int error, object? environment)
         {
             if (view._callbacks != this) return;
@@ -81,6 +85,8 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
                 relay?.Allow(page.BrowserPid());
                 page.OnStarting(this, out _);
                 page.OnPopup(this, out _);
+                page.OnPermission(this, out _);
+                ((IEdgePage4)page).OnDownload(this, out _);
                 page.OnSource(this, out _);
                 page.OnHistory(this, out _);
                 page.OnTitle(this, out _);
@@ -93,6 +99,7 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
 
         void INavigationStarting.Invoke(IntPtr sender, object args)
         {
+            _popups = 0;
             var request = (IStartingArgs)args;
             if (!WebUri(request.Uri(), out _)) request.Cancel(1);
         }
@@ -101,8 +108,26 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
         {
             var request = (IPopupArgs)args;
             request.Handled(1);
-            if (request.UserInitiated() != 0 && WebUri(request.Uri(), out var uri))
-                view.Dispatcher.InvokeAsync(() => view.Popup?.Invoke(uri!));
+            var now = Environment.TickCount64;
+            // User gestures are cheap to fake, so one page still gets a limited number of tabs.
+            if (request.UserInitiated() == 0 || !WebUri(request.Uri(), out var uri) || now - _lastPopup < 1000 || _popups >= 20) return;
+            _popups++;
+            _lastPopup = now;
+            view.Dispatcher.InvokeAsync(() => view.Popup?.Invoke(uri!));
+        }
+
+        // Pages get no camera, microphone, location, clipboard or other permissions.
+        void IPermissionRequested.Invoke(IntPtr sender, object args) => ((IPermissionArgs)args).State(2);
+
+        void IDownloadStarting.Invoke(IntPtr sender, object args)
+        {
+            var request = (IDownloadArgs)args;
+            var deferral = request.GetDeferral();
+            view.Dispatcher.InvokeAsync(() =>
+            {
+                try { view.AskDownloadPath(request); }
+                finally { deferral.Complete(); }
+            });
         }
 
         public void Invoke(IntPtr sender, object args)
@@ -113,6 +138,14 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
             view.Title = string.IsNullOrWhiteSpace(title) ? view.Address.Host : title;
             view.Changed?.Invoke();
         }
+    }
+
+    void AskDownloadPath(IDownloadArgs request)
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog { Title = "Сохранить загрузку", FileName = Path.GetFileName(request.ResultFilePath()) };
+        if (Directory.Exists(downloads)) dialog.InitialDirectory = downloads;
+        if (_host != IntPtr.Zero && dialog.ShowDialog(Window.GetWindow(this)) == true) request.SetResultFilePath(dialog.FileName);
+        else request.Cancel(1);
     }
 
     static bool WebUri(string text, out Uri? uri) => Uri.TryCreate(text, UriKind.Absolute, out uri) && uri.Scheme is "http" or "https" && uri.UserInfo.Length == 0;

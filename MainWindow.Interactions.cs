@@ -5,6 +5,7 @@ public partial class MainWindow
     async Task<string> AskClarificationAsync(Clarification question, CancellationToken ct)
     {
         CloseSubagents();
+        ExpandBrowser(false);
         var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var choices = new WrapPanel();
         foreach (var choice in question.Choices)
@@ -61,7 +62,11 @@ public partial class MainWindow
         {
             _questionCard = _questionFocus = null;
             PlaceQuestion();
-            if (IsActive) InputBox.Focus();
+            if (IsActive)
+            {
+                ExpandBrowser(false);
+                InputBox.Focus();
+            }
             else if (_compactChat is { IsActive: true } compact) compact.FocusInput();
         }
     }

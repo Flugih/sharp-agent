@@ -8,6 +8,8 @@ public static class FileActions
 
     public static event Action<string, bool>? Notify;
 
+    static bool _routeNoticeShown;
+
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     static extern int SHParseDisplayName(string name, nint bindContext, out nint pidl, uint sfgaoIn, out uint sfgaoOut);
 
@@ -75,7 +77,11 @@ public static class FileActions
     {
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto")
         {
-            if (AppNetwork.CustomRoute) RaiseNotify("Ссылка откроется во внешней программе с её сетевыми настройками.", false);
+            if (AppNetwork.CustomRoute && !_routeNoticeShown)
+            {
+                _routeNoticeShown = true;
+                Notify?.Invoke("Ссылка откроется во внешней программе с её сетевыми настройками.", false);
+            }
             Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }, "Не удалось открыть браузер: ");
         }
         else Notify?.Invoke("Эту ссылку открыть нельзя: " + url, true);
@@ -94,7 +100,9 @@ public static class FileActions
     public static ContextMenu BuildMenu(Window owner, string path, params MenuItem[] extra)
     {
         bool isFolder = Directory.Exists(path);
-        var open = Item(isFolder ? "Открыть папку" : "Открыть в программе по умолчанию", Glyphs.Open, () => Open(owner, path));
+        // Links and cards also appear in the mini window, so the dialog goes over the window the menu was opened in.
+        var open = Item(isFolder ? "Открыть папку" : "Открыть в программе по умолчанию", Glyphs.Open,
+            () => Open(Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) ?? owner, path));
         if (isFolder) open.FontWeight = FontWeights.SemiBold;
         var menu = new ContextMenu { Items = { open, Item("Показать в папке", Glyphs.Reveal, () => Reveal(path)) } };
         if (!isFolder) menu.Items.Add(Item("Открыть с помощью…", Glyphs.OpenWith, () => OpenWith(path)));

@@ -35,17 +35,17 @@ public partial class MainWindow
     {
         if (!IsShown(BrowserPane)) return;
         BrowserPane.Visibility = Visibility.Collapsed;
-        _browserExpanded = false;
-        UpdateBrowserExpand();
-        ApplyPreviewLayout();
+        ExpandBrowser(false);
     }
 
     void BrowserClose_Click(object sender, RoutedEventArgs e) { HideBrowser(); InputBox.Focus(); }
     void BrowserNew_Click(object sender, RoutedEventArgs e) => AddBrowserTab(null);
     void BrowserNetwork_Click(object sender, RoutedEventArgs e) => OpenSettings(NetworkTestButton);
-    void BrowserExpand_Click(object sender, RoutedEventArgs e)
+    void BrowserExpand_Click(object sender, RoutedEventArgs e) => ExpandBrowser(!_browserExpanded);
+
+    void ExpandBrowser(bool expanded)
     {
-        _browserExpanded = !_browserExpanded;
+        _browserExpanded = expanded;
         UpdateBrowserExpand();
         ApplyPreviewLayout();
     }
@@ -143,7 +143,7 @@ public partial class MainWindow
         {
             var mode = _config.Network.Mode;
             var proxy = mode is NetworkMode.Proxy or NetworkMode.Vpn ? _browserProxy ??= new() : null;
-            var page = tab.Page = new BrowserView(uri, mode, proxy);
+            var page = tab.Page = new BrowserView(uri, mode, proxy, _toolContext.WorkingDirectory);
             tab.Title.Text = uri.Host;
             page.Changed += () =>
             {

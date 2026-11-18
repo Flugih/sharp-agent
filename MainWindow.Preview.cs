@@ -248,7 +248,6 @@ public partial class MainWindow
         AutomationProperties.SetName(card, $"{title}, {subtitle}");
         card.Click += (_, _) =>
         {
-            if (_compactChat is { IsVisible: true } compact) compact.Close();
             if (changed) ShowPreview(path, diff);
             else OpenInApp(path);
         };
