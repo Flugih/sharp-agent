@@ -20,11 +20,11 @@
                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <StackPanel x:Name="Transcript"/>
-                    <TextBlock x:Name="StatusText" Foreground="{DynamicResource Success}" TextTrimming="CharacterEllipsis"
+                    <TextBlock x:Name="StatusText" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"
                                Visibility="Collapsed" Margin="0,6,4,6" AutomationProperties.LiveSetting="Polite"/>
                     <TextBox x:Name="StreamText" IsReadOnly="True" IsTabStop="False" TextWrapping="Wrap" Padding="0"
                              Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}"
-                             Visibility="Collapsed" Margin="0,5,4,6" AutomationProperties.Name="Ответ модели"/>
+                             Visibility="Collapsed" Margin="0,5,4,6" AutomationProperties.Name="Ответ агента"/>
                     <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource DangerText}"
                                Visibility="Collapsed" Margin="0,8,4,8" AutomationProperties.LiveSetting="Assertive"/>
                 </StackPanel>

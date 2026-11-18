@@ -1,3 +1,5 @@
+using System.Windows.Interop;
+
 namespace SharpAgent.Ui;
 
 public partial class CompactChatWindow : Window
@@ -33,12 +35,20 @@ public partial class CompactChatWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        WindowEffects.ExcludeFromCapture(this);
+        (PresentationSource.FromVisual(this) as HwndSource)?.AddHook(DisplayHook);
     }
 
-    internal void SetStatus(string text)
+    nint DisplayHook(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
+    {
+        // Display, taskbar or DPI changes can leave the window off its monitor; re-fit once WPF has applied them.
+        if (message is 0x007E or 0x001A or 0x02E0) Dispatcher.InvokeAsync(Anchor, DispatcherPriority.Background);
+        return 0;
+    }
+
+    internal void SetStatus(string text, string color = "TextMuted")
     {
         StatusText.Text = text;
+        StatusText.SetResourceReference(TextBlock.ForegroundProperty, color);
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
         UpdateTranscript(scroll: true);
     }
@@ -95,13 +105,14 @@ public partial class CompactChatWindow : Window
     {
         TranscriptCard.Visibility = Transcript.Children.Count > 0 || new UIElement[] { StatusText, StreamText, ErrorText }
             .Any(item => item.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
-        if (scroll) TranscriptScroll.ScrollToEnd();
+        // Layout has not run yet, so the offsets still say whether the reader was at the bottom before this change.
+        if (scroll && TranscriptScroll.VerticalOffset >= TranscriptScroll.ScrollableHeight - 1) TranscriptScroll.ScrollToEnd();
     }
 
     void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        var work = SystemParameters.WorkArea;
-        Left = Math.Max(work.Left, work.Right - ActualWidth - 12);
+        var work = WorkArea();
+        Left = work.Right - ActualWidth - 12;
         _anchorBottom = work.Bottom - 13;
         Anchor();
         FocusInput();
@@ -111,7 +122,21 @@ public partial class CompactChatWindow : Window
 
     void Anchor()
     {
-        if (_anchorBottom is { } bottom) Top = Math.Max(SystemParameters.VirtualScreenTop, bottom - ActualHeight);
+        if (_anchorBottom is not { } bottom) return;
+        var work = WorkArea();
+        Left = Fit(Left, ActualWidth, work.Left, work.Right);
+        Top = Fit(bottom - ActualHeight, ActualHeight, work.Top, work.Bottom);
+    }
+
+    static double Fit(double start, double size, double min, double max) => Math.Max(min, Math.Min(start, max - size));
+
+    Rect WorkArea()
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        return PresentationSource.FromVisual(this) is { CompositionTarget: { } target } &&
+            GetMonitorInfo(MonitorFromWindow(new WindowInteropHelper(this).Handle, 2), ref info)
+            ? Rect.Transform(new(info.Left, info.Top, info.Right - info.Left, info.Bottom - info.Top), target.TransformFromDevice)
+            : SystemParameters.WorkArea;
     }
 
     void Pill_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -119,6 +144,7 @@ public partial class CompactChatWindow : Window
         if (e.ButtonState != MouseButtonState.Pressed) return;
         DragMove();
         _anchorBottom = Top + ActualHeight;
+        Anchor();
     }
 
     void ActionButton_Click(object sender, RoutedEventArgs e)
@@ -145,4 +171,10 @@ public partial class CompactChatWindow : Window
         e.Handled = true;
         Stop?.Invoke();
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MonitorInfo { public int Size, MonitorLeft, MonitorTop, MonitorRight, MonitorBottom, Left, Top, Right, Bottom, Flags; }
+
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr window, int flags);
+    [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 }

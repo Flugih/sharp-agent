@@ -166,12 +166,14 @@ public partial class MainWindow
         ResetProgressStep();
         EnsureProgress().Start();
         SetProgressHint("Подготовка запроса…");
+        _lastErrorCard = null;
         _compactChat?.ShowError(null);
+        _compactChat?.ShowDraft(null);
     }
 
     void SetProgressHint(string? text)
     {
-        if (text != null) _compactChat?.SetStatus(text);
+        if (text != null && _cts != null && !_suppressAnimation) _compactChat?.SetStatus(text);
         if (_chatView.ProgressHint != null)
         {
             _chatView.Progress?.Items.Children.Remove(_chatView.ProgressHint);
@@ -202,7 +204,7 @@ public partial class MainWindow
     {
         ResetProgressStep();
         SetProgressHint(compressed ? "Сжатие контекста…" : null);
-        if (!compressed) _compactChat?.SetStatus("Размышление…");
+        if (!compressed) _compactChat?.SetStatus("Думаю…");
     }
 
     void OnModelProgress(ModelProgress progress)
@@ -264,7 +266,7 @@ public partial class MainWindow
     void ClearDraft(bool interrupted = false)
     {
         _draftTimer?.Stop();
-        _compactChat?.ShowDraft(null);
+        var partial = interrupted && !_draftIsProgress ? _draftText.ToString() : null;
         if (interrupted && _draftText.Length > 0)
         {
             _draftIsProgress = true;
@@ -275,6 +277,7 @@ public partial class MainWindow
         _draftText.Clear();
         _draftView = null;
         _draftIsProgress = false;
+        _compactChat?.ShowDraft(partial);
     }
 
     void OnAssistantText(string markdown, TimeSpan? elapsed, DateTimeOffset sentAt)
@@ -284,7 +287,7 @@ public partial class MainWindow
         {
             ShowFinalAnswer(markdown, elapsed, sentAt);
             SyncCompactChat();
-            _compactChat?.SetStatus(string.IsNullOrWhiteSpace(markdown) ? "Запрос завершён" : "Ответ готов");
+            _compactChat?.SetStatus(string.IsNullOrWhiteSpace(markdown) ? "Запрос завершён" : "Ответ готов", "Success");
         }
         else if (!string.IsNullOrWhiteSpace(markdown)) AddProgressItem(ProgressText(markdown, "Промежуточное сообщение"));
     }

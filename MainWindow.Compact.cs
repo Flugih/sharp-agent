@@ -19,11 +19,6 @@ public partial class MainWindow
 
     void CompactMode_Click(object sender, RoutedEventArgs e)
     {
-        if (_compactChat != null)
-        {
-            ActivateChatWindow();
-            return;
-        }
         if (VoiceShown || !MicButton.IsEnabled)
         {
             ShowToast("Завершите голосовой ввод перед переключением окна.", ToastKind.Warning);
@@ -57,11 +52,13 @@ public partial class MainWindow
         if (_lastErrorCard?.Tag is string error) compact.ShowError(error);
         if (_cts != null)
         {
-            compact.SetStatus(_questionCard == null ? "Размышление…" : "Жду ответа");
+            compact.SetStatus(_questionCard == null ? "Думаю…" : "Жду ответа");
             if (!_draftIsProgress) compact.ShowDraft(_draftText.ToString());
         }
         else if (_pendingAttachments.Count > 0) compact.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");
         compact.Show();
+        // Only Computer Use needs this: its screenshots must show the desktop behind the window.
+        if (_toolContext is { ComputerUse: true, SandboxRoot: null }) WindowEffects.ExcludeFromCapture(compact);
         Hide();
         ActivateChatWindow();
         PlaceQuestion();
@@ -74,13 +71,19 @@ public partial class MainWindow
         var history = _agent.History;
         List<(JsonObject Message, string? File)> entries = [];
         var functions = new Dictionary<string, JsonObject>();
-        int firstResult = history.Count;
-        for (int i = history.Count - 1; i >= 0 && entries.Count < 16; i--)
+        var turnPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int firstResult = history.Count, messages = 0;
+        for (int i = history.Count - 1; i >= 0 && messages < 16; i--)
         {
             if (history[i] is not JsonObject message) continue;
             var role = AgentRunner.Role(message);
             if (role == "user" || role == "assistant" && message["tool_calls"] == null && AgentRunner.ReviewOf(message) == null &&
-                !string.IsNullOrWhiteSpace(AgentRunner.ExtractText(message["content"]))) entries.Add((message, null));
+                !string.IsNullOrWhiteSpace(AgentRunner.ExtractText(message["content"])))
+            {
+                entries.Add((message, null));
+                messages++;
+            }
+            if (role == "user") turnPaths.Clear();
             if (role != "tool" || AgentRunner.FileChangeUndone(message)) continue;
             var output = JsonUtil.Str(message["content"]) ?? "";
             if (ToolRegistry.IsErrorOutput(output)) continue;
@@ -101,7 +104,7 @@ public partial class MainWindow
                 var args = JsonUtil.Str(function["arguments"]) ?? "{}";
                 path = Produced(name, args, name is "write_file" or "edit_file" ? ResultPath(output) : null, output)?.Path;
             }
-            if (path != null && File.Exists(path)) entries.Add((message, path));
+            if (path != null && turnPaths.Add(path) && File.Exists(path)) entries.Add((message, path));
         }
         entries.Reverse();
         _compactChat.SyncHistory(entries.ToArray());

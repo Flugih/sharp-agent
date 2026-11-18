@@ -259,7 +259,7 @@ public partial class MainWindow
 
     void AddError(string text, ErrorFix fix = ErrorFix.None)
     {
-        _compactChat?.SetStatus("Ошибка");
+        _compactChat?.SetStatus("Ошибка", "DangerText");
         _compactChat?.ShowError(text);
         if (!IsActive)
         {
@@ -313,7 +313,7 @@ public partial class MainWindow
 
     void AddNotice(string text, bool warning = false, bool inProgress = true)
     {
-        if (warning || !inProgress) _compactChat?.SetStatus(text.ReplaceLineEndings(" "));
+        if ((warning || !inProgress) && !_suppressAnimation) _compactChat?.SetStatus(text.ReplaceLineEndings(" "), warning ? "Warning" : "TextMuted");
         var row = new DockPanel { Margin = inProgress ? new(0, 6, 0, 6) : new(0, 8, 0, 8) };
         if (warning) row.Children.Add(GlyphText(Glyphs.Warning, 13, "Warning", new(0, 2, 8, 0), false));
         row.Children.Add(SelectableText(text, inProgress ? "TextMuted" : "Text", fontSize: inProgress ? 13 : 14));

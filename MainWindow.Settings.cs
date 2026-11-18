@@ -31,7 +31,8 @@ public partial class MainWindow
 
     private void ShowToast(string text, ToastKind kind = ToastKind.Info, string? actionText = null, Action? action = null)
     {
-        _compactChat?.SetStatus(text.ReplaceLineEndings(" "));
+        _compactChat?.SetStatus(text.ReplaceLineEndings(" "),
+            kind switch { ToastKind.Success => "Success", ToastKind.Warning => "Warning", ToastKind.Error => "DangerText", _ => "TextMuted" });
         _toastVersion++;
         ToastText.Text = text;
         (ToastIcon.Text, ToastIcon.Foreground) = kind switch
