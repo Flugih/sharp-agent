@@ -34,6 +34,7 @@ public partial class MainWindow
 
     private void ApplyProvider()
     {
+        if (AnyRunning) return;
         var provider = _config.Provider;
         if (!ReferenceEquals(_provider, _tooken)) _provider?.Dispose();
         _tooken?.Dispose();
@@ -66,8 +67,7 @@ public partial class MainWindow
         }
         _loadingModelCatalog = _provider != null;
         _selectedModel = _config.Model;
-        ModelButton.ToolTip = $"Модель {ProviderName(provider)}, которая отвечает в чате. Щелчок — выбрать модель" +
-            (Enum.GetValues<AgentProvider>().Count(IsReady) > 1 ? " или провайдера" : "") + (_provider is ChatGptClient ? ".\nЗапросы расходуют вашу подписку ChatGPT" : "");
+        ModelButton.ToolTip = ProviderName(provider) + (_provider is ChatGptClient ? "\nЗапросы расходуют вашу подписку ChatGPT" : "");
         UpdateModelEffort();
         HideBanner("plan");
         if (_provider != null) HideBanner("key");
@@ -105,7 +105,7 @@ public partial class MainWindow
         Inlines =
         {
             new Run("Запросы в Sharp Agent будут расходовать вашу подписку ChatGPT. Сколько из неё уходит на Sharp Agent и какие у него лимиты, смотрите и меняйте в настройках ChatGPT. "),
-            MakeLink("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl), "Открыть настройки использования ChatGPT"),
+            MakeLink("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
         },
     }, closeText: "Понятно");
 
@@ -128,7 +128,7 @@ public partial class MainWindow
         catch (ApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
             if (!ReferenceEquals(api, _provider)) return;
-            if (provider == AgentProvider.ChatGpt && !IsReady(provider) && _cts == null) ApplyProvider();
+            if (provider == AgentProvider.ChatGpt && !IsReady(provider) && !AnyRunning) ApplyProvider();
             else
                 ShowBanner("key", Glyphs.Warning, provider switch
                 {
@@ -290,7 +290,7 @@ public partial class MainWindow
 
     private void SwitchProvider(AgentProvider provider)
     {
-        if (_cts != null)
+        if (AnyRunning)
         {
             ShowToast("Остановите агента, чтобы переключить провайдера", ToastKind.Warning);
             return;
@@ -369,7 +369,7 @@ public partial class MainWindow
                 Children = { heading, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Children = { caption, chevron } } },
             },
             MinWidth = 102, Height = 40, Padding = new Thickness(8, 0, 8, 0), HorizontalAlignment = HorizontalAlignment.Center,
-            HorizontalContentAlignment = HorizontalAlignment.Center, ToolTip = "Выбрать модель",
+            HorizontalContentAlignment = HorizontalAlignment.Center,
         };
         AutomationProperties.SetName(choose, "Выбрать модель · " + modelName);
         choose.Click += (_, _) => chevron.Text = toggleModels() ? Glyphs.ChevronDown : Glyphs.ChevronRight;

@@ -233,7 +233,7 @@ public partial class MainWindow
         Grid.SetColumn(action, 2);
         var card = new Button
         {
-            Style = Theme.Style("FileCard"), HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 320, MaxWidth = 480,
+            Style = Theme.Style("FileCard"),
             Content = new Grid
             {
                 ColumnDefinitions = { new() { Width = GridLength.Auto }, new(), new() { Width = GridLength.Auto } },
@@ -532,7 +532,7 @@ public partial class MainWindow
     {
         var open = new Button
         {
-            Content = "Открыть во внешней программе", ToolTip = "Открыть документ в приложении Windows",
+            Content = "Открыть во внешней программе",
             HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 16, 0, 0),
         };
         AutomationProperties.SetName(open, "Открыть во внешней программе");

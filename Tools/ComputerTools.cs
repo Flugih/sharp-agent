@@ -19,7 +19,7 @@ public sealed class ComputerTools
         ControlType.ListItem, ControlType.TabItem, ControlType.Hyperlink, ControlType.Slider, ControlType.TreeItem, ControlType.DataItem,
         ControlType.SplitButton, ControlType.Document,
     ];
-    IntPtr _window;
+    IntPtr _window, _browserWindow;
     int _pid, _nextRef;
     Process? _launched;
     Dictionary<int, AutomationElement> _refs = [];
@@ -43,7 +43,7 @@ public sealed class ComputerTools
                     Enum: ["launch", "windows", "tree", "click", "type", "keys", "scroll", "screenshot", "wait", "close"]),
                 new Prop("path", "string", "launch: программа, ярлык или файл."),
                 new Prop("arguments", "string", "launch: аргументы командной строки."),
-                new Prop("window", "string", "Окно: id из windows/launch или часть заголовка. По умолчанию — текущее окно."),
+                new Prop("window", "string", "Окно: id из windows/launch, browser для встроенного браузера или часть заголовка. По умолчанию — текущее окно."),
                 new Prop("element", "string", "Элемент: #номер из последнего tree либо имя или AutomationId. Для scroll укажи элемент, который нужно показать."),
                 new Prop("x", "integer", "click без element: X на последнем скриншоте."),
                 new Prop("y", "integer", "click без element: Y на последнем скриншоте."),
@@ -61,13 +61,14 @@ public sealed class ComputerTools
 
     ConfirmRequest? Confirm(ToolArgs a, ToolContext c)
     {
+        _browserWindow = c.BrowserWindow?.Invoke() ?? IntPtr.Zero;
         var action = a.Optional("action");
         if (action == "launch")
             return new("Запустить программу?", $"{a.Required("path")} {a.Optional("arguments")}".Trim(), "Запустить", Danger: true);
         if (action is not ("click" or "type" or "keys" or "scroll" or "close") || ResolveWindow(a.Optional("window")) is var window && window == IntPtr.Zero)
             return null;
         var pid = PidOf(window);
-        if (Allowed(action, pid)) return null;
+        if (IsBrowserWindow(window) || Allowed(action, pid)) return null;
         _asked = pid;
         var subject = $"«{TitleOf(window)}» — {ProcessName(pid)}";
         return action == "close"
@@ -76,8 +77,8 @@ public sealed class ComputerTools
                 Note: "До конца этого запуска агент сможет нажимать, вводить текст и отправлять сочетания клавиш в окна этой программы.");
     }
 
-    // Programs this run launched are trusted; others need one approval per run, closing them needs its own.
-    bool Allowed(string action, int pid) => _started.Contains(pid) || action != "close" && _trusted.Contains(pid);
+    // Programs this run launched are trusted; the embedded browser is part of this run.
+    bool Allowed(string action, int pid) => IsBrowserWindow(_window) || _started.Contains(pid) || action != "close" && _trusted.Contains(pid);
 
     async Task<string> RunAsync(ToolArgs a, ToolContext c, CancellationToken ct)
     {
@@ -97,6 +98,7 @@ public sealed class ComputerTools
     {
         try
         {
+            _browserWindow = c.BrowserWindow?.Invoke() ?? IntPtr.Zero;
             if (ct != _run)
             {
                 _run = ct;
@@ -182,8 +184,9 @@ public sealed class ComputerTools
     string Windows()
     {
         var windows = TopWindows();
-        return windows.Count == 0 ? "Видимых окон других программ нет." : "Окна (id — заголовок — процесс):\n" + string.Join("\n",
-            windows.Select(w => $"{(w.Handle == _window ? "* " : "")}{Id(w.Handle)} — {AgentRunner.Clip(w.Title, 90)} — {ProcessName(w.Pid)}"));
+        var lines = windows.Select(w => $"{(w.Handle == _window ? "* " : "")}{Id(w.Handle)} — {AgentRunner.Clip(w.Title, 90)} — {ProcessName(w.Pid)}").ToList();
+        if (IsBrowserWindow(_browserWindow)) lines.Insert(0, $"{(_browserWindow == _window ? "* " : "")}browser — встроенный браузер Sharp Agent — {TitleOf(_browserWindow)}");
+        return lines.Count == 0 ? "Видимых окон других программ нет." : "Окна (id — заголовок — процесс):\n" + string.Join("\n", lines);
     }
 
     async Task<string> WaitAsync(ToolArgs a, CancellationToken ct)
@@ -239,6 +242,8 @@ public sealed class ComputerTools
 
     IntPtr ResolveWindow(string? window)
     {
+        if (window?.Equals("browser", StringComparison.OrdinalIgnoreCase) == true)
+            return IsBrowserWindow(_browserWindow) ? _browserWindow : IntPtr.Zero;
         if (window == null || window.Equals(Id(_window), StringComparison.OrdinalIgnoreCase))
             return IsWindowVisible(_window) && PidOf(_window) == _pid ? _window : IntPtr.Zero;
         var windows = TopWindows();
@@ -381,15 +386,22 @@ public sealed class ComputerTools
             $"«{query}» есть в названиях нескольких элементов: {string.Join("; ", matches.Select(Describe))} — укажи #номер из tree или точное имя.");
     }
 
-    static bool BelongsTo(AutomationElement? element, IntPtr window)
+    bool BelongsTo(AutomationElement? element, IntPtr window)
     {
         for (; element != null; element = TreeWalker.RawViewWalker.GetParent(element))
-            if (element.Current.NativeWindowHandle is not 0 and var handle) return Related((IntPtr)handle, window);
+            if (element.Current.NativeWindowHandle is not 0 and var handle && Related((IntPtr)handle, window)) return true;
         return false;
     }
 
     // Menus and drop-down lists are separate untitled pop-up windows of the target's GUI thread.
-    static bool Related(IntPtr handle, IntPtr window) => (handle = GetAncestor(handle, 2)) == window || handle != IntPtr.Zero && Popups(window).Contains(handle);
+    bool Related(IntPtr handle, IntPtr window) => IsDescendantOf(handle, window) || Popups(window).Contains(GetAncestor(handle, 2));
+
+    static bool IsDescendantOf(IntPtr handle, IntPtr window)
+    {
+        for (var current = handle; current != IntPtr.Zero; current = GetAncestor(current, 1))
+            if (current == window) return true;
+        return false;
+    }
 
     async Task<string> AfterAsync(IntPtr window, string action, ToolArgs a, CancellationToken ct)
     {
@@ -536,7 +548,7 @@ public sealed class ComputerTools
         }
     }
 
-    static string Type(IntPtr window, AutomationElement? element, string text, string mode)
+    string Type(IntPtr window, AutomationElement? element, string text, string mode)
     {
         if (mode is not ("replace" or "insert")) throw new ToolException("неизвестный режим ввода.");
         element ??= Focus(window, null);
@@ -569,7 +581,7 @@ public sealed class ComputerTools
         return "Содержимое поля заменено и проверено.";
     }
 
-    static string Keys(IntPtr window, AutomationElement? element, string keys)
+    string Keys(IntPtr window, AutomationElement? element, string keys)
     {
         var chords = keys.Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Select(chord => (Text: chord, Codes: chord.Split('+', StringSplitOptions.RemoveEmptyEntries).Select(VirtualKey).ToArray())).ToList();
@@ -596,29 +608,32 @@ public sealed class ComputerTools
         return $"Окну «{TitleOf(window)}» отправлена команда закрыться.";
     }
 
-    static AutomationElement Focus(IntPtr window, AutomationElement? element)
+    AutomationElement Focus(IntPtr window, AutomationElement? element)
     {
         Activate(window);
         if (element != null && !element.Current.HasKeyboardFocus) element.SetFocus();
         return RequireFocus(window, element);
     }
 
-    static AutomationElement RequireFocus(IntPtr window, AutomationElement? element)
+    AutomationElement RequireFocus(IntPtr window, AutomationElement? element)
     {
         var focused = AutomationElement.FocusedElement;
-        if (!IsWindowEnabled(window) || GetForegroundWindow() != window || !BelongsTo(focused, window) || element != null && !Automation.Compare(element, focused))
+        if (!IsWindowEnabled(window) || GetForegroundWindow() != ActivationWindow(window) || !BelongsTo(focused, window) || element != null && !Automation.Compare(element, focused))
             throw new ToolException("фокус ввода вне выбранной цели — обнови tree.");
         return focused;
     }
 
-    static void Activate(IntPtr window)
+    void Activate(IntPtr window)
     {
-        if (IsIconic(window)) ShowWindow(window, 9);
-        if (GetForegroundWindow() == window) return;
-        SetForegroundWindow(window);
-        if (!SpinWait.SpinUntil(() => GetForegroundWindow() == window, 250))
+        var target = ActivationWindow(window);
+        if (IsIconic(target)) ShowWindow(target, 9);
+        if (GetForegroundWindow() == target) return;
+        SetForegroundWindow(target);
+        if (!SpinWait.SpinUntil(() => GetForegroundWindow() == target, 250))
             throw new ToolException("Windows не передала фокус выбранному окну.");
     }
+
+    IntPtr ActivationWindow(IntPtr window) => IsBrowserWindow(window) ? GetAncestor(window, 2) : window;
 
     string State(IntPtr window)
     {
@@ -769,6 +784,8 @@ public sealed class ComputerTools
     static bool SameExecutable(int pid, string path) => ImagePath(pid) is { } file && PathHelper.SamePath(file, path);
 
     static ToolException OwnWindow() => new("управлять окнами самой программы Sharp Agent нельзя.");
+
+    bool IsBrowserWindow(IntPtr window) => window != IntPtr.Zero && window == _browserWindow && IsWindowVisible(window);
 
     static string ProcessName(int pid) => Path.GetFileNameWithoutExtension(ImagePath(pid)) ?? "?";
 

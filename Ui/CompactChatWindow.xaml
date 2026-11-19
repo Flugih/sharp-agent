@@ -20,6 +20,9 @@
                              Visibility="Collapsed" Margin="0,5,4,6" AutomationProperties.Name="Ответ агента"/>
                     <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="{DynamicResource DangerText}"
                                Visibility="Collapsed" Margin="0,8,4,8" AutomationProperties.LiveSetting="Assertive"/>
+                    <Button x:Name="ChangesPill" Style="{StaticResource PillButton}" HorizontalAlignment="Center"
+                            Margin="0,6" Visibility="Collapsed" ToolTip="Открыть последние изменения справа"
+                            AutomationProperties.Name="Открыть последние изменения справа"/>
                 </StackPanel>
             </ScrollViewer>
         </Border>
@@ -59,7 +62,7 @@
                     <Button Style="{StaticResource IconButton}" Content="&#xE8A7;" Margin="0,0,4,0"
                             ToolTip="Открыть полное окно" AutomationProperties.Name="Открыть полное окно" Click="FullWindow_Click"/>
                     <Button x:Name="ActionButton" Style="{StaticResource SendButton}"
-                            Content="&#xE74A;" ToolTip="Отправить" AutomationProperties.Name="Отправить" Click="ActionButton_Click"/>
+                            Content="&#xE74A;" AutomationProperties.Name="Отправить" Click="ActionButton_Click"/>
                 </StackPanel>
             </Grid>
         </Border>

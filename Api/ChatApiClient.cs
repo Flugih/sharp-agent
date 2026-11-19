@@ -11,9 +11,8 @@ public sealed record UsagePage(List<UsageEntry> Entries, string? NextCursor);
 
 public interface IChatProvider : IDisposable
 {
-    event Action<int, int>? Retrying;
     Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true);
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null);
     Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct);
 }
 
@@ -62,18 +61,20 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
         string.Join(", ", new[] { status is { } number ? "HTTP " + number : null, code != null ? "код: " + code : null,
             requestId != null ? "request_id: " + requestId : null }.OfType<string>()) is { Length: > 0 } parts ? $"\n[{parts}]" : "";
 
-    internal static async Task<ChatResult> RetryAsync(Func<Task<ChatResult>> send, Func<ApiException, bool?> fallback, Action reset,
-        Action<int, int> retrying, CancellationToken ct)
+    internal static async Task<ChatResult> RetryAsync(Func<CancellationToken, Action, Task<ChatResult>> send, Func<ApiException, bool?> fallback,
+        Action reset, Action<int, int>? retrying, CancellationToken ct)
     {
         const int maxAttempts = 3;
         for (int attempt = 1; ; attempt++)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
-                return await send();
+                return await SendWithTimeoutAsync(send, ct);
             }
             catch (Exception ex)
             {
+                ct.ThrowIfCancellationRequested();
                 var adapted = ex is ApiException api ? fallback(api) : false;
                 if (adapted == true)
                 {
@@ -82,9 +83,26 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
                 }
                 if (adapted == null || attempt >= maxAttempts || RetryDelay(ex, attempt, ct) is not { } delay) throw;
                 reset();
-                retrying(attempt + 1, maxAttempts);
+                retrying?.Invoke(attempt + 1, maxAttempts);
                 await Task.Delay(delay, ct);
             }
+        }
+    }
+
+    static async Task<ChatResult> SendWithTimeoutAsync(Func<CancellationToken, Action, Task<ChatResult>> send, CancellationToken ct)
+    {
+        const int idleSeconds = 90;
+        var idleTimeout = TimeSpan.FromSeconds(idleSeconds);
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        void ReportActivity() => idle.CancelAfter(idleTimeout);
+        ReportActivity();
+        try
+        {
+            return await send(idle.Token, ReportActivity);
+        }
+        catch (OperationCanceledException) when (idle.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new ApiException($"Модель не присылала данные ответа {idleSeconds} секунд. Нажмите «Повторить».", retryable: true);
         }
     }
 
@@ -115,12 +133,11 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
     });
     readonly HashSet<string> _noStreaming = new(StringComparer.OrdinalIgnoreCase), _noStreamOptions = new(StringComparer.OrdinalIgnoreCase);
 
-    public event Action<int, int>? Retrying;
     public event Action? LimitsChanged;
     public GroqLimits? Limits { get; private set; }
 
     public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools)
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
         var body = new JsonObject
         {
@@ -150,10 +167,10 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             reportText(null, false);
             reportProgress(new());
         }
-        return ApiException.RetryAsync(() =>
+        return ApiException.RetryAsync((attemptToken, reportActivity) =>
         {
             body["stream"] = stream;
-            return SendCompletionAsync(body.ToJsonString(), stream, reportText, reportProgress, ct);
+            return SendCompletionAsync(body.ToJsonString(), stream, reportText, reportProgress, attemptToken, reportActivity);
         }, ex =>
         {
             if (options && ex.RejectsStream(options: true))
@@ -170,7 +187,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             else return false;
             body.Remove("stream_options");
             return true;
-        }, Reset, (attempt, total) => Retrying?.Invoke(attempt, total), ct);
+        }, Reset, retrying, ct);
     }
 
     JsonArray RequestMessages(IReadOnlyList<JsonNode> messages)
@@ -202,7 +219,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
     }
 
     async Task<ChatResult> SendCompletionAsync(string json, bool stream, Action<string?, bool> reportText, Action<ModelProgress> reportProgress,
-        CancellationToken ct)
+        CancellationToken ct, Action reportActivity)
     {
         using var request = PostRequest("/chat/completions", json);
         if (stream) request.Headers.Add("Accept", "application/json, text/event-stream");
@@ -216,7 +233,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
                 string.Equals(response.Content.Headers.ContentType?.MediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
             {
                 Check(response, "", requestId);
-                return await ChatCompletionStream.ReadAsync(response, requestId, reportText, reportProgress, timeout.Token);
+                return await ChatCompletionStream.ReadAsync(response, requestId, reportText, reportProgress, timeout.Token, reportActivity);
             }
             var text = await response.Content.ReadAsStringAsync(timeout.Token);
             Check(response, text, requestId);

@@ -1,4 +1,6 @@
-﻿namespace SharpAgent;
+﻿using System.Windows.Shell;
+
+namespace SharpAgent;
 
 public partial class MainWindow
 {
@@ -60,7 +62,6 @@ public partial class MainWindow
                 chevron.RenderTransformOrigin = new(.5, .5);
                 chevron.RenderTransform = opened ? new RotateTransform(180) : Transform.Identity;
                 toggle.Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = label }, chevron } };
-                toggle.ToolTip = label;
                 AutomationProperties.SetName(toggle, label);
             }
             toggle.Click += (_, _) =>
@@ -77,14 +78,13 @@ public partial class MainWindow
             totals.Visibility = VisibleIf(files.All(file => !file.Undone));
             undo.Visibility = VisibleIf(files.Any(file => !file.Undone));
             undo.IsEnabled = files.Where(file => !file.Undone).All(file => file.Change is { Created: true } or { Backup: not null });
-            undo.ToolTip = undo.IsEnabled ? "Отменить изменения в этой группе" : "Для части файлов нет резервной копии";
+            undo.ToolTip = undo.IsEnabled ? null : "Для части файлов нет резервной копии";
             for (int i = 0; i < files.Length; i++) rowButtons[i].Opacity = files[i].Undone ? .55 : 1;
         }
         undo.Click += async (_, _) =>
         {
             await RunChatOperationAsync(() => UndoChangesAsync(files));
             Refresh();
-            UpdateChangesPill();
         };
         review.Click += (_, _) => ReviewGroup(files);
         Refresh();
@@ -111,24 +111,29 @@ public partial class MainWindow
 
     static Button ChangeAction(object content, string hint)
     {
-        var button = new Button { Content = content, ToolTip = hint };
+        var button = new Button { Content = content };
         AutomationProperties.SetName(button, hint);
         return button;
     }
 
     void ReviewGroup(ProducedFile[] files) => ReviewChanges(files, Math.Max(0, Array.FindIndex(files, file => file.Diff != null)));
 
-    // The pill follows the bottom-most changes group of the chat while some of its changes are still in place.
     void UpdateChangesPill()
     {
-        var files = _chatView.LastChanges;
-        ChangesPill.Visibility = VisibleIf(files != null && files.Any(file => !file.Undone && IsChange(file)));
-        if (files == null) return;
+        var files = CurrentRun is { Cancellation.IsCancellationRequested: false, Question: null, Activated: null } &&
+            Taskbar.ProgressState != TaskbarItemProgressState.Paused ? TurnFilesForDisplay() : null;
+        if (files?.Any(file => !file.Undone && IsChange(file)) != true) files = null;
+        ChangesPill.Tag = files;
+        ChangesPill.Visibility = VisibleIf(files != null && IsShown(ChatPanel));
+        ChangesPill.Content = files == null ? null : ChangesPillContent(files);
+        _compactChat?.ShowChanges(files == null ? null : ChangesPillContent(files));
+    }
+
+    static StackPanel ChangesPillContent(ProducedFile[] files)
+    {
         var content = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = ChangesHeading(files) } } };
         if (files.All(file => !file.Undone) && files.Any(file => file.Diff != null)) content.Children.Add(Totals(files));
-        ChangesPill.Content = content;
-        ChangesPill.ToolTip = "Открыть последние изменения справа";
-        AutomationProperties.SetName(ChangesPill, "Открыть последние изменения справа");
+        return content;
     }
 
     void ReviewChanges(ProducedFile[] files, int selected)
@@ -158,7 +163,9 @@ public partial class MainWindow
 
     void ChangesPill_Click(object sender, RoutedEventArgs e)
     {
-        if (_chatView.LastChanges is { } files) ReviewGroup(files);
+        if (ChangesPill.Tag is not ProducedFile[] files) return;
+        if (_compactChat is { } compact && sender == compact.ChangesPill) compact.Close();
+        ReviewGroup(files);
     }
 
     async Task UndoChangesAsync(ProducedFile[] files)
@@ -174,9 +181,14 @@ public partial class MainWindow
             return;
         var restored = new List<(FileChange, int)>();
         int restoredFiles = 0;
+        using var access = _toolContext.FileAccess.Begin();
         try
         {
-            foreach (var file in pending) FileChanges.EnsureRestorable(_toolContext, file.Change!);
+            foreach (var file in pending)
+            {
+                FileChanges.EnsureRestorable(_toolContext, file.Change!);
+                _toolContext.FileAccess.Reserve(file.Path);
+            }
             foreach (var file in pending)
             {
                 FileChanges.Restore(_toolContext, file.Change!);

@@ -9,8 +9,9 @@ public sealed partial class ComposerBox : RichTextBox
     [GeneratedRegex("""https?://[^\s<>"`]+""", RegexOptions.IgnoreCase)]
     private static partial Regex Urls();
 
-    readonly DispatcherTimer _links = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(650) };
+    readonly DispatcherTimer _links = new(DispatcherPriority.ContextIdle) { Interval = TimeSpan.FromMilliseconds(650) };
     bool _replacing;
+    string? _text;
 
     public ComposerBox()
     {
@@ -27,19 +28,16 @@ public sealed partial class ComposerBox : RichTextBox
             if (e.SourceDataObject.GetDataPresent(DataFormats.UnicodeText)) e.FormatToApply = DataFormats.UnicodeText;
             else e.CancelCommand();
         });
-        LostKeyboardFocus += (_, _) =>
-        {
-            _links.Stop();
-            if (IsLoaded) FormatLinks();
-        };
     }
 
     public string Text
     {
-        get => Join(Parts());
+        get => _text ??= Join(Parts());
         set
         {
-            var paragraph = new Paragraph(new Run(value.ReplaceLineEndings("\n"))) { Margin = new(0) };
+            var normalized = value.ReplaceLineEndings("\n");
+            if (Text == normalized) return;
+            var paragraph = new Paragraph(new Run(normalized)) { Margin = new(0) };
             using (DeclareChangeBlock())
             {
                 Document.Blocks.Clear();
@@ -67,6 +65,7 @@ public sealed partial class ComposerBox : RichTextBox
 
     protected override void OnTextChanged(TextChangedEventArgs e)
     {
+        _text = null;
         base.OnTextChanged(e);
         if (_replacing) return;
         _links.Stop();
@@ -146,9 +145,9 @@ public sealed partial class ComposerBox : RichTextBox
     void FormatLinks()
     {
         if (_replacing) return;
-        var parts = Parts();
-        var text = Join(parts);
+        var text = Text;
         if (!text.Contains("http", StringComparison.OrdinalIgnoreCase)) return;
+        var parts = Parts();
         var existing = new List<(int Start, int End)>();
         int position = 0;
         foreach (var part in parts)

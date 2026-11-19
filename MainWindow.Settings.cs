@@ -24,9 +24,9 @@ public partial class MainWindow
     Action? _toastAction;
 
 
-    static Hyperlink MakeLink(string text, Action click, string? tip = null)
+    static Hyperlink MakeLink(string text, Action click)
     {
-        var link = new Hyperlink(new Run(text)) { ToolTip = tip };
+        var link = new Hyperlink(new Run(text));
         link.Click += (_, _) => click();
         return link;
     }
@@ -107,7 +107,8 @@ public partial class MainWindow
 
     void OpenSettings(Control? focus)
     {
-        if (_cts != null)
+        if (WaitForChatFile(ChatFileBusy)) return;
+        if (AnyRunning)
         {
             ShowToast("Остановите агента, чтобы изменить настройки", ToastKind.Warning);
             return;
@@ -303,8 +304,6 @@ public partial class MainWindow
         ChatGptSignInButton.IsEnabled = !waiting;
         var action = waiting ? "Ожидаю вход в браузере…" : connected ? "Разрешить использование подписки" : "Продолжить с ChatGPT";
         ChatGptSignInButton.Content = action;
-        ChatGptSignInButton.ToolTip = connected ? "Открыть сайт OpenAI и разрешить Sharp Agent использовать подписку ChatGPT"
-            : "Открыть сайт OpenAI, войти в ChatGPT и подключить подписку к Sharp Agent";
         AutomationProperties.SetName(ChatGptSignInButton, action);
         ChatGptCancelButton.Visibility = VisibleIf(waiting);
         ChatGptHint.Text = waiting ? "В браузере открылась страница OpenAI. Войдите и разрешите Sharp Agent использовать подписку — программа ждёт до 10 минут."
@@ -314,14 +313,14 @@ public partial class MainWindow
             : "Откроется сайт OpenAI. Войдите в ChatGPT и разрешите Sharp Agent использовать подписку.";
         if (waiting || connected) return;
         foreach (var account in _chatGpt.SavedAccounts)
-            AddSignInLink("Войти как " + (account.Label ?? "аккаунт ChatGPT"), "Войти в сохранённый аккаунт ChatGPT", account.ClientId);
-        if (_chatGpt.ClientId != null) AddSignInLink("Войти в другой аккаунт", "Подключить к Sharp Agent другой аккаунт ChatGPT", null);
+            AddSignInLink("Войти как " + (account.Label ?? "аккаунт ChatGPT"), account.ClientId);
+        if (_chatGpt.ClientId != null) AddSignInLink("Войти в другой аккаунт", null);
     }
 
-    void AddSignInLink(string text, string tip, string? clientId)
+    void AddSignInLink(string text, string? clientId)
     {
         ChatGptHint.Inlines.Add(new LineBreak());
-        ChatGptHint.Inlines.Add(MakeLink(text, async () => await SignInChatGptAsync(clientId), tip));
+        ChatGptHint.Inlines.Add(MakeLink(text, async () => await SignInChatGptAsync(clientId)));
     }
 
     async void ChatGptSignIn_Click(object sender, RoutedEventArgs e) => await SignInChatGptAsync(_chatGpt.ClientId);

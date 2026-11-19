@@ -14,6 +14,7 @@ internal static class FileChanges
 
     public static Pending? Capture(ToolContext context, string tool, ToolArgs args)
     {
+        string path;
         try
         {
             var target = tool switch
@@ -24,7 +25,13 @@ internal static class FileChanges
                 _ => null,
             };
             if (target == null) return null;
-            var path = SafePath(context, target);
+            path = SafePath(context, target);
+            if (Directory.Exists(path)) return null;
+        }
+        catch (Exception ex) when (Expected(ex)) { return null; }
+        context.FileAccess.Reserve(path);
+        try
+        {
             var before = ReadSnapshot(path);
             return before == null && File.Exists(path) ? null : new Pending(path, before);
         }

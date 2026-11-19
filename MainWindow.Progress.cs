@@ -15,6 +15,7 @@ public partial class MainWindow
         public readonly Expander View = new() { Style = Theme.Style("ProgressSection") };
         public PlanCard? Plan;
         public ProgressSection? Searches;
+        public bool IsRunning => _label.IsActive;
 
         public ProgressSection(string title, string? glyph = null)
         {
@@ -33,7 +34,6 @@ public partial class MainWindow
         {
             _label.Text = label ?? title;
             AutomationProperties.SetName(View, title);
-            View.ToolTip = title + " · раскрыть или свернуть";
         }
 
         public void ShowError(string text)
@@ -64,6 +64,7 @@ public partial class MainWindow
         {
             SetTitle("Думаю…");
             _label.IsActive = View.IsExpanded = true;
+            Plan?.Update(IsRunning);
         }
 
         public void Finish(string title)
@@ -71,6 +72,7 @@ public partial class MainWindow
             SetTitle(title);
             _label.IsActive = false;
             View.IsExpanded = false;
+            Plan?.Update(IsRunning);
         }
     }
 
@@ -79,6 +81,8 @@ public partial class MainWindow
         readonly ProgressSection _section = new("", Glyphs.Check) { View = { IsExpanded = true } };
         readonly ProgressBar _meter = new() { Style = Theme.Style("Meter"), Margin = new(0, 8, 0, 6) };
         readonly StackPanel _tasks = new();
+        List<AgentRunner.PlanItem> _items = [];
+        bool _showingSpinner;
         public FrameworkElement View => _section.View;
 
         public PlanCard()
@@ -87,50 +91,48 @@ public partial class MainWindow
             _section.Items.Children.Add(_tasks);
         }
 
-        public void Update(IReadOnlyList<AgentRunner.PlanItem> items)
+        public void Update(bool running, List<AgentRunner.PlanItem>? items = null)
         {
+            if (items == null && !running && !_showingSpinner) return;
+            _items = items ?? _items;
+            items = _items;
             int done = items.Count(item => item.Done);
-            var step = items.FirstOrDefault(item => item.Status == "in_progress").Step ?? items.FirstOrDefault(item => !item.Done).Step ?? "План выполнен";
+            int current = items.FindIndex(item => item.Status == "in_progress");
+            if (current < 0) current = items.FindIndex(item => !item.Done);
+            var step = current >= 0 ? items[current].Step : "План выполнен";
             var summary = $"План. Выполнено {done} из {items.Count}";
             _section.SetTitle(summary, $"{done}/{items.Count} · {step}");
             AutomationProperties.SetName(_meter, summary);
             _meter.Maximum = items.Count;
             _meter.Value = done;
+            _showingSpinner = running && current >= 0;
             _tasks.Children.Clear();
-            foreach (var item in items)
+            for (int i = 0; i < items.Count; i++)
             {
-                bool active = item.Status == "in_progress";
-                var check = new CheckBox
+                var item = items[i];
+                bool active = _showingSpinner && i == current;
+                FrameworkElement mark = active ? MakeSpinner(16) : new CheckBox
                 {
-                    Style = Theme.Style("PlanCheck"), IsThreeState = true, IsChecked = active ? null : item.Done,
-                    VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 2, 8, 0),
+                    Style = Theme.Style("PlanCheck"), IsChecked = item.Done,
                 };
-                AutomationProperties.SetName(check, item.Step);
-                DockPanel.SetDock(check, Dock.Left);
+                mark.VerticalAlignment = VerticalAlignment.Top;
+                mark.Margin = new(0, 2, 8, 0);
+                AutomationProperties.SetName(mark, item.Step);
                 var text = new TextBlock
                 {
                     Text = item.Step, TextWrapping = TextWrapping.Wrap, TextDecorations = item.Done ? TextDecorations.Strikethrough : null,
                 };
                 text.SetResourceReference(TextBlock.ForegroundProperty, active ? "Text" : "TextMuted");
-                var row = new DockPanel { Margin = new(0, 6, 0, 6), Children = { check, text } };
-                if (active)
-                {
-                    var status = new TextBlock
-                    {
-                        Text = "В работе", FontSize = 13, Margin = new(10, 1, 0, 0),
-                        VerticalAlignment = VerticalAlignment.Top,
-                    };
-                    status.SetResourceReference(TextBlock.ForegroundProperty, "AccentText");
-                    DockPanel.SetDock(status, Dock.Right);
-                    row.Children.Insert(1, status);
-                }
-                _tasks.Children.Add(row);
+                if (active) AutomationProperties.SetItemStatus(text, "В работе");
+                _tasks.Children.Add(new DockPanel { Margin = new(0, 6, 0, 6), Children = { mark, text } });
             }
         }
     }
 
     readonly StringBuilder _draftText = new();
     DispatcherTimer? _draftTimer;
+    DispatcherTimer? _modelProgressTimer;
+    ModelProgress? _pendingModelProgress;
     RichTextBox? _draftView;
     int _draftShown;
     bool _draftIsProgress;
@@ -169,6 +171,7 @@ public partial class MainWindow
 
     void FinishProgress(string title)
     {
+        FlushModelProgress();
         if (_chatView.Progress is not { } progress) return;
         ReleaseStickyProgress();
         SetProgressHint(null);
@@ -179,19 +182,43 @@ public partial class MainWindow
 
     void ResetProgressStep()
     {
+        FlushModelProgress();
         _chatView.ToolGroup = null;
         _chatView.ReasoningRow = _chatView.CommentaryRow = null;
     }
 
-    void ShowThinking(int _, bool compressed)
+    const string ComputerUseStatus = "Использую навык Computer Use";
+
+    void ShowComputerUseStatus()
+    {
+        if (_chatView.Progress is { IsRunning: true } progress) progress.SetTitle($"Думаю… · {ComputerUseStatus}");
+        _compactChat?.SetStatus(ComputerUseStatus);
+    }
+
+    void ShowThinking()
     {
         ResetProgressStep();
-        SetProgressHint(compressed ? "Сжатие контекста…" : null);
-        if (!compressed) _compactChat?.SetStatus("Думаю…");
+        SetProgressHint(null);
+        _compactChat?.SetStatus(CurrentRun?.ComputerUsing == true ? ComputerUseStatus : "Думаю…");
     }
 
     void OnModelProgress(ModelProgress progress)
     {
+        _pendingModelProgress = progress;
+        if (_suppressAnimation)
+        {
+            FlushModelProgress();
+            return;
+        }
+        _modelProgressTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(100), DispatcherPriority.Background, (_, _) => FlushModelProgress(), Dispatcher);
+        _modelProgressTimer.Start();
+    }
+
+    void FlushModelProgress()
+    {
+        _modelProgressTimer?.Stop();
+        if (_pendingModelProgress is not { } progress) return;
+        _pendingModelProgress = null;
         UpdateProgressText(ref _chatView.ReasoningRow, progress.Reasoning, "Рассуждения модели");
         UpdateProgressText(ref _chatView.CommentaryRow, progress.Commentary, "Промежуточное сообщение");
     }
@@ -204,11 +231,8 @@ public partial class MainWindow
             row = null;
         }
         else if (row == null) AddProgressItem(row = ProgressText(markdown, label));
-        else row.Document = ChatDocument(markdown, ProgressColor(label));
+        else row.Document = ChatDocument(markdown, "TextSoft");
     }
-
-    // Reasoning stays quiet; interim messages read like the answer.
-    static string ProgressColor(string label) => label == "Рассуждения модели" ? "TextMuted" : "Text";
 
     void OnAssistantDelta(string? text, bool usesTools)
     {
@@ -237,7 +261,7 @@ public partial class MainWindow
             var document = new FlowDocument(new Paragraph(new Run()) { Margin = new(0) })
             {
                 PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 23,
-            }.Paint(TextElement.ForegroundProperty, "Text");
+            }.Paint(TextElement.ForegroundProperty, _draftIsProgress ? "TextSoft" : "Text");
             _draftView = ReadOnlyChatText(document, "Ответ агента");
             _draftView.Margin = new(-5, 8, -5, 8);
             _draftView.ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"];
@@ -247,6 +271,10 @@ public partial class MainWindow
         if (_draftIsProgress && _draftView.Parent != EnsureProgress().Items)
         {
             ChatPanel.Children.Remove(_draftView);
+            _draftView.Document.Paint(TextElement.ForegroundProperty, "TextSoft");
+            foreach (var run in ((Paragraph)_draftView.Document.Blocks.FirstBlock).Inlines.OfType<Run>())
+                if (run.ReadLocalValue(TextElement.ForegroundProperty) is SolidColorBrush brush)
+                    brush.Color = ((SolidColorBrush)Application.Current.FindResource("TextSoft")).Color;
             AutomationProperties.SetName(_draftView, "Промежуточное сообщение");
             AddProgressItem(_draftView);
         }
@@ -265,7 +293,7 @@ public partial class MainWindow
             settled.ContentEnd.InsertTextInRun(chunk);
             return;
         }
-        var brush = new SolidColorBrush(((SolidColorBrush)Theme.Text).Color);
+        var brush = new SolidColorBrush(((SolidColorBrush)Application.Current.FindResource(_draftIsProgress ? "TextSoft" : "Text")).Color);
         var run = new Run(chunk) { Foreground = brush };
         paragraph.Inlines.Add(run);
         var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160));
@@ -294,20 +322,22 @@ public partial class MainWindow
         _compactChat?.ShowDraft(partial);
     }
 
-    void OnAssistantText(string markdown, TimeSpan? elapsed, DateTimeOffset sentAt)
+    void OnAssistantText(string markdown, TimeSpan? elapsed, DateTimeOffset sentAt, string[] nextActions)
     {
+        FlushModelProgress();
         ClearDraft();
         if (elapsed != null)
         {
-            ShowFinalAnswer(markdown, elapsed, sentAt);
+            ShowFinalAnswer(markdown, elapsed, sentAt, nextActions);
             SyncCompactChat();
             _compactChat?.SetStatus(string.IsNullOrWhiteSpace(markdown) ? "Запрос завершён" : "Ответ готов", "Success");
         }
         else if (!string.IsNullOrWhiteSpace(markdown)) AddProgressItem(ProgressText(markdown, "Промежуточное сообщение"));
     }
 
-    void ShowFinalAnswer(string markdown, TimeSpan? elapsed, DateTimeOffset? sentAt)
+    void ShowFinalAnswer(string markdown, TimeSpan? elapsed, DateTimeOffset? sentAt, string[] nextActions)
     {
+        _chatView.NextActions = nextActions;
         EnsureProgress();
         FinishProgress(elapsed is { } time ? "Выполнено за " + Tokens.Duration(time) : "Выполнено");
         _chatView.Progress = null;
@@ -317,7 +347,7 @@ public partial class MainWindow
 
     RichTextBox ProgressText(string markdown, string label)
     {
-        var text = ChatText(markdown, ProgressColor(label), label);
+        var text = ChatText(markdown, "TextSoft", label);
         text.Margin = text.Margin with { Top = 6, Bottom = 6 };
         return text;
     }
@@ -344,7 +374,7 @@ public partial class MainWindow
             progress.Plan = new();
             progress.Items.Children.Insert(0, progress.Plan.View);
         }
-        progress.Plan.Update(items);
+        progress.Plan.Update(progress.IsRunning, items);
     }
 
     void AddProgressTool(string name, UIElement item)

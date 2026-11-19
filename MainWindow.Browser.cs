@@ -20,6 +20,12 @@ public partial class MainWindow
 
     void BrowserOpen_Click(object sender, RoutedEventArgs e)
     {
+        ShowBrowser();
+        BrowserAddress.Focus();
+    }
+
+    void ShowBrowser()
+    {
         CloseOverlay();
         CloseSubagents(false);
         ClosePreview();
@@ -27,8 +33,23 @@ public partial class MainWindow
         ApplyPreviewLayout();
         if (_browserTab == null) AddBrowserTab(null);
         else SelectBrowserTab(_browserTab);
-        BrowserAddress.Focus();
     }
+
+    void OpenBrowserUrl(string raw)
+    {
+        if (!Uri.TryCreate(raw.Trim(), UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0)
+            throw new ToolException("ссылка должна быть абсолютным адресом http или https без данных для входа.");
+        Dispatcher.Invoke(() =>
+        {
+            ShowBrowser();
+            if (_browserTab is not { } tab) AddBrowserTab(uri);
+            else OpenBrowserPage(tab, uri);
+            UpdateBrowserToolbar(true);
+            BrowserPages.UpdateLayout();
+        });
+    }
+
+    IntPtr BrowserWindowHandle() => _browserTab?.Page?.NativeHandle ?? IntPtr.Zero;
 
     void HideBrowser()
     {

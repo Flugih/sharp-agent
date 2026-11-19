@@ -11,6 +11,7 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
     IntPtr _host;
     public Uri Address { get; private set; } = initial;
     public string Title { get; private set; } = initial.Host;
+    public IntPtr NativeHandle => _host;
     public bool CanBack => _page is { } page && page.CanGoBack() != 0;
     public bool CanForward => _page is { } page && page.CanGoForward() != 0;
     public event Action? Changed;

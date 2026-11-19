@@ -2,9 +2,11 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    const int HistoryPageSize = 8;
+    const int HistoryPageSize = 8, HistoryPageLimit = 3;
     const double HistoryEdge = 110;
-    int _historyStart, _historyVersion;
+    readonly LinkedList<(int Start, int End, StackPanel View)> _historyPages = new();
+    int _tailStart, _historyVersion;
+    IReadOnlyList<JsonNode> _renderedHistory = [];
     bool _changingHistory, _historyPagePending;
     DispatcherTimer? _chatMotion;
 
@@ -17,8 +19,11 @@ public partial class MainWindow
         try
         {
             ChatPages.Children.RemoveRange(0, ChatPages.Children.Count - 1);
-            _historyStart = FindHistoryPageStart(_agent.History.Count);
-            RenderHistory(_agent.History.Skip(_historyStart).ToArray());
+            _historyPages.Clear();
+            ChatPanel.Visibility = Visibility.Visible;
+            _renderedHistory = CurrentRun?.History ?? _agent.History.ToArray();
+            _tailStart = FindHistoryPageStart(_renderedHistory.Count);
+            RenderHistory(_renderedHistory.Skip(_tailStart).ToArray());
         }
         finally { _changingHistory = false; }
         Dispatcher.InvokeAsync(() =>
@@ -33,60 +38,106 @@ public partial class MainWindow
     {
         int remaining = HistoryPageSize;
         for (int i = end - 1; i >= 0; i--)
-            if (_agent.History[i] is JsonObject message && JsonUtil.Str(message["role"]) == "user" && --remaining == 0)
+            if (_renderedHistory[i] is JsonObject message && JsonUtil.Str(message["role"]) == "user" && --remaining == 0)
                 return i;
         return 0;
     }
 
-    void CheckOlderHistory()
+    int FindHistoryPageEnd(int start)
     {
-        if (_changingHistory || _historyPagePending || _historyStart == 0 || ChatScroll.VerticalOffset > HistoryEdge) return;
+        int remaining = HistoryPageSize;
+        for (int i = start + 1; i < _tailStart; i++)
+            if (AgentRunner.Role(_renderedHistory[i]) == "user" && --remaining == 0) return i;
+        return _tailStart;
+    }
+
+    bool NearHistoryEdge(bool older) => older
+        ? (_historyPages.First?.Value.Start ?? _tailStart) > 0 && ChatScroll.VerticalOffset <= HistoryEdge
+        : !IsShown(ChatPanel) && ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset <= HistoryEdge;
+
+    void CheckHistory(bool older)
+    {
+        if (_changingHistory || _historyPagePending || !NearHistoryEdge(older)) return;
         _historyPagePending = true;
         int version = _historyVersion;
         Dispatcher.InvokeAsync(() =>
         {
             if (version != _historyVersion) return;
             _historyPagePending = false;
-            if (_historyStart != 0 && _chatMotion == null && ChatScroll.VerticalOffset <= HistoryEdge) LoadOlderHistory();
+            if (_chatMotion == null && NearHistoryEdge(older)) LoadHistoryPage(older);
         }, DispatcherPriority.Background);
     }
 
-    void LoadOlderHistory()
+    void LoadHistoryPage(bool older)
     {
         _changingHistory = true;
         _autoScroll = false;
         try
         {
-            int start = FindHistoryPageStart(_historyStart);
+            int boundary = older ? _historyPages.First?.Value.Start ?? _tailStart : _historyPages.Last!.Value.End;
+            int start = older ? FindHistoryPageStart(boundary) : boundary;
+            int end = older ? boundary : FindHistoryPageEnd(boundary);
             var page = new StackPanel();
+            FlushModelProgress();
             var live = _chatView;
-            var older = _chatView = new(page);
-            try { RenderHistory(_agent.History.Take(start.._historyStart).ToArray()); }
+            _chatView = new(page);
+            try { RenderHistory(_renderedHistory.Take(start..end).ToArray()); }
             finally { _chatView = live; }
-            live.LastChanges ??= older.LastChanges;
-            _historyStart = start;
             double offset = ChatScroll.VerticalOffset;
-            ChatPages.Children.Insert(0, page);
+            if (older)
+            {
+                _historyPages.AddFirst((start, end, page));
+                ChatPages.Children.Insert(0, page);
+            }
+            else
+            {
+                _historyPages.AddLast((start, end, page));
+                ChatPages.Children.Insert(ChatPages.Children.Count - 1, page);
+            }
+            if (_historyPages.Count > HistoryPageLimit)
+            {
+                var remove = (older ? _historyPages.Last : _historyPages.First)!;
+                if (!older) offset -= remove.Value.View.ActualHeight;
+                ChatPages.Children.Remove(remove.Value.View);
+                _historyPages.Remove(remove);
+            }
+            if (IsShown(ChatPanel) != (_historyPages.Last!.Value.End == _tailStart))
+            {
+                ReleaseStickyProgress();
+                ChatPanel.Visibility = VisibleIf(_historyPages.Last.Value.End == _tailStart);
+                UpdateChangesPill();
+            }
             ChatScroll.UpdateLayout();
-            ChatScroll.ScrollToVerticalOffset(offset + page.ActualHeight);
+            ChatScroll.ScrollToVerticalOffset(Math.Max(0, offset + (older ? page.ActualHeight : 0)));
             ChatScroll.UpdateLayout();
         }
         finally { _changingHistory = false; }
-        UpdateChangesPill();
         UpdateScrollDownButton();
     }
 
     void ScrollChatBy(double delta)
     {
         StopChatMotion();
-        _autoScroll = delta > 0 && ChatScroll.VerticalOffset + delta >= ChatScroll.ScrollableHeight;
+        _autoScroll = IsShown(ChatPanel) && delta > 0 && ChatScroll.VerticalOffset + delta >= ChatScroll.ScrollableHeight;
         ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + delta);
-        if (delta < 0) CheckOlderHistory();
+        if (delta != 0) CheckHistory(older: delta < 0);
     }
 
     void ScrollToLatest()
     {
         StopChatMotion();
+        if (!IsShown(ChatPanel))
+        {
+            _historyVersion++;
+            _historyPagePending = false;
+            _historyPages.Clear();
+            ChatPages.Children.RemoveRange(0, ChatPages.Children.Count - 1);
+            ChatPanel.Visibility = Visibility.Visible;
+            UpdateChangesPill();
+            _autoScroll = true;
+            ChatScroll.ScrollToEnd();
+            return;
+        }
         var start = ChatScroll.VerticalOffset;
         if (!Theme.AnimationsEnabled || ChatScroll.ScrollableHeight - start < 1)
         {
@@ -115,7 +166,7 @@ public partial class MainWindow
         _chatMotion = null;
     }
 
-    void UpdateScrollDownButton() => ScrollDownButton.Visibility = VisibleIf(ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset > 80);
+    void UpdateScrollDownButton() => ScrollDownButton.Visibility = VisibleIf(!IsShown(ChatPanel) || ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset > 80);
 
     void ChatScroll_PreviewMouseLeftButtonDown(object s, MouseButtonEventArgs e)
     {

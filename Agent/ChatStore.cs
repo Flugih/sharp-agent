@@ -11,7 +11,7 @@ public sealed class ChatStore(string folder, string logsFolder)
     public string Folder => folder;
     string TrashFolder => Path.Combine(folder, "trash");
 
-    public string NewPath() => Unique(folder, $"chat_{DateTime.Now:yyyyMMdd_HHmmss}", ".json");
+    public string NewPath() => Path.Combine(folder, $"chat_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.json");
 
     public ChatFile Load(string path)
     {

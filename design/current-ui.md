@@ -20,10 +20,10 @@ XAML names are in `MainWindow.xaml` unless a file is given.
 | 2.3 | Sidebar and rail | `Sidebar` (local styles `SidebarItem`, `SidebarIcon`, `SidebarLabel`) | `MainWindow.Sidebar.cs` |
 | 2.4 | Chat area, empty state, scroll-to-bottom button | `EmptyChat`, `ChatScroll`, `ScrollDownButton` | `MainWindow.Chat.cs`, `MainWindow.ChatHistory.cs` |
 | 2.4.1 | Sticky progress panel | `ChatStickyHost` | `MainWindow.Chat.cs` |
-| 2.5 | Messages; file, changes and error cards | — | `MainWindow.Chat.cs`, `MainWindow.Changes.cs`, `MainWindow.Preview.cs` (file card) |
+| 2.5 | Messages; file, changes and error cards; changed-files pill | `ChangesPill` | `MainWindow.Chat.cs`, `MainWindow.Changes.cs`, `MainWindow.Preview.cs` (file card) |
 | 2.6 | Markdown, links, file references | — | `Ui/MarkdownRenderer.cs`, `Ui/ChatLinks.cs`, `Ui/LinkTitles.cs`, `Ui/PathRefs.cs` |
 | 2.7 | Progress section, tool rows, plan, tool details, streamed draft | `ProgressSection`, `PlanCheck` in `App.xaml` | `MainWindow.Progress.cs`, `MainWindow.Chat.cs`, `Ui/RevealPanel.cs`, `Ui/Shimmer.cs` |
-| 2.8 | Composer, strip (mode and folder), attachments, changed-files pill | `Composer`, `ModePill`, `FolderButton`, `ChangesPill` | `MainWindow.xaml.cs`, `MainWindow.Attachments.cs`, `Ui/ComposerBox.cs`, `MainWindow.Changes.cs` (pill) |
+| 2.8 | Composer, strip (mode and folder), attachments | `Composer`, `ModePill`, `FolderButton` | `MainWindow.xaml.cs`, `MainWindow.Attachments.cs`, `Ui/ComposerBox.cs` |
 | 2.8.1 | Voice input | `VoicePanel` | `MainWindow.Voice.cs`, `Ui/VoiceWave.cs` |
 | 2.9 | Model chip, effort popover, model menus | `ModelButton`; `EffortPickerMenu`, `EffortSlider` in `App.xaml` | `MainWindow.Providers.cs`, `Ui/EffortSlider.cs` |
 | 2.10 | Banner | `Banner` | `MainWindow.Settings.cs` (`ShowBanner`) |

@@ -5,11 +5,9 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     public const string UsageUrl = "https://chatgpt.com/settings/usage", BaseUrl = "https://api.openai.com/v1";
     internal const string LimitCode = "subscription_sharing_usage_limit_exceeded", InvalidUserCode = "subscription_sharing_invalid_user";
     const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible";
-    static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(300);
     readonly HashSet<string> _noSummaries = new(StringComparer.OrdinalIgnoreCase), _noStreaming = new(StringComparer.OrdinalIgnoreCase);
     readonly HttpClient _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.ParseAdd(ChatGptAuth.UserAgent));
 
-    public event Action<int, int>? Retrying;
     public event Action? LimitsChanged;
     public string? LimitMessage { get; private set; }
 
@@ -30,7 +28,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     }
 
     public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
-        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools)
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
         bool summary = !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
         var body = Request(model, messages, tools, maxTokens, effort, summary);
@@ -40,10 +38,10 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             reportText(null, false);
             reportProgress(new());
         }
-        var result = await ApiException.RetryAsync(() =>
+        var result = await ApiException.RetryAsync((attemptToken, reportActivity) =>
         {
             body["stream"] = streaming;
-            return SendCompletionAsync(body.ToJsonString(), streaming, reportText, reportProgress, ct);
+            return SendCompletionAsync(body.ToJsonString(), streaming, reportText, reportProgress, attemptToken, reportActivity);
         }, ex =>
         {
             if (summary && SummaryRejected(ex, effort != null))
@@ -67,7 +65,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             }
             Reset();
             return true;
-        }, Reset, (attempt, total) => Retrying?.Invoke(attempt, total), ct);
+        }, Reset, retrying, ct);
         SetLimit(null);
         return result;
     }
@@ -167,19 +165,17 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         : Str(content);
 
     async Task<ChatResult> SendCompletionAsync(string body, bool streaming, Action<string?, bool> reportText, Action<ModelProgress> reportProgress,
-        CancellationToken ct)
+        CancellationToken ct, Action reportActivity)
     {
-        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        idle.CancelAfter(IdleTimeout);
         using var response = await SendAsync(() => new(HttpMethod.Post, BaseUrl + "/responses")
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
             Headers = { Accept = { new(streaming ? "text/event-stream" : "application/json") } },
-        }, idle.Token);
-        if (!response.IsSuccessStatusCode) throw Explain(response, await response.Content.ReadAsStringAsync(idle.Token));
+        }, ct);
+        if (!response.IsSuccessStatusCode) throw Explain(response, await response.Content.ReadAsStringAsync(ct));
         var requestId = RequestId(response);
         if (!streaming || response.Content.Headers.ContentType?.MediaType == "application/json")
-            return FinishResponse([], ParseObject(await response.Content.ReadAsStringAsync(idle.Token))
+            return FinishResponse([], ParseObject(await response.Content.ReadAsStringAsync(ct))
                 ?? throw new ApiException("ChatGPT вернул ответ в неизвестном формате. Нажмите «Повторить»."), requestId);
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct));
         List<JsonObject> items = [];
@@ -189,16 +185,9 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         void ReportProgress() => reportProgress(new(Join(summaries.Values), Join(commentary)));
         long? textItem = null;
         bool calls = false;
-        while (true)
+        while (await reader.ReadLineAsync(ct) is { } line)
         {
-            idle.CancelAfter(IdleTimeout);
-            string? line;
-            try { line = await reader.ReadLineAsync(idle.Token); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                throw new ApiException("ChatGPT перестал отвечать посреди ответа. Нажмите «Повторить».", retryable: true);
-            }
-            if (line == null) throw new ApiException("Связь с ChatGPT оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
+            reportActivity();
             if (!line.StartsWith("data:", StringComparison.Ordinal) || ParseObject(line[5..]) is not { } data) continue;
             var answer = data["response"] as JsonObject;
             var output = Long(data["output_index"]);
@@ -248,6 +237,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
                     throw Failed(data["error"] as JsonObject ?? data, requestId);
             }
         }
+        throw new ApiException("Связь с ChatGPT оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
     }
 
     static ChatResult FinishResponse(List<JsonObject> items, JsonObject? answer, string? requestId, IEnumerable<string>? summaries = null,

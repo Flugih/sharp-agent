@@ -80,14 +80,53 @@ static partial class LocalProjectContext
         return null;
     }
 
-    static async Task<Repository?> OpenRepository(string root, CancellationToken ct)
+    static Repository? FindRepository(string root)
     {
         var gitPath = Path.Combine(root, ".git");
-        if (!Path.Exists(gitPath) || (File.GetAttributes(gitPath) & FileAttributes.ReparsePoint) != 0 ||
-            LocalDeveloperTools.GitExecutable(root) is not { } git) return null;
-        var repo = new Repository(git, root);
-        return (await repo.Run(["config", "--name-only", "--get-regexp", @"^filter\..*\.(clean|smudge|process)$"], 4_000, ct)).ExitCode == 1
+        return Path.Exists(gitPath) && (File.GetAttributes(gitPath) & FileAttributes.ReparsePoint) == 0 &&
+            LocalDeveloperTools.GitExecutable(root) is { } git ? new(git, root) : null;
+    }
+
+    static async Task<Repository?> OpenRepository(string root, CancellationToken ct)
+    {
+        var repo = FindRepository(root);
+        return repo != null && (await repo.Run(["config", "--name-only", "--get-regexp", @"^filter\..*\.(clean|smudge|process)$"], 4_000, ct)).ExitCode == 1
             ? repo : null;
+    }
+
+    internal sealed record GitBranches(string Root, string Current, string[] Names);
+
+    internal static async Task<GitBranches?> ReadBranchesAsync(ToolContext context, string folder, bool list)
+    {
+        if (context.SandboxRoot != null || ProjectRoot(context, context.Resolve(folder), gitOnly: true) is not { } root ||
+            FindRepository(root) is not { } repo) return null;
+        if (await repo.Run(["symbolic-ref", "--quiet", "HEAD"], 8_192, default) is not (0, var head) ||
+            !head.EndsWith('\n') || !head.StartsWith("refs/heads/", StringComparison.Ordinal)) return null;
+        var current = head["refs/heads/".Length..].TrimEnd('\r', '\n');
+        if (!list) return new(root, current, []);
+        if (await repo.Run(["for-each-ref", "--sort=refname", "--format=%(refname:lstrip=2)", "refs/heads/"], 1_000_000, default)
+            is not (0, var output) || (output.Length > 0 && !output.EndsWith('\n')))
+            throw new ToolException("Git не смог получить список локальных веток.");
+        return new(root, current, output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    internal static async Task<string?> SwitchBranchAsync(ToolContext context, string folder, string root, string branch)
+    {
+        var branches = await ReadBranchesAsync(context, folder, list: true);
+        if (branches == null || !PathHelper.SamePath(root, branches.Root) || !branches.Names.Contains(branch, StringComparer.Ordinal))
+            return "Репозиторий или выбранная ветка больше недоступны.";
+        if (branches.Current == branch) return null;
+        if (await OpenRepository(root, default) is not { } repo)
+            return "Переключение недоступно. Проверьте доступ к репозиторию и его настройки фильтров Git.";
+        const string heads = "refs/heads/";
+        if (await repo.Run(["diff", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", "HEAD", heads + branch, "--"],
+                2_000_000, default) is not (0, var changes) || (changes.Length > 0 && !changes.EndsWith('\0')))
+            return "Git не смог проверить файлы, которые изменятся при переключении.";
+        foreach (var path in changes.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            context.GuardAppFiles(context.Resolve(Path.Combine(root, path)));
+        var (exitCode, output) = await LocalDeveloperTools.GitAsync(repo.Exe, root,
+            ["switch", "--no-guess", "--no-overwrite-ignore", "--no-recurse-submodules", "--", branch], 1_000, default, switching: true);
+        return exitCode == 0 ? null : output.Trim() is { Length: > 0 } error ? error : "Git не смог переключить ветку.";
     }
 
     static async Task<IEnumerable<string>> FilesAsync(string root, Repository? repo, CancellationToken ct)

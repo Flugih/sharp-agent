@@ -1,9 +1,10 @@
+using System.Windows.Interop;
+
 namespace SharpAgent;
 
 public partial class MainWindow
 {
     CompactChatWindow? _compactChat;
-    FrameworkElement? _questionCard, _questionFocus;
 
     internal Window ActiveChatWindow => _compactChat is { IsVisible: true } compact ? compact : this;
 
@@ -28,7 +29,8 @@ public partial class MainWindow
         CloseFlyout();
         CloseOverlay();
         SaveState();
-        var compact = _compactChat = new CompactChatWindow(AnswerView, path => FileCard(path, null, true)) { Draft = InputBox.Text };
+        var compact = _compactChat = new CompactChatWindow(AnswerView) { Draft = InputBox.Text };
+        compact.ChangesPill.Click += ChangesPill_Click;
         compact.DraftChanged += text =>
         {
             var normalized = text.ReplaceLineEndings("\n");
@@ -45,69 +47,47 @@ public partial class MainWindow
             Show();
             ActivateChatWindow();
             PlaceQuestion();
-            if (_questionCard == null) InputBox.Focus();
+            if (CurrentRun?.Question == null) InputBox.Focus();
         };
         SyncCompactChat();
+        UpdateChangesPill();
         UpdateCompactAction();
         if (_lastErrorCard?.Tag is string error) compact.ShowError(error);
         if (_cts != null)
         {
-            compact.SetStatus(_questionCard == null ? "Думаю…" : "Жду ответа");
+            compact.SetStatus(CurrentRun switch
+            {
+                { Question: not null } => "Жду ответа",
+                { ComputerUsing: true } => ComputerUseStatus,
+                _ => "Думаю…",
+            });
             if (!_draftIsProgress) compact.ShowDraft(_draftText.ToString());
         }
         else if (_pendingAttachments.Count > 0) compact.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");
         compact.Show();
         // Only Computer Use needs this: its screenshots must show the desktop behind the window.
-        if (_toolContext is { ComputerUse: true, SandboxRoot: null }) WindowEffects.ExcludeFromCapture(compact);
+        if (_toolContext is { ComputerUse: true, SandboxRoot: null }) WindowEffects.ExcludeFromCapture(new WindowInteropHelper(compact).Handle);
         Hide();
         ActivateChatWindow();
         PlaceQuestion();
-        if (_questionCard == null) compact.FocusInput();
+        if (CurrentRun?.Question == null) compact.FocusInput();
     }
 
     void SyncCompactChat()
     {
         if (_compactChat == null) return;
         var history = _agent.History;
-        List<(JsonObject Message, string? File)> entries = [];
-        var functions = new Dictionary<string, JsonObject>();
-        var turnPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int firstResult = history.Count, messages = 0;
-        for (int i = history.Count - 1; i >= 0 && messages < 16; i--)
+        List<JsonObject> messages = [];
+        for (int i = history.Count - 1; i >= 0 && messages.Count < 16; i--)
         {
             if (history[i] is not JsonObject message) continue;
             var role = AgentRunner.Role(message);
             if (role == "user" || role == "assistant" && message["tool_calls"] == null && AgentRunner.ReviewOf(message) == null &&
                 !string.IsNullOrWhiteSpace(AgentRunner.ExtractText(message["content"])))
-            {
-                entries.Add((message, null));
-                messages++;
-            }
-            if (role == "user") turnPaths.Clear();
-            if (role != "tool" || AgentRunner.FileChangeUndone(message)) continue;
-            var output = JsonUtil.Str(message["content"]) ?? "";
-            if (ToolRegistry.IsErrorOutput(output)) continue;
-            var path = AgentRunner.FileChangeOf(message)?.Path ?? JsonUtil.Str(message[AgentRunner.MetaField]?["written_path"]);
-            if (path == null)
-            {
-                if (i < firstResult)
-                {
-                    firstResult = i;
-                    while (firstResult > 0 && AgentRunner.Role(history[firstResult - 1]) == "tool") firstResult--;
-                    functions.Clear();
-                    if (firstResult > 0 && history[firstResult - 1]["tool_calls"] is JsonArray calls)
-                        foreach (var call in calls.OfType<JsonObject>())
-                            if (JsonUtil.Str(call["id"]) is { } id && call["function"] is JsonObject fn) functions[id] = fn;
-                }
-                if (!functions.TryGetValue(JsonUtil.Str(message["tool_call_id"]) ?? "", out var function)) continue;
-                var name = JsonUtil.Str(function["name"]) ?? "";
-                var args = JsonUtil.Str(function["arguments"]) ?? "{}";
-                path = Produced(name, args, name is "write_file" or "edit_file" ? ResultPath(output) : null, output)?.Path;
-            }
-            if (path != null && turnPaths.Add(path) && File.Exists(path)) entries.Add((message, path));
+                messages.Add(message);
         }
-        entries.Reverse();
-        _compactChat.SyncHistory(entries.ToArray());
+        messages.Reverse();
+        _compactChat.SyncHistory(messages.ToArray());
     }
 
     void UpdateCompactAction()
@@ -123,9 +103,11 @@ public partial class MainWindow
         QuestionHost.Content = null;
         QuestionHost.Visibility = Visibility.Collapsed;
         var host = _compactChat?.QuestionSlot ?? QuestionHost;
-        host.Content = _questionCard;
-        host.Visibility = VisibleIf(_questionCard != null);
-        if (_questionFocus is { } focus)
-            _ = Dispatcher.InvokeAsync(() => { if (_questionFocus == focus) focus.Focus(); }, DispatcherPriority.Input);
+        var run = CurrentRun;
+        host.Content = run?.Question;
+        host.Visibility = VisibleIf(run?.Question != null);
+        UpdateChangesPill();
+        if (run?.QuestionFocus is { } focus)
+            _ = Dispatcher.InvokeAsync(() => { if (CurrentRun?.QuestionFocus == focus) focus.Focus(); }, DispatcherPriority.Input);
     }
 }

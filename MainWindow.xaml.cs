@@ -46,8 +46,6 @@ public partial class MainWindow
     AgentRunner _agent = null!;
     ChatApiClient? _tooken;
     IChatProvider? _provider;
-    CancellationTokenSource? _cts;
-    Task? _run;
     bool _closeConfirmed, _waitingToClose, _confirmOff;
 
     public MainWindow()
@@ -55,6 +53,8 @@ public partial class MainWindow
         ApplyTheme();
         InitializeComponent();
         _links = new(this, new PathRefs(() => _toolContext.WorkingDirectory), OpenInApp);
+        _toolContext.OpenUrl = OpenBrowserUrl;
+        _toolContext.BrowserWindow = () => Dispatcher.Invoke(BrowserWindowHandle);
         _markdown = new(_links.Markdown);
         _usage = new(_state);
         ChatScroll.PreviewMouseWheel += ChatScroll_PreviewMouseWheel;
@@ -62,6 +62,8 @@ public partial class MainWindow
         FileActions.Notify += notice;
         Closed += (_, _) =>
         {
+            _computerOverlay?.Dispose();
+            _computerOverlay = null;
             ResetBrowserNetwork(closing: true);
             FileActions.Notify -= notice;
             var compact = _compactChat;
@@ -90,35 +92,7 @@ public partial class MainWindow
     {
         if (_agent != null) return;
         _config = AppConfig.Load();
-        _agent = new(new ToolRegistry(_toolContext), new ChatStore(AppPaths.HistoryFolder, AppPaths.LogsFolder))
-        {
-            ConfirmAsync = ConfirmAsync, ClarifyAsync = AskClarificationAsync, CanSpendAsync = CheckLimitsAsync,
-            ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
-            SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
-        };
-        _agent.AssistantText += OnAssistantText;
-        _agent.AssistantDelta += OnAssistantDelta;
-        _agent.ProgressReported += OnModelProgress;
-        _agent.ToolCallStarted += OnToolCallStarted;
-        _agent.ToolCallFinished += OnToolCallFinished;
-        _agent.ThinkingStarted += ShowThinking;
-        _agent.SubagentChanged += OnSubagentChanged;
-        _agent.UsageReported += (model, usage) =>
-        {
-            if (_config.Provider == AgentProvider.Tooken) _usage.AddLocal(model, usage.PromptTokens + usage.CompletionTokens);
-            UpdateBalanceIndicator();
-            UpdateContextBanner();
-        };
-        _agent.Warning += text => AddNotice(text, true);
-        _agent.Stopped += text => AddNotice(text, true, false);
-        _agent.Notice += text => AddNotice(text);
-        _agent.Retrying += (attempt, total) => SetProgressHint($"Сервер не ответил, попытка {attempt} из {total}…");
-        _agent.ChatCreated += () =>
-        {
-            _state.CurrentChat = Path.GetFileName(_agent.ChatPath);
-            _state.Save();
-            SyncCurrentChat(true);
-        };
+        _agent = CreateAgent();
         ApplyConfig();
         UpdateConfirmToggle();
         ApplySidebar();
@@ -131,11 +105,6 @@ public partial class MainWindow
         if (!AppPaths.IsWritable(AppPaths.AppFolder))
             FolderBanner("readonly", $"Папка {FolderKind} недоступна для записи", "Настройки и переписка не сохранятся. " +
                 (AppPaths.IsInstalled ? "Проверьте права доступа к этой папке." : "Перенесите папку Sharp Agent, например, на Рабочий стол."));
-        if (!string.IsNullOrEmpty(_state.Draft))
-        {
-            InputBox.Text = _state.Draft;
-            InputBox.CaretIndex = InputBox.Text.Length;
-        }
         UpdateSendButton();
         if (_provider == null) Dispatcher.InvokeAsync(ShowSettings, DispatcherPriority.Loaded);
         else InputBox.Focus();
@@ -150,24 +119,26 @@ public partial class MainWindow
             e.Cancel = true;
             return;
         }
-        var run = !_closeConfirmed && _run is { IsCompleted: false } active ? active : null;
-        if (run != null || _chatOperation is { IsCompleted: false })
+        var active = !_closeConfirmed ? _runs.ToArray() : [];
+        if (active.Length > 0 || _chatOperation is { IsCompleted: false })
         {
             e.Cancel = true;
             _waitingToClose = true;
             try
             {
-                if (run != null)
+                if (active.Length > 0)
                 {
                     if (!DarkDialog.Ask(ActiveChatWindow, "Агент ещё работает",
-                            "Если закрыть программу сейчас, текущая задача прервётся на середине. Переписка сохранится.",
+                            "Если закрыть программу сейчас, активные задачи прервутся. Переписка сохранится.",
                             "Остановить и закрыть", "Не закрывать", true))
                         return;
                     _closeConfirmed = true;
                     SaveState();
-                    StopAgent();
-                    await Task.WhenAny(run, Task.Delay(5000));
-                    await _agent.WaitForChatWritesAsync();
+                    active = _runs.ToArray();
+                    foreach (var (_, run) in active)
+                        if (!run.Cancellation.IsCancellationRequested) run.Cancellation.Cancel();
+                    await Task.WhenAny(Task.WhenAll(active.Select(entry => entry.Value.Task ?? Task.CompletedTask)), Task.Delay(5000));
+                    await Task.WhenAll(active.Select(entry => entry.Key.WaitForChatWritesAsync()));
                 }
                 if (_chatOperation is { } operation) await operation;
                 _ = Dispatcher.InvokeAsync(Close);
@@ -203,9 +174,9 @@ public partial class MainWindow
         ApplyFastMode();
         ModeText.Text = _config.Sandbox ? "Песочница" : "Весь ПК";
         ModeIcon.Text = _config.Sandbox ? Glyphs.Lock : Glyphs.Laptop;
-        ModePill.ToolTip = (_config.Sandbox
+        ModePill.ToolTip = _config.Sandbox
             ? $"Агент работает только внутри папки {FolderKind}:\n{AppPaths.AppFolder}\nКоманды PowerShell и cmd отключены."
-            : "Агент работает с любыми файлами пользователя, без прав администратора.") + "\nЩелчок — открыть настройки";
+            : "Агент работает с любыми файлами пользователя, без прав администратора.";
         AutomationProperties.SetName(ModePill, $"Режим: {ModeText.Text}. Открыть настройки");
     }
 
@@ -234,13 +205,16 @@ public partial class MainWindow
         var folder = _toolContext.WorkingDirectory = _config.WorkingDirectory;
         var dir = Path.TrimEndingDirectorySeparator(folder);
         FolderText.Text = Path.GetFileName(dir) is { Length: > 0 } name ? name : dir;
-        FolderButton.ToolTip = $"Рабочая папка агента:\n{folder}\nЩелчок — выбрать другую. Ctrl+Shift+O — открыть в Проводнике";
+        FolderButton.ToolTip = $"{folder}\nОткрыть в Проводнике (Ctrl+Shift+O)";
         AutomationProperties.SetName(FolderButton, $"Рабочая папка {FolderText.Text}. Выбрать другую");
+        GitBranchButton.Visibility = Visibility.Collapsed;
+        _ = RefreshGitBranchAsync();
     }
 
     void FolderButton_Click(object s, RoutedEventArgs e)
     {
-        if (_cts != null)
+        if (WaitForChatFile(ChatFileBusy)) return;
+        if (AnyRunning)
         {
             ShowToast("Папку можно сменить, когда агент закончит работу", ToastKind.Warning);
             return;
@@ -309,8 +283,8 @@ public partial class MainWindow
         ConfirmIcon.Text = on ? Glyphs.Shield : Glyphs.Warning;
         ConfirmLabel.Text = on ? "Подтверждения" : "Без подтверждений";
         ConfirmToggle.ToolTip = on
-            ? "Агент спрашивает разрешение перед удалением, перезаписью файлов и запуском команд. Щелчок — отключить"
-            : "Агент удаляет, перезаписывает файлы и запускает команды без вопросов. Щелчок — снова спрашивать";
+            ? "Агент спрашивает разрешение перед удалением, перезаписью файлов и запуском команд."
+            : "Агент удаляет, перезаписывает файлы и запускает команды без вопросов.";
         AutomationProperties.SetName(ConfirmToggle, on ? "Подтверждения включены" : "Подтверждения выключены");
         ConfirmToggle.Paint(ForegroundProperty, on ? "TextDim" : "Warning");
     }
@@ -335,6 +309,7 @@ public partial class MainWindow
         if (_cts is not { IsCancellationRequested: false }) return;
         _cts.Cancel();
         StopButton.IsEnabled = false;
+        UpdateChangesPill();
         UpdateCompactAction();
     }
 
@@ -360,6 +335,7 @@ public partial class MainWindow
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
         SendButton.ToolTip = _attachmentImports > 0 ? "Подготавливаю вложения…" : resume ? "Продолжить задачу (Enter)" : "Отправить (Enter). Новая строка — Shift+Enter";
         AutomationProperties.SetName(SendButton, resume ? "Продолжить задачу" : "Отправить");
+        NextActionPanel.Visibility = VisibleIf(_cts == null && !hasDraft && !VoiceShown && NextActionPanel.Children.Count > 0);
         UpdateCompactAction();
     }
 
@@ -389,13 +365,14 @@ public partial class MainWindow
             return;
         }
         if ((attachments.Count == 0 && AgentRunner.LocalCommand(text) != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
+        if (_agent.History.Skip(_renderedHistory.Count).Count(message => AgentRunner.Role(message) == "user") >= HistoryPageSize)
+            RenderCurrentChat();
         InputBox.Clear();
         ClearPendingAttachments();
         ClearSubagents();
         ScrollToLatest();
         var sentAt = DateTimeOffset.UtcNow;
-        AddUserBubble(text, attachments);
-        await (_run = RunAgentAsync(ct => _agent.RunAsync(text, attachments, model, ct, sentAt)));
+        await RunAgentAsync((agent, ct) => agent.RunAsync(text, attachments, model, ct, sentAt), () => AddUserBubble(text, attachments));
     }
 
     string? ModelForRequest()
@@ -416,79 +393,99 @@ public partial class MainWindow
     {
         if (ChatFileBusy || _waitingToClose || _cts != null || !_agent.CanContinue ||
             (_agent.PendingLocalCommand != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
-        RemoveErrorCard();
-        HideChangeCards();
-        if (_chatView.LastStopNotice != null) ChatPanel.Children.Remove(_chatView.LastStopNotice);
-        _chatView.LastStopNotice = null;
         ScrollToLatest();
-        await (_run = RunAgentAsync(ct => _agent.ContinueAsync(model, ct)));
+        await RunAgentAsync((agent, ct) => agent.ContinueAsync(model, ct), () =>
+        {
+            RemoveErrorCard();
+            HideChangeCards();
+            if (_chatView.LastStopNotice != null) ChatPanel.Children.Remove(_chatView.LastStopNotice);
+            _chatView.LastStopNotice = null;
+        });
     }
 
-    async Task RunAgentAsync(Func<CancellationToken, Task> run)
+    Task RunAgentAsync(Func<AgentRunner, CancellationToken, Task> run, Action prepare)
     {
-        var cts = _cts = new CancellationTokenSource();
-        SetRunning(true);
-        StartProgress();
+        var agent = _agent;
+        if (agent.ChatPath is { } path) _chatErrors.Remove(path);
+        var session = new ChatRun(agent, prepare);
+        _runs.Add(agent, session);
+        return session.Task = ExecuteRunAsync(agent, session, run);
+    }
+
+    async Task ExecuteRunAsync(AgentRunner agent, ChatRun session, Func<AgentRunner, CancellationToken, Task> run)
+    {
+        var cts = session.Cancellation;
+        using var access = _toolContext.FileAccess.Begin();
         try
         {
-            var task = run(cts.Token);
+            session.Prepare();
+            SetRunning(true);
+            RenderChatList();
+            StartProgress();
+            var task = run(agent, cts.Token);
             SyncCompactChat();
             await task;
             if (!ActiveChatWindow.IsActive) WindowEffects.CompletionSound();
             WindowEffects.Flash(ActiveChatWindow);
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested || _limitDeclined)
+        catch (OperationCanceledException) when (cts.IsCancellationRequested || session.LimitDeclined)
         {
-            await _agent.RecordStopAsync(cts.IsCancellationRequested ? "Агент остановлен." : "Агент остановлен: исчерпан ваш лимит расхода.");
+            await agent.RecordStopAsync(cts.IsCancellationRequested ? "Агент остановлен." : "Агент остановлен: исчерпан ваш лимит расхода.");
         }
         catch (OperationCanceledException)
         {
-            AddError("Сервер не ответил за отведённое время. Проверьте подключение к интернету и повторите.", ErrorFix.Retry);
+            ReportRunError(agent, "Сервер не ответил за отведённое время. Проверьте подключение к интернету и повторите.", ErrorFix.Retry);
         }
         catch (ApiException ex)
         {
             if (_provider is ChatGptClient) App.LogError(ex);
-            AddError(ex.Message, FixFor(ex));
+            ReportRunError(agent, ex.Message, FixFor(ex));
         }
         catch (NetworkRouteException ex)
         {
-            AddError(ex.Message, ErrorFix.Retry);
+            ReportRunError(agent, ex.Message, ErrorFix.Retry);
         }
         catch (HttpRequestException ex)
         {
-            AddError("Нет связи с сервером. Проверьте подключение к интернету и адрес API в настройках.\n" + ex.Message, ErrorFix.Retry);
+            ReportRunError(agent, "Нет связи с сервером. Проверьте подключение к интернету и адрес API в настройках.\n" + ex.Message, ErrorFix.Retry);
         }
         catch (Exception ex)
         {
             App.LogError(ex);
-            AddError("Не удалось выполнить запрос: " + ex.Message, ErrorFix.Retry);
+            ReportRunError(agent, "Не удалось выполнить запрос: " + ex.Message, ErrorFix.Retry);
         }
         finally
         {
             cts.Dispose();
-            _cts = null;
-            _limitDeclined = false;
-            ClearDraft(interrupted: true);
-            MarkUnfinishedToolRows();
-            FinishProgress("Выполнение прервано");
-            FlushTurnFiles();
-            SyncCompactChat();
-            SetRunning(false);
-            SyncCurrentChat(true);
-            if (_compactChat == null && (!IsKeyboardFocusWithin || Keyboard.FocusedElement is not TextBoxBase)) ComposerFocus.Focus();
+            _runs.Remove(agent);
+            if (session.ComputerUsing) UpdateComputerUseOverlay();
+            if (_agent == agent)
+            {
+                ClearDraft(interrupted: true);
+                MarkUnfinishedToolRows();
+                FinishProgress("Выполнение прервано");
+                FlushTurnFiles();
+                SyncCompactChat();
+                SetRunning(false);
+                if (_compactChat == null && (!IsKeyboardFocusWithin || Keyboard.FocusedElement is not TextBoxBase)) ComposerFocus.Focus();
+            }
+            SyncChat(agent, touched: true);
+            if (!AnyRunning) _ = RefreshGitBranchAsync();
             if (_provider is not ChatGptClient)
             {
                 _ = RefreshUsageAsync();
                 _ = _chatGpt.RenewAsync();
             }
-            else if (!_chatGpt.PlanAllowed) ApplyProvider();
+            else if (!AnyRunning && !_chatGpt.PlanAllowed) ApplyProvider();
         }
     }
 
     void SetRunning(bool running)
     {
+        UpdateChangesPill();
+        RenderNextActions();
         UpdateComposerButtons();
-        StopButton.IsEnabled = true;
+        StopButton.IsEnabled = _cts?.IsCancellationRequested != true;
         ModelButton.IsEnabled = !running;
         _subagentTimer.IsEnabled = running;
         if (running) SetTaskbar(TaskbarItemProgressState.Indeterminate);
@@ -497,8 +494,10 @@ public partial class MainWindow
 
     void SetTaskbar(TaskbarItemProgressState state)
     {
+        bool pauseChanged = (Taskbar.ProgressState == TaskbarItemProgressState.Paused) != (state == TaskbarItemProgressState.Paused);
         Taskbar.ProgressState = state;
         Taskbar.ProgressValue = state is TaskbarItemProgressState.Paused or TaskbarItemProgressState.Error ? 1 : 0;
+        if (pauseChanged) UpdateChangesPill();
     }
 
     void Window_PreviewKeyDown(object s, KeyEventArgs e)

@@ -70,6 +70,7 @@ public partial class MainWindow
     void Window_Activated(object? s, EventArgs e)
     {
         if (Taskbar.ProgressState == TaskbarItemProgressState.Error) SetTaskbar(TaskbarItemProgressState.None);
+        if (_config != null) _ = RefreshGitBranchAsync();
     }
 
     void Window_StateChanged(object? s, EventArgs e)
@@ -109,6 +110,11 @@ public partial class MainWindow
         FolderText.MaxWidth = Math.Clamp(folderRoom, 0, 240);
         FolderText.Visibility = VisibleIf(folderRoom >= 40);
         double room = RootGrid.ActualWidth - 250 - (SubagentsOpenButton?.Visibility == Visibility.Visible ? 140 : 0);
+        if (IsShown(GitBranchButton))
+        {
+            GitBranchText.MaxWidth = Math.Clamp(room - 110, 46, 122);
+            room -= GitBranchText.MaxWidth + 49;
+        }
         ChatTitleText.MaxWidth = Math.Max(0, room);
         ChatTitleText.Visibility = VisibleIf(room >= 60);
     }

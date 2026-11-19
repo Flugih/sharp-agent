@@ -100,12 +100,23 @@ static class LocalDeveloperTools
         .Select(part => part.Trim().Trim('"')).Where(Path.IsPathFullyQualified).Select(path => Path.Combine(path, "git.exe"))
         .FirstOrDefault(git => File.Exists(git) && !PathHelper.IsInside(PathHelper.FinalPath(git), root));
 
-    public static Task<(int ExitCode, string Output)> GitAsync(string git, string root, IReadOnlyList<string> arguments, int limit, CancellationToken ct) =>
-        RunAsync(git, root, ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "-c", "core.quotePath=false",
-            "--literal-pathspecs", "--work-tree=" + root, .. arguments], 4, limit, ct, git: true);
+    public static async Task<(int ExitCode, string Output)> GitAsync(string git, string root, IReadOnlyList<string> arguments, int limit,
+        CancellationToken ct, bool switching = false)
+    {
+        string[] options = ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "-c", "core.quotePath=false",
+            "--literal-pathspecs", "--work-tree=" + root];
+        if (switching)
+        {
+            var (exitCode, output) = await RunAsync(git, root, [.. options, "config", "--type=bool-or-str", "--get", "core.autocrlf"],
+                4, 32, ct, git: true, readUserConfig: true);
+            if (exitCode == 0 && output.Trim().ToLowerInvariant() is ("true" or "false" or "input") and var autocrlf)
+                options = [.. options, "-c", "core.autocrlf=" + autocrlf];
+        }
+        return await RunAsync(git, root, [.. options, .. arguments], switching ? 60 : 4, limit, ct, git: true, reportError: switching);
+    }
 
     static async Task<(int ExitCode, string Output)> RunAsync(string exe, string root, IReadOnlyList<string> arguments,
-        int seconds, int limit, CancellationToken ct, bool git = false)
+        int seconds, int limit, CancellationToken ct, bool git = false, bool reportError = false, bool readUserConfig = false)
     {
         var start = new ProcessStartInfo(exe)
         {
@@ -118,8 +129,11 @@ static class LocalDeveloperTools
         if (git)
         {
             foreach (var key in env.Keys.Where(k => k.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToArray()) env.Remove(key);
-            env["GIT_CONFIG_NOSYSTEM"] = "1";
-            env["GIT_CONFIG_GLOBAL"] = "NUL";
+            if (!readUserConfig)
+            {
+                env["GIT_CONFIG_NOSYSTEM"] = "1";
+                env["GIT_CONFIG_GLOBAL"] = "NUL";
+            }
             env["GIT_OPTIONAL_LOCKS"] = "0";
             env["GIT_NO_LAZY_FETCH"] = "1";
             env["GIT_ALLOW_PROTOCOL"] = "none";
@@ -136,8 +150,9 @@ static class LocalDeveloperTools
             var output = ReadOutputAsync(process.StandardOutput, limit, time.Token);
             try
             {
-                await Task.WhenAll(process.WaitForExitAsync(time.Token), output, ReadOutputAsync(process.StandardError, 0, time.Token));
-                return (process.ExitCode, output.Result);
+                var error = ReadOutputAsync(process.StandardError, reportError ? limit : 0, time.Token);
+                await Task.WhenAll(process.WaitForExitAsync(time.Token), output, error);
+                return (process.ExitCode, reportError && process.ExitCode != 0 ? error.Result : output.Result);
             }
             catch (OperationCanceledException)
             {

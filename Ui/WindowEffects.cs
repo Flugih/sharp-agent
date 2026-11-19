@@ -24,8 +24,7 @@ public static class WindowEffects
     [DllImport("user32.dll")]
     static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
 
-    internal static void ExcludeFromCapture(Window window) =>
-        SetWindowDisplayAffinity(new WindowInteropHelper(window).Handle, WDA_EXCLUDEFROMCAPTURE);
+    internal static void ExcludeFromCapture(nint window) => SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
 
     public static void CompletionSound()
     {

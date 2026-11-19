@@ -162,10 +162,7 @@ public partial class MainWindow
     void SetVoiceMark(FrameworkElement? mark)
     {
         if (VoiceMark.Child is FrameworkElement old)
-        {
             old.BeginAnimation(OpacityProperty, null);
-            StopSpinner(old);
-        }
         VoiceMark.Child = mark;
     }
 

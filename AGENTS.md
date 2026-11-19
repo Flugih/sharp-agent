@@ -30,5 +30,13 @@ Rules for every change to Sharp Agent.
 ## Design
 - UI follows `design/DESIGN.md`: tokens, typography, components and motion. New or changed UI must match it.
 
+## Browser interactions
+- Use Sharp Agent's built-in browser whenever a task requires opening, inspecting, or interacting with a website.
+- Open local development sites in the built-in browser using the full server URL with its actual scheme and port, for example `http://localhost:3000`.
+
+## Temporary verification artifacts
+- Put temporary build outputs and test stands under one task-specific folder inside `D:\Projects\sharp_agent\bin` or `D:\Projects\sharp_agent\temp`, never as separate folders directly under `D:\Projects`.
+- Remove temporary folders after verification by moving them to the Recycle Bin. Check the task-specific folder before finishing and leave only requested deliverables.
+
 ## Before finishing
 - `dotnet build SharpAgent.csproj -o <folder outside bin\Debug>` with 0 warnings (the owner may be running `bin\Debug`).

@@ -5,17 +5,15 @@ namespace SharpAgent.Ui;
 public partial class CompactChatWindow : Window
 {
     readonly Func<string, DateTimeOffset?, StackPanel> _answerView;
-    readonly Func<string, Button> _fileCard;
-    (JsonObject Message, string? File)[] _shown = [];
+    JsonObject[] _shown = [];
     double? _anchorBottom;
 
     internal event Action<string>? DraftChanged;
     internal event Action? Send, Stop;
 
-    internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView, Func<string, Button> fileCard)
+    internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView)
     {
         _answerView = answerView;
-        _fileCard = fileCard;
         InitializeComponent();
     }
 
@@ -58,7 +56,7 @@ public partial class CompactChatWindow : Window
     {
         ActionButton.Content = running ? "\uE71A" : resume ? Glyphs.Play : Glyphs.Send;
         var label = running ? "Остановить агента" : resume ? "Продолжить задачу" : "Отправить";
-        ActionButton.ToolTip = label;
+        ActionButton.ToolTip = !running && resume ? label : null;
         AutomationProperties.SetName(ActionButton, label);
         ActionButton.IsEnabled = enabled;
         ShimmerStatus();
@@ -68,14 +66,13 @@ public partial class CompactChatWindow : Window
     // Only a running agent's neutral status shimmers; results and warnings keep their colour.
     void ShimmerStatus() => StatusText.IsActive = StatusText.Base == "TextMuted" && Equals(ActionButton.Content, "");
 
-    internal void SyncHistory((JsonObject Message, string? File)[] messages)
+    internal void SyncHistory(JsonObject[] messages)
     {
         if (_shown.SequenceEqual(messages)) return;
         _shown = messages;
         Transcript.Children.Clear();
-        foreach (var (message, path) in messages)
-            if (path != null) Transcript.Children.Add(_fileCard(path));
-            else if (AgentRunner.Role(message) == "assistant")
+        foreach (var message in messages)
+            if (AgentRunner.Role(message) == "assistant")
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
             else Transcript.Children.Add(new Border
             {
@@ -106,9 +103,17 @@ public partial class CompactChatWindow : Window
         UpdateTranscript(scroll: !string.IsNullOrEmpty(text));
     }
 
+    internal void ShowChanges(FrameworkElement? content)
+    {
+        if (content == null && ChangesPill.Content == null) return;
+        ChangesPill.Content = content;
+        ChangesPill.Visibility = content != null ? Visibility.Visible : Visibility.Collapsed;
+        UpdateTranscript(scroll: content != null);
+    }
+
     void UpdateTranscript(bool scroll)
     {
-        TranscriptCard.Visibility = Transcript.Children.Count > 0 || new UIElement[] { StatusText, StreamText, ErrorText }
+        TranscriptCard.Visibility = Transcript.Children.Count > 0 || new UIElement[] { StatusText, StreamText, ErrorText, ChangesPill }
             .Any(item => item.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
         // Layout has not run yet, so the offsets still say whether the reader was at the bottom before this change.
         if (scroll && TranscriptScroll.VerticalOffset >= TranscriptScroll.ScrollableHeight - 1) TranscriptScroll.ScrollToEnd();

@@ -17,8 +17,9 @@ public static partial class FileTools
     static string WriteFile(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var path = GuardedPath(a, c);
-        var content = a.Required("content", allowEmpty: true);
         if (Directory.Exists(path)) throw new ToolException($"По этому пути находится папка: {path}");
+        c.FileAccess.Reserve(path);
+        var content = a.Required("content", allowEmpty: true);
         bool existed = File.Exists(path);
         if (existed && a.Bool("append")) { TextFileIO.Append(path, content); return $"Текст добавлен в конец файла: {path} (+{content.Length} символов)"; }
         var (text, encoding, note) = TextFileIO.ForScript(path, content);
@@ -32,6 +33,7 @@ public static partial class FileTools
         var oldText = a.Required("old_text");
         var newText = a.Required("new_text", allowEmpty: true);
         if (!File.Exists(path)) throw new ToolException($"Файл не найден: {path}");
+        c.FileAccess.Reserve(path);
         var (text, encoding) = TextFileIO.Read(path);
         int count = text.AsSpan().Count(oldText);
         if (count == 0 && text.Contains("\r\n") && !oldText.Contains("\r\n"))
@@ -53,6 +55,7 @@ public static partial class FileTools
         var path = c.Resolve(a.Required("path"));
         if (File.Exists(path)) throw new ToolException($"По этому пути уже есть файл: {path}");
         if (Directory.Exists(path)) return $"Папка уже существует: {path}";
+        c.GuardWrite(path);
         Directory.CreateDirectory(path);
         return $"Папка создана: {path}";
     }
@@ -75,8 +78,8 @@ public static partial class FileTools
     {
         var (source, target) = ResolveSourceAndTarget(a, c);
         if (IsProtected(source)) throw new ToolException($"Системную папку перемещать нельзя: {source}");
-        c.GuardAppFiles(source);
-        c.GuardAppFiles(target);
+        c.GuardWrite(source);
+        c.GuardWrite(target);
         GuardSecretCopy(c, source, target);
         if (Directory.Exists(source))
         {
@@ -111,7 +114,7 @@ public static partial class FileTools
         bool overwrite = a.Bool("overwrite");
         if (SamePath(source, target)) throw new ToolException("Источник и назначение совпадают.");
         c.GuardSecrets(source);
-        c.GuardAppFiles(target);
+        c.GuardWrite(target);
         if (Directory.Exists(source))
         {
             if (IsInside(FinalPath(target), FinalPath(source))) throw new ToolException("Нельзя копировать папку внутрь неё самой.");
@@ -221,9 +224,9 @@ public static partial class FileTools
     {
         var path = Path.TrimEndingDirectorySeparator(c.Resolve(a.Required("path")));
         if (!Path.Exists(path)) throw new ToolException($"Не найдено: {path}");
-        c.GuardAppFiles(path);
         if (IsProtected(path))
             throw new ToolException($"Отказано: {path} — корень диска или системная папка пользователя, удалять её целиком нельзя.");
+        c.GuardWrite(path);
         if (!a.Bool("permanent")) { RecycleBin.Send(path); return $"Перемещено в Корзину: {path}"; }
         if (Directory.Exists(path))
         {
@@ -250,12 +253,20 @@ public static partial class FileTools
         if (!isUrl && !Path.Exists(target)) throw new ToolException($"Не найдено: {target}");
         if (c.SandboxRoot != null && (isUrl || File.Exists(target) && !OpensQuietly(target)))
             throw new ToolException("В режиме песочницы можно открывать только папки и документы (не программы, скрипты и ссылки).");
+        if (isUrl && Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.Scheme is ("http" or "https") && c.OpenUrl is { } openUrl)
+        {
+            openUrl(target);
+            return $"Открыто во встроенном браузере Sharp Agent: {target}";
+        }
         using var process = Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
         return $"Открыто: {target}" + (isUrl ? " (во внешней программе с её сетевыми настройками)" : "");
     }
 
     static bool IsWebUrl(string value) =>
         Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto";
+
+    static bool IsBrowserUrl(string value) =>
+        Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
 
     static bool OpensQuietly(string path) => IsPassive(path) && Path.GetExtension(path).ToLowerInvariant() is not (".html" or ".htm" or ".svg");
 
@@ -302,7 +313,8 @@ public static partial class FileTools
     static ConfirmRequest? ConfirmOpen(ToolArgs a, ToolContext c)
     {
         var raw = a.Required("path");
-        if (IsWebUrl(raw)) return new("Открыть ссылку во внешнем браузере?", raw.Trim(), "Открыть", Note: "Браузер использует собственные сетевые настройки.");
+        if (IsBrowserUrl(raw)) return new("Открыть ссылку во встроенном браузере?", raw.Trim(), "Открыть", Note: "Ссылка откроется во вкладке Sharp Agent.");
+        if (IsWebUrl(raw)) return new("Открыть ссылку во внешней программе?", raw.Trim(), "Открыть", Note: "Системная программа использует собственные сетевые настройки.");
         var path = c.Resolve(raw);
         return c.SandboxRoot != null || Directory.Exists(path) || OpensQuietly(path) ? null
             : IsExecutable(path) ? new("Запустить программу или скрипт?", path, "Запустить", Danger: true)

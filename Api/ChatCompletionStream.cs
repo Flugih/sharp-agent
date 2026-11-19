@@ -58,7 +58,7 @@ static class ChatCompletionStream
     }
 
     public static async Task<ChatResult> ReadAsync(HttpResponseMessage response, string? requestId, Action<string?, bool> reportText,
-        Action<ModelProgress> reportProgress, CancellationToken ct)
+        Action<ModelProgress> reportProgress, CancellationToken ct, Action reportActivity)
     {
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct));
         StringBuilder content = new(), reasoning = new(), rawReasoning = new();
@@ -71,6 +71,7 @@ static class ChatCompletionStream
         bool received = false, done = false;
         while (await reader.ReadLineAsync(ct) is { } line)
         {
+            reportActivity();
             if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
             var payload = line[5..].Trim();
             if (done = payload == "[DONE]") break;
@@ -80,7 +81,7 @@ static class ChatCompletionStream
             usage = Usage(chunk) ?? usage;
             if ((chunk["choices"] as JsonArray)?.FirstOrDefault() is not JsonObject choice) continue;
             received = true;
-            finish = Str(choice["finish_reason"]) ?? finish;
+            if (Str(choice["finish_reason"]) is { Length: > 0 } reasonForFinish) finish = reasonForFinish;
             if (choice["delta"] is not JsonObject delta) continue;
             bool hadCalls = calls.Count > 0;
             int position = 0;

@@ -34,6 +34,7 @@ partial class AgentRunner
     public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
     public event Action<SubagentUpdate>? SubagentChanged;
+    internal event Action? ComputerUseStarted;
 
     JsonArray Definitions()
     {
@@ -65,8 +66,11 @@ partial class AgentRunner
             "и без которой нельзя правильно продолжить. Давай короткий вопрос и различимые варианты. " +
             "Не спрашивай о мелочах и не используй этот инструмент для подтверждения действий.") +
         (UseSubagents
-            ? "\nСам решай, нужны ли субагенты, сколько независимых частей выделить и как объединить результаты. " +
-              "Поручай им проверки и анализ через delegate_tasks. Формулируй самодостаточные поручения, включая нужные требования, " +
+            ? "\nКогда доступен delegate_tasks, делегируй независимые проверки и анализ в начале работы. " +
+              "При исследовании проекта, диагностике, ревью или задаче с несколькими файлами выдели хотя бы одну проверку, " +
+              "если её можно выполнить отдельно. Собери независимые проверки в один параллельный вызов " +
+              "и используй результаты в основной работе. Простой ответ, одиночную проверку или точечную правку делай сам. " +
+              "Формулируй самодостаточные поручения, включая нужные требования, " +
               "и выбирай только относящиеся к поручению вложения по точным путям через attachments. " +
               $"Число поручений (до {MaxSubagentTasks} за запрос) и шагов каждого (steps) выбирай сам по объёму работы, без лишнего запаса. " +
               "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
@@ -88,7 +92,8 @@ partial class AgentRunner
             };
             if (shell is { } known && _blockedShells.TryGetValue(known, out var restriction))
                 return new("Ошибка запуска. " + CommandRestriction.Prefix + restriction.Message, true) { Restriction = restriction };
-            var outcome = await tools.ExecuteAsync(call.Name, call.ArgumentsJson, ConfirmAsync, ct);
+            var outcome = await tools.ExecuteAsync(call.Name, call.ArgumentsJson, ConfirmAsync, ct,
+                call.Name == ComputerTools.Name ? ComputerUseStarted : null);
             if (outcome.Restriction is { UnavailableShell: { } blocked } denied) _blockedShells[blocked] = denied;
             return outcome;
         }
@@ -181,7 +186,7 @@ partial class AgentRunner
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
             };
             var actions = new Dictionary<string, ToolCallEvent>();
-            worker.ThinkingStarted += (_, _) =>
+            worker.ThinkingStarted += () =>
             {
                 if (worker._noEffortModels.Contains(model)) update = update with { Effort = null };
                 Report("Модель отвечает", newStep: true);

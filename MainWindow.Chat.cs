@@ -35,7 +35,7 @@ public partial class MainWindow
         public RichTextBox? ReasoningRow, CommentaryRow;
         public TextBlock? ProgressHint;
         public ToolCallEvent? PendingPlan;
-        public ProducedFile[]? LastChanges;
+        public string[] NextActions = [];
     }
 
     ChatRenderState _chatView = new();
@@ -46,6 +46,8 @@ public partial class MainWindow
     void RenderCurrentChat()
     {
         ReleaseStickyProgress();
+        _modelProgressTimer?.Stop();
+        _pendingModelProgress = null;
         ClearSubagents();
         ClearDraft();
         ChatPanel.Children.Clear();
@@ -54,11 +56,14 @@ public partial class MainWindow
         _autoScroll = true;
         ClosePreview();
         ResetHistoryPages();
-        UpdateChangesPill();
-        UpdateSendButton();
+        RestoreRunningChat();
+        SetTaskbar(TaskbarItemProgressState.None);
+        SetRunning(_cts != null);
+        PlaceQuestion();
+        if (_cts == null && _agent.ChatPath is { } path && _chatErrors.TryGetValue(path, out var error)) AddError(error.Message, error.Fix);
         EmptyChat.Visibility = VisibleIf(ChatPanel.Children.Count == 0);
         UpdateContextBanner();
-        SyncCurrentChat(touched: false);
+        SyncChat(_agent, touched: false);
         SyncCompactChat();
     }
 
@@ -72,6 +77,7 @@ public partial class MainWindow
         _chatView.Progress = null;
         _chatView.ProgressHint = null;
         _chatView.PendingPlan = null;
+        _chatView.NextActions = [];
         ResetProgressStep();
         _chatView.ToolRows.Clear();
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new(64, 8, 0, 8) };
@@ -105,7 +111,8 @@ public partial class MainWindow
             body.ContextMenu = menu;
             var bubble = new Border
             {
-                CornerRadius = new(18), Padding = new(16, 8, 16, 8), HorizontalAlignment = HorizontalAlignment.Right,
+                // A fixed-height FlowDocument line puts the glyphs below its center.
+                CornerRadius = new(18), Padding = new(16, 4, 16, 12), HorizontalAlignment = HorizontalAlignment.Right,
                 MaxWidth = Math.Min(515, Math.Ceiling(measure.DesiredSize.Width) + 34), Child = body,
             };
             bubble.SetResourceReference(BackgroundProperty, "UserBubble");
@@ -119,6 +126,23 @@ public partial class MainWindow
         InputBox.Text = text;
         InputBox.CaretIndex = text.Length;
         InputBox.Focus();
+    }
+
+    void RenderNextActions()
+    {
+        NextActionPanel.Children.Clear();
+        if (_cts != null) return;
+        foreach (var action in _chatView.NextActions)
+        {
+            var button = new Button
+            {
+                Style = Theme.Style("FileChip"), Margin = new(0, 0, 6, 4), MaxWidth = 260,
+                Content = new TextBlock { Text = action, TextTrimming = TextTrimming.CharacterEllipsis },
+            };
+            AutomationProperties.SetName(button, action);
+            button.Click += (_, _) => PutIntoInput(action);
+            NextActionPanel.Children.Add(button);
+        }
     }
 
     System.Windows.Documents.FlowDocument ChatDocument(string markdown, string foreground) => _markdown.Render(markdown, foreground);
@@ -221,12 +245,15 @@ public partial class MainWindow
         _chatView.ChangeCards.Clear();
     }
 
-    void FlushTurnFiles()
-    {
-        var files = _chatView.TurnFiles.Where(file => file.Change != null || file.Undone || File.Exists(file.Path))
+    ProducedFile[] TurnFilesForDisplay() =>
+        _chatView.TurnFiles.Where(file => file.Change != null || file.Undone || File.Exists(file.Path))
             .Where(file => file.Change is not { Created: false } change || change.BeforeHash != change.AfterHash)
             .Select(file => file is { Chained: true, Undone: false, Change: { } change }
                 ? file with { Diff = FileChanges.NetDiff(_toolContext, change) ?? file.Diff } : file).ToArray();
+
+    void FlushTurnFiles()
+    {
+        var files = TurnFilesForDisplay();
         if (files.Length > 0)
         {
             FrameworkElement card = files.Length > 1 ? ChangesCard(files)
@@ -236,11 +263,6 @@ public partial class MainWindow
             _chatView.ChangeCards.Add((cards, files));
             if (_chatView.LastAnswer is { } answer) answer.Children.Insert(answer.Children.Count - 1, cards);
             else AppendToChat(cards);
-            if (files.Any(file => file.Undone || IsChange(file)))
-            {
-                _chatView.LastChanges = files;
-                if (_chatView.Target == null) UpdateChangesPill();
-            }
         }
         _chatView.TurnFiles.Clear();
         _chatView.LastAnswer = null;
@@ -331,7 +353,8 @@ public partial class MainWindow
 
     void OnToolCallStarted(ToolCallEvent e)
     {
-        _compactChat?.SetStatus(Activity(e.Name, e.ArgumentsJson));
+        FlushModelProgress();
+        _compactChat?.SetStatus(CurrentRun?.ComputerUsing == true ? ComputerUseStatus : Activity(e.Name, e.ArgumentsJson));
         if (e.Name == "update_plan") _chatView.PendingPlan = e;
         else AddToolRow(e.Id, e.Name, e.ArgumentsJson);
     }
@@ -346,6 +369,7 @@ public partial class MainWindow
         }
         if (!_chatView.ToolRows.TryGetValue(e.Id, out var row)) return;
         CompleteToolRow(row, e.Output, e.IsError, e.IsWarning, e.Diff, e.Change);
+        if (!e.IsError && _chatView.TurnFiles.Count > 0 && !ToolRegistry.IsReadOnly(e.Name)) UpdateChangesPill();
     }
 
     static string Activity(string tool, string argumentsJson)
@@ -494,7 +518,6 @@ public partial class MainWindow
         TextBlock? Plain(string? text) => string.IsNullOrWhiteSpace(text) ? null : new TextBlock
         {
             Text = text, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = Shorten(PrettyJson(argumentsJson), 800),
         }.Paint(ForegroundProperty, "TextMuted");
         return tool switch
         {
@@ -678,7 +701,7 @@ public partial class MainWindow
             var footer = new DockPanel { LastChildFill = false, Margin = new(0, 8, 0, 0), Children = { state } };
             if (log != null)
             {
-                var journal = new Button { Content = "Открыть журнал", ToolTip = "Показать полный вывод в панели справа" };
+                var journal = new Button { Content = "Открыть журнал" };
                 AutomationProperties.SetName(journal, "Открыть журнал команды");
                 journal.Click += (_, _) =>
                 {
@@ -780,7 +803,7 @@ public partial class MainWindow
                     }
                     var elapsed = AgentRunner.ElapsedOf(m);
                     if (AgentRunner.ReviewOf(m) != null) AddProgressItem(ProgressText(text, "Промежуточное сообщение"));
-                    else if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt);
+                    else if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt, AgentRunner.NextActionsOf(m));
                 }
                 if (AgentRunner.StopReasonOf(m) is { } stop) AddNotice(stop, warning: true, inProgress: false);
             }
@@ -812,7 +835,9 @@ public partial class MainWindow
 
     void ReleaseStickyProgress()
     {
+        if (!IsShown(ChatStickyHost)) return;
         ChatStickyHost.Visibility = Visibility.Collapsed;
+        UpdateStickyClip();
         ChatStickyTitle.IsActive = false;
         var plan = ChatStickyPanel.Children.Count > 0 ? ChatStickyPanel.Children[0] : null;
         ChatStickyPanel.Children.Clear();
@@ -825,21 +850,20 @@ public partial class MainWindow
         _stickyPlanPlaceholder = null;
     }
 
-    // Pins the header and the plan of the running section once the user scrolls its top out of view.
-    void UpdateStickyProgress(bool userScroll)
+    void UpdateStickyProgress()
     {
-        if (_chatView.Progress is not { View.IsExpanded: true } progress || !progress.View.IsDescendantOf(ChatScroll) ||
-            progress.View.TransformToAncestor(ChatScroll).Transform(default).Y >= 0)
+        if (!IsShown(ChatPanel) || _chatView.Progress is not { IsRunning: true, View.IsExpanded: true } progress || !progress.View.IsDescendantOf(ChatScroll) ||
+            progress.View.TransformToAncestor(ChatScroll).Transform(default).Y > ChatStickyHost.Margin.Top)
         {
             ReleaseStickyProgress();
             return;
         }
         if (!IsShown(ChatStickyHost))
         {
-            if (!userScroll) return;
             ChatStickyTitle.SetBinding(TextBlock.TextProperty, new Binding { Source = progress.View, Path = new(AutomationProperties.NameProperty) });
             ChatStickyHost.Visibility = Visibility.Visible;
             ChatStickyTitle.IsActive = true;
+            UpdateStickyClip();
         }
         if (_stickyPlanPlaceholder != null || progress.Plan?.View is not { Parent: Panel parent } plan) return;
         _stickyPlanPlaceholder = new() { Margin = plan.Margin };
@@ -854,10 +878,22 @@ public partial class MainWindow
     {
         if (_changingHistory || !ReferenceEquals(e.OriginalSource, ChatScroll)) return;
         if (e.ExtentHeightChange != 0 && _autoScroll && _chatMotion == null) ChatScroll.ScrollToEnd();
-        else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
-        if (e.VerticalChange < 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckOlderHistory();
-        UpdateStickyProgress(e.VerticalChange != 0 && !_autoScroll && _chatMotion == null);
+        else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = IsShown(ChatPanel) && ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
+        if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckHistory(older: e.VerticalChange < 0);
+        UpdateStickyProgress();
+        if (IsShown(ChatStickyHost) && (e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0)) UpdateStickyClip();
         UpdateScrollDownButton();
+    }
+
+    void ChatStickyHost_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateStickyClip();
+
+    void UpdateStickyClip()
+    {
+        if (ChatScroll.Template?.FindName("PART_ScrollContentPresenter", ChatScroll) is not ScrollContentPresenter viewport) return;
+        // Leave room for the pinned rows without painting a second surface over the chat.
+        var margin = ChatStickyHost.Margin;
+        double top = Math.Min(margin.Top + ChatStickyHost.ActualHeight + margin.Bottom, viewport.ActualHeight);
+        viewport.Clip = IsShown(ChatStickyHost) ? new RectangleGeometry(new Rect(0, top, viewport.ActualWidth, viewport.ActualHeight - top)) : null;
     }
 
     void ChatStickyHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -896,15 +932,10 @@ public partial class MainWindow
             Width = size, Height = size, StrokeThickness = 1.6, StrokeDashArray = new DoubleCollection { 7, 14 }, StrokeDashCap = PenLineCap.Round,
             VerticalAlignment = VerticalAlignment.Center, RenderTransformOrigin = new(0.5, 0.5), RenderTransform = rotate,
         }.Paint(System.Windows.Shapes.Shape.StrokeProperty, "AccentText");
-        if (Theme.AnimationsEnabled)
-            rotate.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(0, 360, TimeSpan.FromSeconds(0.9)) { RepeatBehavior = RepeatBehavior.Forever });
+        ring.IsVisibleChanged += (_, _) => rotate.BeginAnimation(RotateTransform.AngleProperty, ring.IsVisible && Theme.AnimationsEnabled
+            ? new DoubleAnimation(0, 360, TimeSpan.FromSeconds(0.9)) { RepeatBehavior = RepeatBehavior.Forever }
+            : null);
         return ring;
-    }
-
-    static void StopSpinner(FrameworkElement spinner)
-    {
-        if (spinner.RenderTransform is RotateTransform rotate) rotate.BeginAnimation(RotateTransform.AngleProperty, null);
-        spinner.Visibility = Visibility.Collapsed;
     }
 
     static string PrettyJson(string json)

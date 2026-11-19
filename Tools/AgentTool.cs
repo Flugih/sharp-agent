@@ -17,7 +17,10 @@ public sealed class ToolContext
     public string? SandboxRoot { get; set; }
     public string? InstallationFolder { get => _installationFolder; set => _installationFolder = value != null ? FinalPath(value) : null; }
     public bool ComputerUse { get; set; }
+    internal ChatFileAccess FileAccess { get; } = new();
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
+    public Action<string>? OpenUrl { get; set; }
+    public Func<IntPtr>? BrowserWindow { get; set; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
     public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
 
@@ -71,6 +74,12 @@ public sealed class ToolContext
             Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)))
             throw new ToolException("Это служебные файлы самой программы Sharp Agent (.env, auth, history, temp, plugins, state.json, exe " +
                 "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");
+    }
+
+    internal void GuardWrite(string fullPath)
+    {
+        GuardAppFiles(fullPath);
+        FileAccess.Reserve(fullPath);
     }
 
     static bool HoldsAppFiles(string folder, string path) =>

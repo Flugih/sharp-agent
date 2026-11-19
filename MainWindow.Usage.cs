@@ -10,7 +10,6 @@ public partial class MainWindow
 
     private bool _usageUnavailable;
     private object? _usageLoading;
-    private bool _limitDeclined;
     private string? _usageError;
     private Task<bool>? _limitAsk;
 
@@ -305,13 +304,24 @@ public partial class MainWindow
                 ? $"С начала месяца израсходовано {Tokens.Format(snapshot.MonthToDate)} токенов при лимите {Tokens.Format(month)} в месяц."
                 : null;
 
-    private Task<bool> CheckLimitsAsync()
+    private async Task<bool> CheckLimitsAsync(AgentRunner agent)
     {
-        if (_limitAsk != null) return _limitAsk;
-        if (_limitDeclined) return Task.FromResult(false);
+        var run = _runs[agent];
+        if (run.LimitDeclined) return false;
+        if (_limitAsk is { } pending)
+        {
+            bool allowed = await pending;
+            run.LimitDeclined = !allowed;
+            return allowed;
+        }
         var reached = _config.Provider == AgentProvider.Tooken && _usage.Last is { } snapshot ? LimitReached(snapshot) : null;
         var today = DateTime.Now.ToString("yyyy-MM-dd");
-        if (reached == null || _state.LimitOverrideDay == today) return Task.FromResult(true);
+        if (reached == null || _state.LimitOverrideDay == today) return true;
+        if (_agent != agent)
+        {
+            await WaitForActiveChatAsync(agent, run.Cancellation.Token);
+            return await CheckLimitsAsync(agent);
+        }
         var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _limitAsk = answer.Task;
         bool proceed = false;
@@ -328,13 +338,13 @@ public partial class MainWindow
                 _state.LimitOverrideDay = today;
                 _state.Save();
             }
-            else _limitDeclined = true;
+            else run.LimitDeclined = true;
         }
         finally
         {
             _limitAsk = null;
             answer.SetResult(proceed);
         }
-        return answer.Task;
+        return proceed;
     }
 }

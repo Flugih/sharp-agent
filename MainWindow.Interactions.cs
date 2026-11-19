@@ -2,17 +2,16 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    async Task<string> AskClarificationAsync(Clarification question, CancellationToken ct)
+    async Task<string> AskClarificationAsync(AgentRunner agent, Clarification question, CancellationToken ct)
     {
-        CloseSubagents();
-        ExpandBrowser(false);
+        var run = _runs[agent];
         var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var choices = new StackPanel();
         foreach (var choice in question.Choices)
         {
             var button = new Button
             {
-                Style = Theme.Style("RowButton"), Content = new TextBlock { Text = choice, TextWrapping = TextWrapping.Wrap }, ToolTip = choice,
+                Style = Theme.Style("RowButton"), Content = new TextBlock { Text = choice, TextWrapping = TextWrapping.Wrap },
                 Padding = new(12, 6, 12, 6), Margin = new(0, 0, 0, 6), BorderThickness = new(1),
             }.Paint(BackgroundProperty, "Raised").Paint(BorderBrushProperty, "RaisedLine");
             AutomationProperties.SetName(button, choice);
@@ -45,28 +44,38 @@ public partial class MainWindow
                 new DockPanel { Margin = new(0, 2, 0, 0), Children = { send, custom } },
             },
         };
-        _questionCard = new Border
+        run.Question = new Border
         {
             Style = Theme.Style("Card"), Padding = new(16, 12, 16, 12),
             Child = new ScrollViewer { Content = body, MaxHeight = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         };
-        _questionFocus = (Button)choices.Children[0];
-        _compactChat?.SetStatus("Жду ответа");
-        PlaceQuestion();
+        run.QuestionFocus = (Button)choices.Children[0];
+        if (_agent == agent)
+        {
+            CloseSubagents();
+            ExpandBrowser(false);
+            _compactChat?.SetStatus("Жду ответа");
+            PlaceQuestion();
+        }
+        RenderChatList();
         try
         {
             return await reply.Task.WaitAsync(ct);
         }
         finally
         {
-            _questionCard = _questionFocus = null;
-            PlaceQuestion();
-            if (IsActive)
+            run.Question = run.QuestionFocus = null;
+            if (_agent == agent)
             {
-                ExpandBrowser(false);
-                InputBox.Focus();
+                PlaceQuestion();
+                if (IsActive)
+                {
+                    ExpandBrowser(false);
+                    InputBox.Focus();
+                }
+                else if (_compactChat is { IsActive: true } compact) compact.FocusInput();
             }
-            else if (_compactChat is { IsActive: true } compact) compact.FocusInput();
+            RenderChatList();
         }
     }
 }

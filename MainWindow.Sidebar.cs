@@ -29,7 +29,7 @@ public partial class MainWindow
         SidebarShade.Visibility = VisibleIf(overlay);
         ChatListScroll.Visibility = SidebarResize.Visibility = VisibleIf(expanded);
         // Labels hide without leaving the layout, so the icons of the rail stay exactly where they were.
-        foreach (var label in new UIElement[] { BrandLabel, NewChatLabel, TrashLabel, TrashCount, BalanceText, SettingsLabel, MoreLabel })
+        foreach (var label in new UIElement[] { NewChatLabel, TrashLabel, TrashCount, BalanceText, SettingsLabel, MoreLabel })
             label.Visibility = expanded ? Visibility.Visible : Visibility.Hidden;
         ChatsButton.Visibility = VisibleIf(!expanded);
         SetHint(SidebarToggle, expanded ? "Скрыть список чатов (Ctrl+H)" : "Показать список чатов (Ctrl+H)");
@@ -185,6 +185,8 @@ public partial class MainWindow
         });
         if (path != null) await OpenChatAsync(path);
         else RenderCurrentChat();
+        InputBox.Text = _state.Draft ?? "";
+        InputBox.CaretIndex = InputBox.Text.Length;
     });
 
     async Task LoadChatsAsync()
@@ -225,17 +227,17 @@ public partial class MainWindow
         if (_agent != null && ReferenceEquals(e.OriginalSource, sender) && AtChatListEnd()) _ = LoadChatsAsync();
     }
 
-    void SyncCurrentChat(bool touched)
+    void SyncChat(AgentRunner agent, bool touched)
     {
-        if (_agent.ChatPath is { } path && _agent.History.Count > 0)
+        if (agent.ChatPath is { } path && agent.History.Count > 0)
         {
             int index = _chats.FindIndex(c => PathHelper.SamePath(c.Path, path));
             var updated = touched ? DateTime.Now : index >= 0 ? _chats[index].Updated
                 : File.Exists(path) ? File.GetLastWriteTime(path) : DateTime.Now;
             if (index >= 0) _chats.RemoveAt(index);
-            _chats.Add(new(path, ChatStore.TitleOf(_agent.History, _agent.Title), updated));
+            _chats.Add(new(path, ChatStore.TitleOf(agent.History, agent.Title), updated));
         }
-        UpdateChatTitle();
+        if (_agent == agent) UpdateChatTitle();
         RenderChatList();
     }
 
@@ -303,16 +305,30 @@ public partial class MainWindow
     Grid ChatRow(ChatSummary chat)
     {
         bool current = IsCurrent(chat.Path);
+        var running = RunningChat(chat.Path) is { } runner ? _runs[runner] : null;
+        bool waiting = running is { Activated: not null } or { Question: not null };
+        var status = running == null ? "" : waiting ? ", ждёт ответа" : ", агент работает";
+        var title = new TextBlock { Text = chat.Title, TextTrimming = TextTrimming.CharacterEllipsis };
+        object content = title;
+        if (running != null)
+        {
+            var indicator = waiting
+                ? new TextBlock { Text = "●", FontSize = 9, Width = 12, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+                    .Paint(ForegroundProperty, "Warning")
+                : MakeSpinner(12);
+            indicator.Margin = new(0, 0, 7, 0);
+            content = new DockPanel { Children = { indicator, title } };
+        }
         var row = new Grid { Tag = chat };
         var delete = FileActions.Item("Удалить в корзину", Glyphs.Delete, () => DeleteChat(chat), "Delete");
         delete.Tag = "danger";
         var menu = new ContextMenu { Items = { FileActions.Item("Переименовать", Glyphs.Rename, () => BeginRename(chat, row), "F2"), delete } };
         var open = new Button
         {
-            Style = Theme.Style("ChatItem"), Content = new TextBlock { Text = chat.Title, TextTrimming = TextTrimming.CharacterEllipsis },
-            Tag = current ? "current" : null, ToolTip = chat.Title.Length > 30 ? chat.Title : null, ContextMenu = menu,
+            Style = Theme.Style("ChatItem"), Content = content,
+            Tag = current ? "current" : null, ToolTip = chat.Title.Length > 30 || running != null ? chat.Title + status : null, ContextMenu = menu,
         };
-        AutomationProperties.SetName(open, current ? chat.Title + ", открыт" : chat.Title);
+        AutomationProperties.SetName(open, chat.Title + (current ? ", открыт" : "") + status);
         open.Click += (_, _) => OpenChatFromUser(chat.Path);
         var more = Theme.IconButton(Glyphs.More, "Действия с чатом", 24);
         more.Focusable = false;
@@ -353,11 +369,6 @@ public partial class MainWindow
         if (_waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         if (!IsCurrent(path))
         {
-            if (_cts != null)
-            {
-                ShowToast("Агент работает. Остановите его (Esc), чтобы открыть другой чат", ToastKind.Warning);
-                return;
-            }
             CloseOverlay();
             await RunChatOperationAsync(() => OpenChatAsync(path));
         }
@@ -367,28 +378,28 @@ public partial class MainWindow
 
     async Task OpenChatAsync(string path)
     {
+        var running = RunningChat(path);
+        var agent = running ?? CreateAgent();
         try
         {
-            await _agent.OpenAsync(path);
+            if (running == null) await agent.OpenAsync(path);
             HideBanner("chat");
         }
         catch (Exception ex)
         {
             App.LogError(ex);
-            _agent.NewChat();
+            agent.NewChat();
             if (ex is JsonException)
             {
                 _chats.RemoveAll(c => PathHelper.SamePath(c.Path, path));
                 string? moved = null;
-                try { moved = Path.GetFileName(_agent.Store.Quarantine(path)); }
+                try { moved = Path.GetFileName(agent.Store.Quarantine(path)); }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
                 ShowToast("Чат повреждён и не открывается." + (moved != null ? $" Файл отложен как {moved} в папке history." : ""), ToastKind.Error);
             }
             else ShowBanner("chat", Glyphs.Warning, "Не удалось открыть чат", ex.Message, "Повторить", () => OpenChatFromUser(path), true);
         }
-        ClearPendingAttachments();
-        _state.CurrentChat = Path.GetFileName(_agent.ChatPath);
-        RenderCurrentChat();
+        SelectChat(agent);
     }
 
     void NewChat_Click(object s, RoutedEventArgs e) => StartNewChat();
@@ -396,19 +407,11 @@ public partial class MainWindow
     void StartNewChat()
     {
         if (SettingsOpen || _waitingToClose || WaitForChatFile(ChatFileBusy)) return;
-        if (_cts != null)
-        {
-            ShowToast("Агент работает. Остановите его (Esc), чтобы начать новый чат", ToastKind.Warning);
-            return;
-        }
         CloseOverlay();
-        ClearPendingAttachments();
         if (_agent.History.Count > 0 || _agent.ChatPath != null)
         {
-            _agent.NewChat();
             HideBanner("chat");
-            _state.CurrentChat = null;
-            RenderCurrentChat();
+            SelectChat(CreateAgent());
         }
         InputBox.Focus();
     }
@@ -417,9 +420,9 @@ public partial class MainWindow
     {
         if (_waitingToClose || WaitForChatFile(ChatFileBusy)) return;
         bool current = IsCurrent(chat.Path);
-        if (current && _cts != null)
+        if (RunningChat(chat.Path) != null)
         {
-            ShowToast("Агент работает в этом чате. Остановите его (Esc), чтобы удалить чат", ToastKind.Warning);
+            ShowToast("Агент работает в этом чате. Откройте чат и остановите задачу перед удалением.", ToastKind.Warning);
             return;
         }
         string? trashed = null;
@@ -430,12 +433,13 @@ public partial class MainWindow
             return;
         }
         _chats.RemoveAll(c => PathHelper.SamePath(c.Path, chat.Path));
+        _chatErrors.Remove(chat.Path);
+        _chatDrafts.Remove(chat.Path);
         if (current)
         {
+            InputBox.Clear();
             ClearPendingAttachments();
-            _agent.NewChat();
-            _state.CurrentChat = null;
-            RenderCurrentChat();
+            SelectChat(CreateAgent());
         }
         else RenderChatList();
         UpdateTrashCount();
@@ -487,7 +491,7 @@ public partial class MainWindow
     {
         try
         {
-            if (IsCurrent(chat.Path)) await _agent.RenameAsync(title);
+            if ((IsCurrent(chat.Path) ? _agent : RunningChat(chat.Path)) is { } agent) await agent.RenameAsync(title);
             else await Task.Run(() => _agent.Store.Rename(chat.Path, title));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -497,6 +501,6 @@ public partial class MainWindow
         }
         int index = _chats.FindIndex(c => PathHelper.SamePath(c.Path, chat.Path));
         if (index >= 0) _chats[index] = _chats[index] with { Title = title };
-        SyncCurrentChat(false);
+        SyncChat(_agent, touched: false);
     }
 }

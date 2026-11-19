@@ -4,6 +4,12 @@
         <ui:PillRadiusConverter x:Key="PillRadius"/>
 
         <SolidColorBrush x:Key="Bg" Color="#181818"/>
+        <Color x:Key="ComputerCyan">#23D9FF</Color>
+        <Color x:Key="ComputerBlue">#2665FF</Color>
+        <Color x:Key="ComputerViolet">#9355FF</Color>
+        <SolidColorBrush x:Key="ComputerBadgeBg" Color="#F20A1327"/>
+        <SolidColorBrush x:Key="ComputerBadgeHalo" Color="#44376DFF"/>
+        <SolidColorBrush x:Key="ComputerBadgeText" Color="#F1F6FF"/>
         <SolidColorBrush x:Key="ChromeBg" Color="#202020"/>
         <SolidColorBrush x:Key="Surface" Color="#222222"/>
         <SolidColorBrush x:Key="Surface2" Color="#292929"/>
@@ -418,7 +424,7 @@
         </ControlTemplate>
         <ControlTemplate x:Key="ProgressTemplate" TargetType="Expander">
             <StackPanel>
-                <ToggleButton x:Name="HeaderSite" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" Background="Transparent" FocusVisualStyle="{StaticResource FocusInner}" AutomationProperties.Name="{TemplateBinding AutomationProperties.Name}" ToolTip="{TemplateBinding ToolTip}" IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}" Template="{StaticResource ProgressHeaderTemplate}">
+                <ToggleButton x:Name="HeaderSite" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" Background="Transparent" FocusVisualStyle="{StaticResource FocusInner}" AutomationProperties.Name="{TemplateBinding AutomationProperties.Name}" IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}" Template="{StaticResource ProgressHeaderTemplate}">
                     <DockPanel>
                         <TextBlock x:Name="Chevron" DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource IconFont}" FontSize="10" VerticalAlignment="Center" Margin="6,1,2,0" Foreground="{TemplateBinding Foreground}"/>
                         <ContentPresenter ContentSource="Header"/>
@@ -456,11 +462,6 @@
                                 <Setter TargetName="Box" Property="Background" Value="{DynamicResource Accent}"/>
                                 <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource Accent}"/>
                                 <Setter TargetName="Mark" Property="Text" Value="&#xE73E;"/>
-                            </Trigger>
-                            <Trigger Property="IsChecked" Value="{x:Null}">
-                                <Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentText}"/>
-                                <Setter TargetName="Mark" Property="Foreground" Value="{DynamicResource AccentText}"/>
-                                <Setter TargetName="Mark" Property="Text" Value="&#xE738;"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -582,6 +583,16 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <ControlTemplate x:Key="ChatScrollTemplate" TargetType="ScrollViewer">
+            <Grid Background="{TemplateBinding Background}">
+                <ScrollContentPresenter x:Name="PART_ScrollContentPresenter" Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}"/>
+                <ScrollBar x:Name="PART_VerticalScrollBar" HorizontalAlignment="Right" Orientation="Vertical"
+                           Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}"
+                           Value="{TemplateBinding VerticalOffset}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
+            </Grid>
+        </ControlTemplate>
 
         <ControlTemplate x:Key="FieldTemplate" TargetType="Control">
             <Grid>

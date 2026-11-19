@@ -40,6 +40,7 @@ public static class ImageTools
             [(byte)'R', (byte)'I', (byte)'F', (byte)'F', _, _, _, _, (byte)'W', (byte)'E', (byte)'B', (byte)'P', ..] => ".webp",
             _ => ".png",
         }));
+        c.GuardWrite(path);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllBytesAsync(path, bytes, ct);
         return $"{ResultPrefix}{path}\nРазмер файла: {PathHelper.FormatSize(bytes.Length)}";

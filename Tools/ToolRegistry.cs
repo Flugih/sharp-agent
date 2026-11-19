@@ -52,7 +52,7 @@ public sealed class ToolRegistry
     public static bool CommandFailed(string output) => CommandLog.ResultOf(output) is { } result && result != "код 0";
 
     public async Task<ToolOutcome> ExecuteAsync(string name, string argumentsJson, Func<ConfirmRequest, Task<bool>>? confirm,
-        CancellationToken ct)
+        CancellationToken ct, Action? executionStarted = null)
     {
         if (!_byName.TryGetValue(name, out var tool) || name == ComputerTools.Name && !Context.ComputerUse)
             return Error($"Ошибка: неизвестный инструмент '{name}'.");
@@ -62,9 +62,11 @@ public sealed class ToolRegistry
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
         var toolArgs = new ToolArgs(args);
+        bool opaque = name is "run_command" or "run_plugin" or "open_path" or ComputerTools.Name;
         try
         {
             ct.ThrowIfCancellationRequested();
+            if (opaque) Context.FileAccess.RequireExclusiveAccess(reserve: false);
             if (Context.SandboxRoot == null && ForeignShares(args) is { Length: > 0 } shares)
             {
                 if (confirm == null) return Error("Ошибка: сетевые пути вне рабочей папки субагентам недоступны.");
@@ -75,6 +77,9 @@ public sealed class ToolRegistry
             }
             if (tool.Confirmation?.Invoke(toolArgs, Context) is { } request && confirm != null && !await confirm(request))
                 return Error("Пользователь отклонил это действие. Не повторяй его без явной просьбы пользователя.");
+            ct.ThrowIfCancellationRequested();
+            if (opaque) Context.FileAccess.RequireExclusiveAccess(reserve: true);
+            executionStarted?.Invoke();
             return await Task.Run(async () =>
             {
                 var pending = FileChanges.Capture(Context, name, toolArgs);

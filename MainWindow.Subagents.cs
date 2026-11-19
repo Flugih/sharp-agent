@@ -49,7 +49,7 @@ public partial class MainWindow
         if (newTool && update.Action is { } call)
         {
             var label = Activity(call.Name, call.ArgumentsJson).Trim();
-            var text = new Shimmer { Text = label, ToolTip = label, TextWrapping = TextWrapping.Wrap, IsActive = true };
+            var text = new Shimmer { Text = label, TextWrapping = TextWrapping.Wrap, IsActive = true };
             if (call.Name == "search_text")
             {
                 text.Text = OneLine(ArgumentOf(call.ArgumentsJson, "query"));
@@ -99,7 +99,7 @@ public partial class MainWindow
         var button = new Button
         {
             Content = new DockPanel { Children = { arrow, new StackPanel { Margin = new(0, 0, 10, 0), Children = { title, row.Status } } } },
-            Style = Theme.Style("RowButton"), HorizontalContentAlignment = HorizontalAlignment.Stretch, ToolTip = row.State.Title,
+            Style = Theme.Style("RowButton"), HorizontalContentAlignment = HorizontalAlignment.Stretch, ToolTip = row.State.Title.Length > 30 ? row.State.Title : null,
         };
         AutomationProperties.SetName(button, "Открыть активность субагента " + row.State.Title);
         button.Click += (_, _) => ShowSubagentPage(row);

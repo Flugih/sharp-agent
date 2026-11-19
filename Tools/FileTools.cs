@@ -55,7 +55,7 @@ public static partial class FileTools
         Tool("delete_path", "Удалить файл или папку. По умолчанию — в Корзину (можно восстановить). permanent=true — безвозвратно, только по явной просьбе пользователя.", DeletePath, [
             Text("path", "Что удалить.", true),
             Flag("permanent", "Удалить безвозвратно, минуя Корзину (по умолчанию false).")], ConfirmDelete),
-        Tool("open_path", "Открыть файл, папку или ссылку (http/https) программой по умолчанию — как двойной щелчок в Проводнике.", OpenPath, [Text("path", "Путь к файлу/папке или URL.", true)], ConfirmOpen),
+        Tool("open_path", "Открыть файл или папку программой по умолчанию. Ссылки http/https открываются во встроенном браузере Sharp Agent.", OpenPath, [Text("path", "Путь к файлу, папке или URL.", true)], ConfirmOpen),
     ];
 
     static AgentTool Tool(string name, string description, Func<ToolArgs, ToolContext, CancellationToken, string> handler, Prop[] props,
