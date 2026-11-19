@@ -7,25 +7,10 @@ public static class Theme
     public static Brush Get(string key) => (Brush)Application.Current.Resources[key];
     public static Style Style(string key) => (Style)Application.Current.Resources[key];
 
-    public static Brush Bg => Get("Bg");
-    public static Brush Surface => Get("Surface");
-    public static Brush Surface2 => Get("Surface2");
-    public static Brush Surface3 => Get("Surface3");
     public static Brush Line => Get("Line");
-    public static Brush LineStrong => Get("LineStrong");
     public static Brush Text => Get("Text");
     public static Brush TextSoft => Get("TextSoft");
-    public static Brush TextMuted => Get("TextMuted");
-    public static Brush Accent => Get("Accent");
-    public static Brush AccentLine => Get("AccentLine");
-    public static Brush AccentText => Get("AccentText");
-    public static Brush DangerSoft => Get("DangerSoft");
-    public static Brush DangerLine => Get("DangerLine");
     public static Brush DangerText => Get("DangerText");
-    public static Brush Success => Get("Success");
-    public static Brush Warning => Get("Warning");
-    public static Brush WarningSoft => Get("WarningSoft");
-    public static Brush WarningLine => Get("WarningLine");
 
     public static FontFamily Icons => (FontFamily)Application.Current.Resources["IconFont"];
     public static FontFamily Mono => (FontFamily)Application.Current.Resources["MonoFont"];
@@ -41,12 +26,18 @@ public static class Theme
         return target;
     }
 
-    public static Button IconButton(string glyph, string hint, double size = 28, double fontSize = 12)
+    public static Button IconButton(string glyph, string hint, double size = 32, double fontSize = 16)
     {
         var button = new Button { Style = Style("IconButton"), Content = glyph, Width = size, Height = size, FontSize = fontSize, ToolTip = hint };
         AutomationProperties.SetName(button, hint);
         return button;
     }
+
+    public static Border KeyBadge(string keys) => new Border
+    {
+        CornerRadius = new(6), Padding = new(6, 2, 6, 2),
+        Child = new TextBlock { Text = keys, FontSize = 12 }.Paint(TextBlock.ForegroundProperty, "TextSoft"),
+    }.Paint(Border.BackgroundProperty, "TrackStrong");
 
     public static void After(TimeSpan delay, Action action)
     {
@@ -62,13 +53,15 @@ public static class Theme
     // Light values for every palette brush; dark ones are the App.xaml originals captured on first use.
     static readonly Dictionary<string, Color> LightColors = new[]
     {
-        ("Bg", "#F3F3F5"), ("Surface", "#FFFFFF"), ("Surface2", "#F0F0F2"), ("Surface3", "#E4E4E8"), ("Line", "#E4E4E8"),
-        ("LineStrong", "#D0D0D6"), ("ControlBorder", "#8A8A94"), ("LineHover", "#5F5F68"), ("Text", "#1A1A1E"), ("TextSoft", "#36363C"),
-        ("TextMuted", "#5C5C64"), ("TextFaint", "#8A8A92"), ("UserBubble", "#1F5FAD"), ("Danger", "#C42B1C"), ("DangerSoft", "#FDE7E9"),
-        ("DangerLine", "#F0B4B8"), ("DangerText", "#B3261E"), ("Success", "#107C41"), ("Warning", "#8A5300"), ("WarningSoft", "#FFF4CE"),
-        ("WarningLine", "#EBCB7A"), ("Backdrop", "#C8EDEDF0"), ("Shade", "#59000000"), ("SidebarBg", "#EBEBEE"), ("DiffAdd", "#DCF3E2"),
-        ("DiffRemove", "#FBE1E3"), ("HoverLight", "#000000"), ("CaptionHover", "#14000000"), ("CaptionPressed", "#0C000000"),
-        ("CompactBg", "#F5FFFFFF"), ("CompactLine", "#33000000"), ("CompactDivider", "#24000000"),
+        ("Bg", "#FFFFFF"), ("ChromeBg", "#F3F3F3"), ("Surface", "#F4F4F4"),
+        ("Surface2", "#FFFFFF"), ("Surface3", "#E6E6E6"), ("BlockBg", "#F4F4F4"), ("Raised", "#FFFFFF"), ("RaisedLine", "#D9D9D9"),
+        ("Fill", "#EFEFEF"), ("ControlBg", "#E9E9E9"), ("RowHover", "#0B000000"), ("ComposerBg", "#FFFFFF"), ("ComposerLine", "#E0E0E0"),
+        ("ComposerStrip", "#F2F2F2"), ("Line", "#E5E5E5"), ("LineStrong", "#D9D9D9"), ("Track", "#D4D4D4"), ("TrackStrong", "#B4B4B4"),
+        ("Text", "#0D0D0D"), ("TextStrong", "#000000"), ("TextSoft", "#3C3C3C"), ("TextDim", "#5E5E5E"), ("TextMuted", "#686868"),
+        ("TextFaint", "#A0A0A0"), ("UserBubbleText", "#0D0D0D"), ("PrimaryBg", "#181818"), ("PrimaryFg", "#FFFFFF"), ("Danger", "#C42B1C"),
+        ("DangerText", "#BC2A1B"), ("DangerSoft", "#FDE7E9"), ("Warning", "#A84300"), ("Success", "#0E7439"), ("DiffAdd", "#E6F4EA"),
+        ("DiffAddText", "#17722F"), ("DiffRemove", "#FBE1E3"), ("Shade", "#59000000"), ("HoverLight", "#000000"),
+        ("CaptionHover", "#14000000"), ("CaptionPressed", "#0C000000"),
     }.ToDictionary(pair => pair.Item1, pair => (Color)ColorConverter.ConvertFromString(pair.Item2));
     static Dictionary<string, Color>? _darkColors;
 
@@ -82,19 +75,19 @@ public static class Theme
         bool changed = false;
         foreach (var (key, light) in LightColors) changed |= Set(resources, key, IsLight ? light : _darkColors[key]);
         Color ColorOf(string key) => ((SolidColorBrush)resources[key]).Color;
-        Color surface = ColorOf("Surface"), surface2 = ColorOf("Surface2"), bg = ColorOf("Bg"), fill = ReadWindowsAccent();
-        var toward = IsLight ? Colors.Black : Colors.White;
-        for (int i = 0; i < 20 && Contrast(fill, surface) < 3.0; i++) fill = Mix(fill, toward, 0.08);
+        Color bg = ColorOf("Bg"), fill = ReadWindowsAccent();
+        Color toward = IsLight ? Colors.Black : Colors.White, away = IsLight ? Colors.White : Colors.Black;
+        for (int i = 0; i < 20 && Contrast(fill, bg) < 3.0; i++) fill = Mix(fill, toward, 0.08);
         var dark = Color.FromRgb(0x10, 0x10, 0x12);
-        var soft = Mix(surface, fill, IsLight ? 0.12 : 0.22);
-        var text = fill;
-        for (int i = 0; i < 20 && (Contrast(text, soft) < 4.5 || Contrast(text, surface2) < 4.5); i++) text = Mix(text, toward, 0.08);
+        // Accent text must stay readable on the hardest surface it is used on: Raised in dark, Surface3 in light.
+        Color text = fill, hardest = ColorOf(IsLight ? "Surface3" : "Raised");
+        for (int i = 0; i < 20 && Contrast(text, hardest) < 4.5; i++) text = Mix(text, toward, 0.08);
+        Color bubble = Mix(away, fill, IsLight ? 0.15 : 0.6), bubbleText = ColorOf("UserBubbleText");
+        for (int i = 0; i < 20 && Contrast(bubbleText, bubble) < 4.5; i++) bubble = Mix(bubble, away, 0.08);
         changed |= Set(resources, "Accent", fill);
         changed |= Set(resources, "OnAccent", Contrast(Colors.White, fill) >= 4.5 || Contrast(Colors.White, fill) >= Contrast(dark, fill) ? Colors.White : dark);
-        changed |= Set(resources, "AccentSoft", soft);
-        changed |= Set(resources, "AccentLine", Mix(surface, fill, IsLight ? 0.45 : 0.55));
         changed |= Set(resources, "AccentText", text);
-        return Set(resources, "BannerBg", Mix(bg, fill, IsLight ? 0.1 : 0.14)) | changed;
+        return Set(resources, "UserBubble", bubble) | changed;
     }
 
     // XAML binds palette brushes as DynamicResource, so replacing an entry recolors the whole UI.
@@ -148,4 +141,5 @@ public static class Glyphs
         Terminal = "", Open = "", OpenWith = "", Reveal = "", Info = "", View = "", Check = "", Cancel = "",
         Warning = "", ChevronRight = "", ChevronDown = "", Tool = "", Lock = "", Globe = "", Refresh = "", Lightning = "",
         Play = "", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
+    public const string Laptop = "\uE7F8";
 }

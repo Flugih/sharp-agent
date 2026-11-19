@@ -4,7 +4,7 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    const double DefaultSidebarWidth = 260, MinSidebarWidth = 208, MaxSidebarWidth = 480, RailWidth = 52, DockedMinWidth = 900;
+    const double DefaultSidebarWidth = 240, MinSidebarWidth = 208, MaxSidebarWidth = 480, RailWidth = 50, DockedMinWidth = 900;
     const int ChatPageSize = 30;
     static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
 
@@ -27,10 +27,11 @@ public partial class MainWindow
         Grid.SetColumnSpan(Sidebar, overlay ? 2 : 1);
         Sidebar.Effect = overlay ? new DropShadowEffect { BlurRadius = 24, ShadowDepth = 0, Opacity = 0.6 } : null;
         SidebarShade.Visibility = VisibleIf(overlay);
-        foreach (var element in new UIElement[] { Brand, NewChatLabel, TrashLabel, TrashCount, BalanceText, SettingsLabel, MoreLabel, ChatListScroll, SidebarResize })
-            element.Visibility = VisibleIf(expanded);
+        ChatListScroll.Visibility = SidebarResize.Visibility = VisibleIf(expanded);
+        // Labels hide without leaving the layout, so the icons of the rail stay exactly where they were.
+        foreach (var label in new UIElement[] { BrandLabel, NewChatLabel, TrashLabel, TrashCount, BalanceText, SettingsLabel, MoreLabel })
+            label.Visibility = expanded ? Visibility.Visible : Visibility.Hidden;
         ChatsButton.Visibility = VisibleIf(!expanded);
-        SidebarToggle.HorizontalAlignment = expanded ? HorizontalAlignment.Right : HorizontalAlignment.Center;
         SetHint(SidebarToggle, expanded ? "Скрыть список чатов (Ctrl+H)" : "Показать список чатов (Ctrl+H)");
         UpdateLayoutWidths();
     }
@@ -115,9 +116,9 @@ public partial class MainWindow
         ApplySidebar();
     }
 
-    bool FlyoutShows(Border card) => IsShown(FlyoutLayer) && IsShown(card);
+    bool FlyoutShows(ContentControl card) => IsShown(FlyoutLayer) && IsShown(card);
 
-    void ShowFlyout(Border card, Button owner)
+    void ShowFlyout(ContentControl card, Button owner)
     {
         var origin = owner.TranslatePoint(new(), RootGrid);
         card.Margin = new(origin.X, 8, 8, RootGrid.ActualHeight - origin.Y + 4);
@@ -125,7 +126,6 @@ public partial class MainWindow
         UsageCard.Visibility = VisibleIf(card == UsageCard);
         _flyoutOwner = owner;
         FlyoutLayer.Visibility = Visibility.Visible;
-        if (Theme.AnimationsEnabled) card.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
         if (InputManager.Current.MostRecentInputDevice is KeyboardDevice)
             Dispatcher.InvokeAsync(() => card.MoveFocus(new(FocusNavigationDirection.First)), DispatcherPriority.Input);
     }
@@ -244,7 +244,16 @@ public partial class MainWindow
         var text = _agent.History.Count > 0 ? ChatStore.TitleOf(_agent.History, _agent.Title).ReplaceLineEndings(" ") : "";
         ChatTitleText.Text = text.Length == 0 ? "Новый чат" : text.Length > 80 ? text[..80] + "…" : text;
         ChatTitleText.ToolTip = text.Length > 40 ? (text.Length > 400 ? text[..400] + "…" : text) : null;
+        ChatMenuButton.Visibility = VisibleIf(text.Length > 0 && _agent.ChatPath != null);
         Title = text.Length == 0 ? "Sharp Agent" : ChatTitleText.Text + " — Sharp Agent";
+    }
+
+    // The title chevron opens the current chat row's own menu.
+    void ChatMenu_Click(object s, RoutedEventArgs e)
+    {
+        if (_agent.ChatPath is not { } path || ChatRowOf(path)?.Children[0] is not Button { ContextMenu: { } menu }) return;
+        menu.PlacementTarget = ChatMenuButton;
+        menu.IsOpen = true;
     }
 
     bool IsCurrent(string path) => _agent.ChatPath is { } current && PathHelper.SamePath(path, current);
@@ -259,7 +268,7 @@ public partial class MainWindow
         {
             ChatList.Children.Add(new TextBlock
             {
-                Text = "Здесь появятся ваши чаты.", FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new(10, 4, 10, 0),
+                Text = "Здесь появятся ваши чаты.", FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new(8, 12, 8, 0),
             }.Paint(ForegroundProperty, "TextMuted"));
             return;
         }
@@ -274,7 +283,8 @@ public partial class MainWindow
             var name = GroupOf(chat.Updated);
             if (name != group)
             {
-                ChatList.Children.Add(new TextBlock { Text = name, FontSize = 12, Margin = new(10, group == null ? 4 : 16, 10, 6) }.Paint(ForegroundProperty, "TextMuted"));
+                ChatList.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.SemiBold, Margin = new(8, group == null ? 12 : 20, 8, 8) }
+                    .Paint(ForegroundProperty, "TextMuted"));
                 group = name;
             }
             ChatList.Children.Add(ChatRow(chat));
@@ -293,15 +303,10 @@ public partial class MainWindow
     Grid ChatRow(ChatSummary chat)
     {
         bool current = IsCurrent(chat.Path);
-        var row = new Grid { Margin = new(0, 0, 0, 2), Tag = chat };
-        var menu = new ContextMenu
-        {
-            Items =
-            {
-                FileActions.Item("Переименовать", Glyphs.Rename, () => BeginRename(chat, row), "F2"),
-                FileActions.Item("Удалить в корзину", Glyphs.Delete, () => DeleteChat(chat), "Delete"),
-            },
-        };
+        var row = new Grid { Tag = chat };
+        var delete = FileActions.Item("Удалить в корзину", Glyphs.Delete, () => DeleteChat(chat), "Delete");
+        delete.Tag = "danger";
+        var menu = new ContextMenu { Items = { FileActions.Item("Переименовать", Glyphs.Rename, () => BeginRename(chat, row), "F2"), delete } };
         var open = new Button
         {
             Style = Theme.Style("ChatItem"), Content = new TextBlock { Text = chat.Title, TextTrimming = TextTrimming.CharacterEllipsis },
@@ -309,16 +314,21 @@ public partial class MainWindow
         };
         AutomationProperties.SetName(open, current ? chat.Title + ", открыт" : chat.Title);
         open.Click += (_, _) => OpenChatFromUser(chat.Path);
-        var more = Theme.IconButton(Glyphs.More, "Действия с чатом", 26, 12);
+        var more = Theme.IconButton(Glyphs.More, "Действия с чатом", 24);
         more.Focusable = false;
         more.HorizontalAlignment = HorizontalAlignment.Right;
-        more.Margin = new(0, 0, 4, 0);
+        more.Margin = new(0, 0, 3, 1);
         more.Click += (_, _) =>
         {
             menu.PlacementTarget = more;
             menu.IsOpen = true;
         };
-        void ShowMore() => more.Visibility = current || row.IsMouseOver || row.IsKeyboardFocusWithin || menu.IsOpen ? Visibility.Visible : Visibility.Hidden;
+        void ShowMore()
+        {
+            more.Visibility = current || row.IsMouseOver || row.IsKeyboardFocusWithin || menu.IsOpen ? Visibility.Visible : Visibility.Hidden;
+            // The title gives way to the "…" button only while that button shows.
+            open.Padding = new(8, 0, more.Visibility == Visibility.Visible ? 30 : 8, 0);
+        }
         row.MouseEnter += (_, _) => ShowMore();
         row.MouseLeave += (_, _) => ShowMore();
         row.IsKeyboardFocusWithinChanged += (_, _) => ShowMore();
@@ -435,7 +445,15 @@ public partial class MainWindow
     void BeginRename(ChatSummary chat, Grid row)
     {
         if (_renaming != null || _waitingToClose || WaitForChatFile(ChatFileBusy)) return;
-        var box = new TextBox { Style = Theme.Style("FieldTextBox"), Text = chat.Title, Height = 34, FontSize = 13, Padding = new(6, 0, 6, 0) };
+        if (!SidebarExpanded)
+        {
+            // Started from the title menu: show the list first, after its own focus move.
+            ToggleSidebar();
+            if (SidebarExpanded)
+                Dispatcher.InvokeAsync(() => { if (ChatRowOf(chat.Path) is { } shown) BeginRename(chat, shown); }, DispatcherPriority.Background);
+            return;
+        }
+        var box = new TextBox { Style = Theme.Style("FieldTextBox"), Text = chat.Title, Height = 30, Padding = new(7, 0, 7, 0) };
         ContextMenuService.SetIsEnabled(box, false);
         AutomationProperties.SetName(box, "Новое название чата");
         void Finish(bool commit, bool refocus)
@@ -461,8 +479,9 @@ public partial class MainWindow
         box.SelectAll();
     }
 
-    void FocusChatRow(string path) =>
-        (ChatList.Children.OfType<Grid>().FirstOrDefault(r => r.Tag is ChatSummary c && PathHelper.SamePath(c.Path, path))?.Children[0] as Button)?.Focus();
+    Grid? ChatRowOf(string path) => ChatList.Children.OfType<Grid>().FirstOrDefault(r => r.Tag is ChatSummary c && PathHelper.SamePath(c.Path, path));
+
+    void FocusChatRow(string path) => (ChatRowOf(path)?.Children[0] as Button)?.Focus();
 
     async Task RenameChatAsync(ChatSummary chat, string title)
     {

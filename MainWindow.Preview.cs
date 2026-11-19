@@ -34,7 +34,6 @@ public partial class MainWindow
         PictureName.Text = ChatLinks.DisplayName(path);
         PictureImage.Source = null;
         PictureOverlay.Visibility = Visibility.Visible;
-        if (Theme.AnimationsEnabled) PictureOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)));
         _ = LoadPictureAsync(path);
     }
 
@@ -170,15 +169,15 @@ public partial class MainWindow
         Grid.SetColumnSpan(SubagentsWorkspace, side ? 1 : 2);
         Grid.SetColumn(BrowserPane, _browserExpanded ? 0 : 1);
         Grid.SetColumnSpan(BrowserPane, _browserExpanded ? 2 : 1);
-        SubagentsWorkspace.BorderThickness = new Thickness(side ? 1 : 0, 1, 0, 0);
+        SubagentsWorkspace.BorderThickness = new Thickness(side ? 1 : 0, 0, 0, 0);
         PreviewSplitter.Visibility = VisibleIf(docked);
         UpdateLayoutWidths();
     }
 
     static FrameworkElement FileView(string path) =>
-        !File.Exists(path) ? PreviewNote("Файла больше нет: его переместили или удалили.")
+        !File.Exists(path) ? EmptyState("Файла больше нет: его переместили или удалили.")
         : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text)
-        : PreviewNote("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.");
+        : EmptyState("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.");
 
     static FrameworkElement CodeView(string text)
     {
@@ -195,8 +194,8 @@ public partial class MainWindow
         {
             Content = new TextBlock
             {
-                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12.5,
-                TextAlignment = TextAlignment.Right, Padding = new Thickness(0, 0, 12, 24),
+                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12, LineHeight = 19,
+                LineStackingStrategy = LineStackingStrategy.BlockLineHeight, TextAlignment = TextAlignment.Right, Padding = new Thickness(0, 0, 12, 24),
             }.Paint(ForegroundProperty, "TextMuted"),
             VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false, IsHitTestVisible = false,
         };
@@ -207,6 +206,8 @@ public partial class MainWindow
             Padding = new Thickness(0), FocusVisualStyle = null, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
         }.Paint(ForegroundProperty, "Text").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
+        TextBlock.SetLineHeight(body, 19);
+        TextBlock.SetLineStackingStrategy(body, LineStackingStrategy.BlockLineHeight);
         body.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, e) => gutter.ScrollToVerticalOffset(e.VerticalOffset)));
         Grid.SetColumn(body, 1);
         return new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() }, Children = { gutter, body } };
@@ -219,13 +220,9 @@ public partial class MainWindow
         var extension = Path.GetExtension(path).TrimStart('.').ToUpperInvariant();
         var subtitle = extension.Length > 0 ? $"{KindOf(path)} · {extension}" : KindOf(path);
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        texts.Children.Add(new TextBlock { Text = title, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis });
-        texts.Children.Add(new TextBlock { Text = subtitle, FontSize = 12.5, Margin = new Thickness(0, 2, 0, 0) }.Paint(ForegroundProperty, "TextMuted"));
-        var action = new Button
-        {
-            Content = "Открыть", Height = 30, Margin = new Thickness(12, 0, 0, 0), ToolTip = "Открыть в программе по умолчанию",
-            Background = Brushes.Transparent,
-        };
+        texts.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+        texts.Children.Add(new TextBlock { Text = subtitle, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis }.Paint(ForegroundProperty, "TextDim"));
+        var action = new Button { Content = "Открыть", Margin = new Thickness(12, 0, 0, 0), ToolTip = "Открыть в программе по умолчанию" };
         AutomationProperties.SetName(action, $"Открыть {title} в программе по умолчанию");
         action.Click += (_, e) =>
         {
@@ -236,7 +233,7 @@ public partial class MainWindow
         Grid.SetColumn(action, 2);
         var card = new Button
         {
-            Style = Theme.Style("FileCard"),
+            Style = Theme.Style("FileCard"), HorizontalAlignment = HorizontalAlignment.Left, MinWidth = 320, MaxWidth = 480,
             Content = new Grid
             {
                 ColumnDefinitions = { new() { Width = GridLength.Auto }, new(), new() { Width = GridLength.Auto } },
@@ -244,7 +241,7 @@ public partial class MainWindow
             },
             ToolTip = $"{path}\nЩелчок — {(changed ? "показать изменения" : "посмотреть")}, правая кнопка — другие действия",
             ContextMenu = FileActions.BuildMenu(this, path),
-        }.Paint(BackgroundProperty, "Surface2").Paint(BorderBrushProperty, "ControlBorder");
+        };
         AutomationProperties.SetName(card, $"{title}, {subtitle}");
         card.Click += (_, _) =>
         {
@@ -280,16 +277,14 @@ public partial class MainWindow
         bool picture = !changed && Attachment.IsImagePath(path);
         var page = new Border
         {
-            Width = 34, Height = 42, CornerRadius = new CornerRadius(5), Margin = new Thickness(2, 0, 16, 0),
-            BorderThickness = new Thickness(1), RenderTransformOrigin = new Point(0.5, 0.5),
-            RenderTransform = new RotateTransform(-5),
+            Width = 32, Height = 32, CornerRadius = new CornerRadius(8), Margin = new Thickness(0, 0, 12, 0),
             Child = new TextBlock
             {
                 Text = changed || CodeExtensions.Contains(Path.GetExtension(path)) ? Glyphs.Code : picture ? Glyphs.Picture : Glyphs.Document,
-                FontFamily = Theme.Icons, FontSize = 14,
+                FontFamily = Theme.Icons, FontSize = 16,
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-            }.Paint(ForegroundProperty, "TextMuted"),
-        }.Paint(BackgroundProperty, "Surface2").Paint(BorderBrushProperty, "LineStrong");
+            }.Paint(ForegroundProperty, "TextSoft"),
+        }.Paint(BackgroundProperty, "Bg");
         if (picture) _ = ShowPageImageAsync(page, path);
         return page;
     }
@@ -304,10 +299,30 @@ public partial class MainWindow
         catch { }
     }
 
-    static TextBlock PreviewNote(string text) => new TextBlock
+    static TextBlock EmptyGlyph(string glyph)
     {
-        Text = text, FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 8, 0),
-    }.Paint(ForegroundProperty, "TextMuted");
+        var block = GlyphText(glyph, 28, "TextMuted");
+        block.HorizontalAlignment = HorizontalAlignment.Center;
+        return block;
+    }
+
+    static StackPanel EmptyState(string title, UIElement? action = null)
+    {
+        var state = new StackPanel
+        {
+            MaxWidth = 360, Margin = new(16), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                EmptyGlyph(Glyphs.Document),
+                new TextBlock
+                {
+                    Text = title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new(0, 12, 0, 0),
+                }.Paint(ForegroundProperty, "Text"),
+            },
+        };
+        if (action != null) state.Children.Add(action);
+        return state;
+    }
 
     static StackPanel DiffView(FileDiff diff, int limit)
     {
@@ -341,30 +356,38 @@ public partial class MainWindow
     {
         var row = new Border
         {
-            Background = Brushes.Transparent, Padding = new Thickness(4, 1, 8, 1),
+            Background = Brushes.Transparent, BorderThickness = new(2, 0, 0, 0), Padding = new(6, 0, 8, 0),
             Child = new DockPanel
             {
                 Children =
                 {
                     new TextBlock
                     {
-                        Text = $"{oldNumber,5} {newNumber,5} {(kind == ' ' ? ' ' : kind == '-' ? '−' : '+')}", FontFamily = Theme.Mono, FontSize = 12.5,
-                        Margin = new Thickness(0, 0, 10, 0),
-                    }.Paint(ForegroundProperty, kind switch { '+' => "Success", '-' => "DangerText", _ => "TextMuted" }),
+                        Text = $"{oldNumber,5} {newNumber,5}", FontFamily = Theme.Mono, FontSize = 12, LineHeight = 19, Margin = new(0, 0, 8, 0),
+                    }.Paint(ForegroundProperty, "TextMuted"),
                     new TextBlock
                     {
-                        Text = text, FontFamily = Theme.Mono, FontSize = 12.5, TextWrapping = TextWrapping.Wrap,
-                    }.Paint(ForegroundProperty, foreground ?? (kind == ' ' ? "TextSoft" : "Text")),
+                        Text = kind switch { '+' => "+", '-' => "−", _ => " " }, FontFamily = Theme.Mono, FontSize = 12.5, LineHeight = 19, Margin = new(0, 0, 8, 0),
+                    }.Paint(ForegroundProperty, kind == '+' ? "Success" : "DangerText"),
+                    new TextBlock
+                    {
+                        Text = text, FontFamily = Theme.Mono, FontSize = 12.5, LineHeight = 19, TextWrapping = TextWrapping.Wrap,
+                    }.Paint(ForegroundProperty, foreground ?? kind switch { '+' => "DiffAddText", '-' => "Text", _ => "TextSoft" }),
                 },
             },
         };
-        return kind is '+' or '-' ? row.Paint(BackgroundProperty, kind == '+' ? "DiffAdd" : "DiffRemove") : row;
+        return kind switch
+        {
+            '+' => row.Paint(BackgroundProperty, "DiffAdd").Paint(BorderBrushProperty, "Success"),
+            '-' => row.Paint(BackgroundProperty, "DiffRemove"),
+            _ => row,
+        };
     }
 
     async Task ShowOfficePreviewAsync(string path)
     {
         var load = _officeLoad = new CancellationTokenSource();
-        PreviewBody.Content = PreviewNote("Готовлю визуальный предпросмотр…");
+        PreviewBody.Content = EmptyState("Готовлю визуальный предпросмотр…");
         try
         {
             var preview = await OfficePreview.OpenAsync(path, load.Token);
@@ -396,20 +419,21 @@ public partial class MainWindow
         var counter = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Width = 66, TextAlignment = TextAlignment.Center }.Paint(ForegroundProperty, "TextMuted");
         var sheet = new Button
         {
-            Style = Theme.Style("ModelPicker"), ToolTip = "Выбрать лист", HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 215,
+            Style = Theme.Style("DropdownButton"), ToolTip = "Выбрать лист", HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 215,
             Margin = new Thickness(0, 0, 8, 0),
         };
         AutomationProperties.SetName(sheet, "Выбрать лист");
         var group = preview.Groups[0];
         bool fit = group.Name.Length == 0;
         string ZoomHint() => fit ? "Показать в исходном размере" : "Подогнать под панель";
-        var zoom = Theme.IconButton(Glyphs.Search, ZoomHint());
+        var zoom = new Button { Style = Theme.Style("GhostButton"), Content = GlyphText(Glyphs.Search, 16, null), ToolTip = ZoomHint() };
+        AutomationProperties.SetName(zoom, ZoomHint());
         var navigation = new StackPanel
         {
             Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { zoom, previous, counter, next },
         };
         DockPanel.SetDock(navigation, Dock.Right);
-        var toolbar = new DockPanel { Margin = new Thickness(0, 0, 4, 8), Children = { navigation } };
+        var toolbar = new DockPanel { Margin = new Thickness(0, 0, 8, 8), Children = { navigation } };
         if (!fit) toolbar.Children.Add(sheet);
         DockPanel.SetDock(toolbar, Dock.Top);
         var root = new DockPanel { Children = { toolbar, content } };
@@ -509,11 +533,11 @@ public partial class MainWindow
         var open = new Button
         {
             Content = "Открыть во внешней программе", ToolTip = "Открыть документ в приложении Windows",
-            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 9, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 16, 0, 0),
         };
         AutomationProperties.SetName(open, "Открыть во внешней программе");
         open.Click += (_, _) => FileActions.Open(this, path);
-        return new StackPanel { Children = { PreviewNote(message), open } };
+        return EmptyState(message, open);
     }
 
     void CloseOfficePreview()

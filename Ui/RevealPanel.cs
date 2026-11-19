@@ -31,7 +31,7 @@ public sealed class RevealPanel : Decorator
             return;
         }
         Visibility = Visibility.Visible;
-        var motion = new DoubleAnimation(start, target, TimeSpan.FromMilliseconds(open ? 220 : 170))
+        var motion = new DoubleAnimation(start, target, TimeSpan.FromMilliseconds(open ? 150 : 120))
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, FillBehavior = FillBehavior.Stop,
         };

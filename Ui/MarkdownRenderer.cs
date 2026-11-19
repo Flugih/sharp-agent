@@ -13,12 +13,12 @@ public sealed class MarkdownRenderer(MarkdownContext context)
         RuleRx = new(@"^((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$", RegexOptions.Compiled),
         TableSeparatorRx = new(@"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$", RegexOptions.Compiled);
 
-    public FlowDocument Render(string markdown)
+    public FlowDocument Render(string markdown, string foreground)
     {
         var doc = new FlowDocument
         {
-            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 21, TextAlignment = TextAlignment.Left,
-        }.Paint(TextElement.ForegroundProperty, "Text");
+            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 23, TextAlignment = TextAlignment.Left,
+        }.Paint(TextElement.ForegroundProperty, foreground);
         var blocks = doc.Blocks;
         var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
         Paragraph? open = null;
@@ -32,13 +32,15 @@ public sealed class MarkdownRenderer(MarkdownContext context)
             {
                 int level = heading.Groups[1].Length;
                 var text = heading.Groups[2].Value;
-                blocks.Add(WithText(new Paragraph
+                var paragraph = new Paragraph
                 {
                     FontSize = level switch { 1 => 20, 2 => 16, _ => 14 }, FontWeight = FontWeights.SemiBold, Margin = new(0, level <= 2 ? 12 : 8, 0, 8),
-                }, text.TrimEnd('#').TrimEnd() is { Length: > 0 } title ? title : text[..1]));
+                };
+                if (foreground == "Text") paragraph.Paint(TextElement.ForegroundProperty, "TextStrong");
+                blocks.Add(WithText(paragraph, text.TrimEnd('#').TrimEnd() is { Length: > 0 } title ? title : text[..1]));
             }
             else if (RuleRx.IsMatch(t))
-                blocks.Add(new Paragraph { BorderThickness = new(0, 0, 0, 1), Margin = new(0, 4, 0, 16), FontSize = 2, LineHeight = 2 }.Paint(Block.BorderBrushProperty, "LineStrong"));
+                blocks.Add(new Paragraph { BorderThickness = new(0, 0, 0, 1), Margin = new(0, 4, 0, 16), FontSize = 2, LineHeight = 2 }.Paint(Block.BorderBrushProperty, "Line"));
             else if (IsListItem(t)) next = ParseList(lines, i, blocks);
             else if (t.StartsWith('|') && next < lines.Length && TableSeparatorRx.IsMatch(lines[next].Trim())) next = ParseTable(lines, i, blocks);
             else if (t.Length > 0)
@@ -148,21 +150,21 @@ public sealed class MarkdownRenderer(MarkdownContext context)
     {
         var rows = lines.Skip(start + 2).TakeWhile(line => line.Trim().StartsWith('|')).Select(SplitRow).Prepend(SplitRow(lines[start])).ToList();
         int columns = rows.Max(row => row.Length);
-        var table = new Table { CellSpacing = 0, Margin = new(0, 0, 0, 12), BorderThickness = new(1, 1, 0, 0) }.Paint(Block.BorderBrushProperty, "LineStrong");
+        var table = new Table { CellSpacing = 0, Margin = new(0, 0, 0, 12), BorderThickness = new(1, 1, 0, 0) }.Paint(Block.BorderBrushProperty, "Line");
         for (int c = 0; c < columns; c++) table.Columns.Add(new TableColumn());
         var group = new TableRowGroup();
         for (int r = 0; r < rows.Count; r++)
         {
             var row = new TableRow();
-            if (r == 0) row.Paint(TextElement.BackgroundProperty, "Surface2");
+            if (r == 0) row.Paint(TextElement.BackgroundProperty, "Fill");
             for (int c = 0; c < columns; c++)
             {
-                var p = new Paragraph { Margin = new(0), FontSize = 13 };
+                var p = new Paragraph { Margin = new(0) };
                 if (r == 0) p.FontWeight = FontWeights.SemiBold;
                 row.Cells.Add(new TableCell(WithText(p, rows[r].ElementAtOrDefault(c) ?? ""))
                 {
-                    Padding = new(8, 4, 8, 4), BorderThickness = new(0, 0, 1, 1),
-                }.Paint(TableCell.BorderBrushProperty, "LineStrong"));
+                    Padding = new(10, 4, 10, 4), BorderThickness = new(0, 0, 1, 1),
+                }.Paint(TableCell.BorderBrushProperty, "Line"));
             }
             group.Rows.Add(row);
         }

@@ -4,7 +4,7 @@ namespace SharpAgent.Ui;
 
 public sealed class DarkDialog : Window
 {
-    DarkDialog(Window owner, string title, bool danger, FrameworkElement body, FrameworkElement buttons, double width)
+    DarkDialog(Window owner, string title, FrameworkElement body, FrameworkElement buttons)
     {
         Owner = owner;
         Title = title;
@@ -14,7 +14,7 @@ public sealed class DarkDialog : Window
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
         SizeToContent = SizeToContent.Height;
-        Width = width;
+        Width = 560;
         if (owner is CompactChatWindow)
         {
             MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 32);
@@ -28,34 +28,26 @@ public sealed class DarkDialog : Window
         }
         FontFamily = Theme.Ui;
         FontSize = 14;
-        Foreground = Theme.Text;
+        this.Paint(ForegroundProperty, "Text");
         AutomationProperties.SetName(this, title);
-        var header = new StackPanel
-        {
-            Orientation = Orientation.Horizontal, Margin = new(0, 0, 0, 12),
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = danger ? Glyphs.Warning : Glyphs.Info, FontFamily = Theme.Icons, FontSize = 16,
-                    Foreground = danger ? Theme.DangerText : Theme.AccentText, VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 1, 12, 0),
-                },
-                new TextBlock
-                {
-                    Text = title, FontSize = 16, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-                    VerticalAlignment = VerticalAlignment.Center, MaxWidth = width - 110,
-                },
-            },
-        };
+        var header = new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 12) };
         DockPanel.SetDock(header, Dock.Top);
         DockPanel.SetDock(buttons, Dock.Bottom);
-        Content = new Border
+        // The shadow sits on its own layer so the text is not drawn through the effect and stays sharp.
+        Content = new Grid
         {
-            Background = Theme.Surface2, BorderBrush = Theme.LineStrong, BorderThickness = new(1), CornerRadius = new(12), Padding = new(24, 20, 24, 20),
-            Margin = new(20), Effect = new DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Opacity = 0.55, Color = Colors.Black },
-            Child = new DockPanel
+            Margin = new(20),
+            Children =
             {
-                Children = { header, buttons, new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false } },
+                new Border { CornerRadius = new(16), Effect = (Effect)Application.Current.Resources["PopupShadow"] }.Paint(Border.BackgroundProperty, "Surface2"),
+                new Border
+                {
+                    BorderThickness = new(1), CornerRadius = new(16), Padding = new(24),
+                    Child = new DockPanel
+                    {
+                        Children = { header, buttons, new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false } },
+                    },
+                }.Paint(Border.BorderBrushProperty, "RaisedLine"),
             },
         };
         MouseLeftButtonDown += (_, e) =>
@@ -75,23 +67,19 @@ public sealed class DarkDialog : Window
             if (lines > 12 || code.Length > 700) message += (message.Length > 0 ? "\n" : "") + $"Строк в тексте: {lines} — прокрутите его до конца.";
         }
         var body = new StackPanel();
-        if (message.Length > 0) body.Children.Add(ReadOnlyText(message, Theme.TextSoft, Theme.Ui, 14, 340));
+        if (message.Length > 0) body.Children.Add(ReadOnlyText(message, "TextSoft", Theme.Ui, 14, 340));
         if (code != null)
             body.Children.Add(new Border
             {
-                Background = Theme.Bg, BorderBrush = Theme.LineStrong, BorderThickness = new(1), CornerRadius = new(8), Padding = new(10, 8, 10, 8),
-                Margin = new(0, message.Length > 0 ? 12 : 0, 0, 0), Child = ReadOnlyText(code, Theme.Text, Theme.Mono, 13, 220),
-            });
-        var ok = new Button
+                CornerRadius = new(8), Padding = new(12, 10, 12, 10), Margin = new(0, message.Length > 0 ? 12 : 0, 0, 0),
+                Child = ReadOnlyText(code, "Text", Theme.Mono, 12.5, 220),
+            }.Paint(Border.BackgroundProperty, "BlockBg"));
+        var ok = new Button { Content = okText, IsDefault = !danger && !delayed, IsEnabled = !delayed, Margin = new(8, 0, 0, 0), Style = Theme.Style(danger ? "DangerButton" : "PrimaryButton") };
+        var cancel = new Button { Content = cancelText, IsCancel = true };
+        var dialog = new DarkDialog(owner, title, body, new StackPanel
         {
-            Content = okText, MinWidth = 112, Height = 32, IsDefault = !danger && !delayed, IsEnabled = !delayed,
-            Style = Theme.Style(danger ? "DangerPillButton" : "AccentPillButton"),
-        };
-        var cancel = new Button { Content = cancelText, MinWidth = 112, Height = 32, IsCancel = true, Margin = new(8, 0, 0, 0) };
-        var dialog = new DarkDialog(owner, title, danger, body, new StackPanel
-        {
-            Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 20, 0, 0), Children = { ok, cancel },
-        }, 520);
+            Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0), Children = { cancel, ok },
+        });
         ok.Click += (_, _) => dialog.DialogResult = true;
         cancel.Click += (_, _) => dialog.DialogResult = false;
         dialog.Loaded += (_, _) =>
@@ -99,27 +87,34 @@ public sealed class DarkDialog : Window
             (danger || delayed ? cancel : ok).Focus();
             if (delayed) Theme.After(TimeSpan.FromMilliseconds(400), () => ok.IsEnabled = true);
         };
-        return dialog.ShowDialog() == true;
+        return dialog.Run() == true;
     }
 
-    public static void Show(Window owner, string title, FrameworkElement content, double width = 520, string closeText = "Закрыть")
+    public static void Show(Window owner, string title, FrameworkElement content, string closeText = "Закрыть")
     {
-        var close = new Button
-        {
-            Content = closeText, MinWidth = 112, Height = 32, IsCancel = true, IsDefault = true,
-            HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 20, 0, 0),
-        };
-        var dialog = new DarkDialog(owner, title, false, content, close, width);
+        var close = new Button { Content = closeText, IsCancel = true, IsDefault = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0) };
+        var dialog = new DarkDialog(owner, title, content, close);
         close.Click += (_, _) => dialog.Close();
         dialog.Loaded += (_, _) => close.Focus();
-        dialog.ShowDialog();
+        dialog.Run();
     }
 
-    static TextBox ReadOnlyText(string text, Brush foreground, FontFamily font, double size, double maxHeight) => new()
+    // Dims the main window behind the dialog; a nested dialog leaves the dim to the one still open.
+    bool? Run()
+    {
+        if (Owner is not MainWindow main) return ShowDialog();
+        main.DialogDim.Visibility = Visibility.Visible;
+        try { return ShowDialog(); }
+        finally
+        {
+            if (!main.OwnedWindows.OfType<DarkDialog>().Any(other => other != this && other.IsVisible)) main.DialogDim.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    static TextBox ReadOnlyText(string text, string foreground, FontFamily font, double size, double maxHeight) => new TextBox
     {
         Text = text, IsReadOnly = true, IsTabStop = false, TextWrapping = TextWrapping.Wrap, Background = Brushes.Transparent,
-        BorderThickness = new(0), Padding = new(0), Foreground = foreground, SelectionBrush = Theme.Accent, FontFamily = font, FontSize = size,
-        MaxHeight = maxHeight, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        ContextMenu = Application.Current.TryFindResource("ReadOnlyTextMenu") as ContextMenu,
-    };
+        BorderThickness = new(0), Padding = new(0), FontFamily = font, FontSize = size, MaxHeight = maxHeight,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto, ContextMenu = Application.Current.TryFindResource("ReadOnlyTextMenu") as ContextMenu,
+    }.Paint(ForegroundProperty, foreground).Paint(TextBoxBase.SelectionBrushProperty, "Accent");
 }

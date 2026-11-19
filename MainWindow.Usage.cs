@@ -55,7 +55,7 @@ public partial class MainWindow
         };
         BalanceButton.Visibility = VisibleIf(!(tooken && _usageUnavailable));
         BalanceText.Text = text;
-        if (warning) BalanceButton.Foreground = Theme.Warning;
+        if (warning) BalanceButton.Paint(ForegroundProperty, "Warning");
         else BalanceButton.ClearValue(ForegroundProperty);
         BalanceButton.ToolTip = (tooken ? "Баланс и расход" : text) + " (Ctrl+B)";
         AutomationProperties.SetName(BalanceButton, provider switch
@@ -117,12 +117,12 @@ public partial class MainWindow
 
     private void AddHeader(string title, bool refreshable = false)
     {
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
         if (refreshable)
         {
-            var refresh = Theme.IconButton(Glyphs.Refresh, "Обновить баланс и расход", 26);
+            var refresh = Theme.IconButton(Glyphs.Refresh, "Обновить баланс и расход", 28, 14);
             refresh.IsEnabled = !UsageLoading;
-            refresh.Margin = new Thickness(0, -4, -6, 0);
+            refresh.Margin = new Thickness(0, -6, -6, -6);
             refresh.Click += (_, _) =>
             {
                 _ = RefreshUsageAsync();
@@ -139,13 +139,13 @@ public partial class MainWindow
     {
         if (!empty) return false;
         AddUsage(UsageNote(UsageLoading ? "Загружаю данные…" : _usageError != null ? "Не удалось получить данные: " + _usageError : waiting,
-            _usageError != null && !UsageLoading ? Theme.DangerText : Theme.TextSoft));
+            _usageError != null && !UsageLoading ? "DangerText" : "TextSoft"));
         AddChatSection();
         return true;
     }
 
-    private static TextBlock UsageNote(string text, Brush foreground) =>
-        new() { Text = text, FontSize = 13, Foreground = foreground, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) };
+    private static TextBlock UsageNote(string text, string foreground) =>
+        new TextBlock { Text = text, FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) }.Paint(TextBlock.ForegroundProperty, foreground);
 
     private void BuildBalancePanel()
     {
@@ -158,13 +158,13 @@ public partial class MainWindow
             Inlines =
             {
                 new Run(Tokens.Format(snapshot!.Balance)) { FontSize = 20, FontWeight = FontWeights.SemiBold },
-                new Run(" токенов") { FontSize = 13, Foreground = Theme.TextMuted },
+                new Run(" токенов") { FontSize = 13 }.Paint(TextElement.ForegroundProperty, "TextDim"),
             },
         });
         if (snapshot.FullBalance > 0 && snapshot.FullBalance > snapshot.Balance)
         {
             double left = (double)snapshot.Balance / snapshot.FullBalance;
-            AddUsage(Meter(left, left < 0.1 ? Theme.Warning : Theme.Accent),
+            AddUsage(Meter(left, left < 0.1),
                 Caption($"Осталось {Tokens.Percent(left)} от {Tokens.Format(snapshot.FullBalance)} (баланс после пополнения)", 4));
         }
         AddUsage(Divider(), Row("Потрачено сегодня", Tokens.Format(snapshot.Today)), Row("За 7 дней", Tokens.Format(snapshot.Week)),
@@ -180,9 +180,9 @@ public partial class MainWindow
         if (_config.DayLimit == null && _config.MonthLimit == null)
             AddUsage(new TextBlock
             {
-                FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = Theme.TextSoft,
+                FontSize = 13, TextWrapping = TextWrapping.Wrap,
                 Inlines = { new Run("Свои лимиты на день и месяц не заданы. "), MakeLink("Задать лимиты", () => OpenSettings(DayLimitBox)) },
-            });
+            }.Paint(TextBlock.ForegroundProperty, "TextSoft"));
         else
         {
             if (_config.DayLimit is { } day) AddLimit("Лимит на день", snapshot.Today, day);
@@ -196,9 +196,9 @@ public partial class MainWindow
         AddHeader("Подписка ChatGPT");
         if (_chatGpt.Label is { } label) AddUsage(Caption(label, bottom: 8));
         bool allowed = _chatGpt.PlanAllowed;
-        AddUsage(Row("Использование подписки", allowed ? "разрешено" : "не разрешено", valueBrush: allowed ? null : Theme.Warning),
+        AddUsage(Row("Использование подписки", allowed ? "разрешено" : "не разрешено", warning: !allowed),
             UsageNote(chat.LimitMessage ?? "Сколько подписки уходит на Sharp Agent и какие у него лимиты, показывают настройки ChatGPT.",
-                chat.LimitMessage != null ? Theme.Warning : Theme.TextSoft));
+                chat.LimitMessage != null ? "Warning" : "TextSoft"));
         AddChatSection();
         AddFooter(null, "Управлять использованием", ChatGptClient.UsageUrl);
     }
@@ -216,8 +216,8 @@ public partial class MainWindow
     private void AddQuota(string title, long? left, long? limit, DateTime? reset)
     {
         if (left is not { } remaining || limit is not > 0) return;
-        var brush = Low(left, limit) ? Theme.Warning : null;
-        AddUsage(Row(title, $"осталось {Tokens.Format(remaining)} из {Tokens.Format(limit.Value)}", valueBrush: brush), Meter((double)remaining / limit.Value, brush ?? Theme.Accent),
+        bool low = Low(left, limit);
+        AddUsage(Row(title, $"осталось {Tokens.Format(remaining)} из {Tokens.Format(limit.Value)}", warning: low), Meter((double)remaining / limit.Value, low),
             Caption(reset - DateTime.Now is { } time && time > TimeSpan.Zero ? "Восстановится через " + Tokens.Duration(time) : "", 4, bottom: 8));
     }
 
@@ -239,7 +239,7 @@ public partial class MainWindow
         if (ContextUsage() is { } used && _models.TryGetValue(model, out var info))
         {
             bool full = used >= ContextWarning;
-            AddUsage(Row("Память модели", "занято " + Tokens.Percent(used), topMargin: 8), Meter(used, full ? Theme.Warning : Theme.Accent),
+            AddUsage(Row("Память модели", "занято " + Tokens.Percent(used), topMargin: 8), Meter(used, full),
                 Caption($"{Tokens.Format(totals.ContextTokens)} из {Tokens.Format(info.ContextTokens ?? 0)} токенов." + (full ? " Скоро чат перестанет помещаться — начните новый." : ""), 4));
         }
         if (rate is { } factor)
@@ -253,43 +253,44 @@ public partial class MainWindow
 
     private void AddFooter(DateTime? updated, string linkText, string url)
     {
-        var cabinet = new TextBlock { FontSize = 13, Inlines = { MakeLink(linkText, () => FileActions.OpenUrl(url)) } };
-        DockPanel.SetDock(cabinet, Dock.Right);
-        var footer = new DockPanel { LastChildFill = false, Children = { cabinet } };
+        AddUsage(Divider());
         if (updated is { } time)
-            footer.Children.Add(Caption(UsageLoading ? "Обновляю…" : _usageError != null ? "Не обновилось: " + _usageError : "Обновлено в " + time.ToString("HH:mm", Ru)));
-        AddUsage(Divider(), footer);
+            AddUsage(Caption(UsageLoading ? "Обновляю…" : _usageError != null ? "Не обновилось: " + _usageError : "Обновлено в " + time.ToString("HH:mm", Ru), bottom: 4));
+        // Links are rows whose hover fill reaches the card edge, so the text still lines up with the rest.
+        var link = new Button { Style = Theme.Style("RowButton"), Content = linkText, Height = 30, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(-8, 0, -8, 0) };
+        link.Click += (_, _) => FileActions.OpenUrl(url);
+        AddUsage(link);
     }
 
     private void AddLimit(string title, long spent, long limit)
     {
         double left = 1 - (double)spent / limit;
         bool reached = spent >= limit;
-        AddUsage(Row(title, reached ? "исчерпан" : "осталось " + Tokens.Percent(left), valueBrush: reached ? Theme.Warning : null),
-            Meter(left, Theme.Accent), Caption($"Израсходовано {Tokens.Format(spent)} из {Tokens.Format(limit)}", 4, bottom: 8));
+        AddUsage(Row(title, reached ? "исчерпан" : "осталось " + Tokens.Percent(left), warning: reached),
+            Meter(left, false), Caption($"Израсходовано {Tokens.Format(spent)} из {Tokens.Format(limit)}", 4, bottom: 8));
     }
 
-    private static TextBlock Caption(string text, double top = 0, double bottom = 0) => new()
+    private static TextBlock Caption(string text, double top = 0, double bottom = 0) => new TextBlock
     {
-        Text = text, FontSize = 12, Foreground = Theme.TextMuted, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
-        Margin = new Thickness(0, top, 0, bottom),
-    };
+        Text = text, FontSize = 13, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, top, 0, bottom),
+    }.Paint(TextBlock.ForegroundProperty, "TextDim");
 
-    private static Grid Row(string label, string value, double topMargin = 0, Brush? valueBrush = null)
+    private static Grid Row(string label, string value, double topMargin = 0, bool warning = false)
     {
-        var right = new TextBlock { Text = value, FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = valueBrush ?? Theme.Text, Margin = new Thickness(12, 0, 0, 0) };
+        var right = new TextBlock { Text = value, Margin = new Thickness(12, 0, 0, 0) }.Paint(TextBlock.ForegroundProperty, warning ? "Warning" : "Text");
         Grid.SetColumn(right, 1);
         return new()
         {
-            Margin = new Thickness(0, topMargin, 0, 6), Background = Brushes.Transparent,
+            Margin = new Thickness(0, topMargin, 0, 8), Background = Brushes.Transparent,
             ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } },
-            Children = { new TextBlock { Text = label, FontSize = 13, Foreground = Theme.TextSoft }, right },
+            Children = { new TextBlock { Text = label }.Paint(TextBlock.ForegroundProperty, "TextSoft"), right },
         };
     }
 
-    private static ProgressBar Meter(double fraction, Brush fill) => new() { Style = Theme.Style("Meter"), Value = Math.Clamp(fraction, 0, 1) * 100, Foreground = fill };
+    private static ProgressBar Meter(double fraction, bool low) =>
+        new ProgressBar { Style = Theme.Style("Meter"), Value = Math.Clamp(fraction, 0, 1) * 100 }.Paint(ForegroundProperty, low ? "Warning" : "Text");
 
-    private static Border Divider() => new() { Height = 1, Background = Theme.LineStrong, Margin = new Thickness(0, 10, 0, 10) };
+    private static Border Divider() => new Border { Height = 1, Margin = new Thickness(0, 8, 0, 8) }.Paint(Border.BackgroundProperty, "LineStrong");
 
     private static string Plural(int number, string one, string few, string many)
     {

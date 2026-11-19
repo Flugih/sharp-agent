@@ -14,13 +14,14 @@ public partial class MainWindow
     readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
     AgentProvider _settingsProvider;
     readonly Dictionary<AgentProvider, string> _settingsImageModels = [], _savedImageModels = [];
+    static readonly (string? Value, string Label)[] Themes = [(null, "Тёмная"), ("light", "Светлая"), ("system", "Как в Windows")];
+    static readonly (bool Value, string Label)[] ImageSources = [(false, "Tooken Club"), (true, "Как в чате")];
     bool _settingsImagesLikeChat;
     string? _settingsTheme;
     FrameworkElement? _settingsPage;
     CancellationTokenSource? _signIn;
     DispatcherTimer? _toastTimer;
     Action? _toastAction;
-    int _toastVersion;
 
 
     static Hyperlink MakeLink(string text, Action click, string? tip = null)
@@ -34,7 +35,6 @@ public partial class MainWindow
     {
         _compactChat?.SetStatus(text.ReplaceLineEndings(" "),
             kind switch { ToastKind.Success => "Success", ToastKind.Warning => "Warning", ToastKind.Error => "DangerText", _ => "TextMuted" });
-        _toastVersion++;
         ToastText.Text = text;
         (ToastIcon.Text, var brush) = kind switch
         {
@@ -49,11 +49,7 @@ public partial class MainWindow
         ToastAction.Visibility = VisibleIf(action != null && actionText != null);
         ToastHost.IsHitTestVisible = action != null;
         AutomationProperties.SetLiveSetting(ToastText, kind == ToastKind.Error ? AutomationLiveSetting.Assertive : AutomationLiveSetting.Polite);
-        bool wasHidden = !IsShown(ToastHost), animate = Theme.AnimationsEnabled;
         ToastHost.Visibility = Visibility.Visible;
-        ToastHost.BeginAnimation(OpacityProperty, !animate ? null
-            : wasHidden ? new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)) : new DoubleAnimation(1, TimeSpan.FromMilliseconds(100)));
-        if (!animate) ToastHost.Opacity = 1;
         if (_toastTimer == null) (_toastTimer = new()).Tick += (_, _) => HideToast();
         _toastTimer.Stop();
         _toastTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(2 + text.Length / 15.0, 3, 12) + (action != null ? 4 : 0));
@@ -64,15 +60,7 @@ public partial class MainWindow
     {
         _toastTimer?.Stop();
         _toastAction = null;
-        if (!Theme.AnimationsEnabled)
-        {
-            ToastHost.Visibility = Visibility.Collapsed;
-            return;
-        }
-        int version = _toastVersion;
-        var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(220));
-        fade.Completed += (_, _) => { if (version == _toastVersion) ToastHost.Visibility = Visibility.Collapsed; };
-        ToastHost.BeginAnimation(OpacityProperty, fade);
+        ToastHost.Visibility = Visibility.Collapsed;
     }
 
     void ToastAction_Click(object sender, RoutedEventArgs e)
@@ -104,9 +92,7 @@ public partial class MainWindow
         BannerTitle.Text = banner.Title;
         BannerText.Text = banner.Text;
         BannerAction.Content = banner.ActionText;
-        (BannerIcon.Foreground, Banner.Background, Banner.BorderBrush) = banner.Warning
-            ? (Theme.Warning, Theme.WarningSoft, Theme.WarningLine)
-            : (Theme.AccentText, Theme.Get("BannerBg"), Theme.AccentLine);
+        BannerIcon.Paint(TextBlock.ForegroundProperty, banner.Warning ? "Warning" : "AccentText");
     }
 
     void BannerAction_Click(object sender, RoutedEventArgs e) => TopBanner?.Action();
@@ -154,12 +140,11 @@ public partial class MainWindow
         foreach (var provider in AppConfig.ImageProviders)
             _settingsImageModels[provider] = _savedImageModels[provider] = Value(AppConfig.KeyOf(provider, "IMAGE_MODEL"), AppConfig.ImageModelsOf(provider)[0]);
         _settingsImagesLikeChat = _config.ImagesLikeChat;
-        ImageSourceChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsImagesLikeChat ? "chat" : "tooken")).IsChecked = true;
+        ShowChoice(ImageSourceButton, ImageSources, _settingsImagesLikeChat);
         SubagentsToggle.IsChecked = _config.UseSubagents;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
         _settingsTheme = _state.Theme;
-        var themes = ThemeChoices.Children.OfType<RadioButton>();
-        (themes.FirstOrDefault(button => Equals(button.Tag, _state.Theme)) ?? themes.First()).IsChecked = true;
+        ShowChoice(ThemeButton, Themes, _settingsTheme);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
         LoadNetworkSettings(unreadable ? _config.Network : NetworkSettings.Load(key => env.GetValueOrDefault(key)), Value("AGENT_VPN_PROFILES"));
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
@@ -171,12 +156,10 @@ public partial class MainWindow
         MonthLimitBox.Text = _config.MonthLimit is { } month ? Tokens.ToMillions(month) : "";
         ClearInvalidFields();
         _settingsProvider = _config.Provider;
-        ProviderChoices.Children.OfType<RadioButton>().First(button => Equals(button.Tag, _settingsProvider)).IsChecked = true;
         ShowProviderSettings();
         ShowSettingsPage(focus ?? _settingsPage ?? SettingsGeneral);
         WorkArea.Visibility = Sidebar.Visibility = Visibility.Hidden;
         SettingsPage.Visibility = Visibility.Visible;
-        if (Theme.AnimationsEnabled) SettingsPage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
         Dispatcher.InvokeAsync(() =>
         {
             if (!SettingsOpen) return;
@@ -203,14 +186,31 @@ public partial class MainWindow
         nav.Focus();
     }
 
-    void ProviderPill_Checked(object sender, RoutedEventArgs e)
+    // Dropdown rows show the current choice; their menu marks it with ✓.
+    static void ShowChoice<T>(Button button, (T Value, string Label)[] choices, T value) =>
+        button.Content = Array.Find(choices, choice => Equals(choice.Value, value)).Label ?? choices[0].Label;
+
+    static void PickChoice<T>(Button button, (T Value, string Label)[] choices, T current, Action<T> choose)
     {
-        if (sender is not RadioButton { Tag: AgentProvider provider } || provider == _settingsProvider) return;
-        KeepProviderInput();
-        NetworkTestStatus.Text = "";
-        _settingsProvider = provider;
-        ShowProviderSettings();
+        var menu = new ContextMenu { PlacementTarget = button, MaxHeight = 320, MinWidth = button.ActualWidth };
+        foreach (var (value, label) in choices)
+        {
+            var item = FileActions.Item(label.Replace("_", "__"), null, () => choose(value));
+            item.IsChecked = Equals(value, current);
+            menu.Items.Add(item);
+        }
+        menu.IsOpen = true;
     }
+
+    void ProviderButton_Click(object sender, RoutedEventArgs e) =>
+        PickChoice(ProviderButton, Enum.GetValues<AgentProvider>().Select(provider => (provider, ProviderName(provider))).ToArray(), _settingsProvider, provider =>
+        {
+            if (provider == _settingsProvider) return;
+            KeepProviderInput();
+            NetworkTestStatus.Text = "";
+            _settingsProvider = provider;
+            ShowProviderSettings();
+        });
 
     void KeepProviderInput()
     {
@@ -223,6 +223,7 @@ public partial class MainWindow
     {
         var provider = _settingsProvider;
         bool keyed = provider != AgentProvider.ChatGpt, groq = provider == AgentProvider.Groq;
+        ProviderButton.Content = ProviderName(provider);
         TestKeyButton.Content = keyed ? "Проверить API-ключ" : "Проверить вход";
         KeyPanel.Visibility = VisibleIf(keyed);
         ChatGptPanel.Visibility = VisibleIf(!keyed);
@@ -285,11 +286,12 @@ public partial class MainWindow
                 : "Картинки рисует Tooken Club по его ключу и балансу при любом провайдере чата.";
     }
 
-    void ImageSource_Checked(object sender, RoutedEventArgs e)
+    void ImageSourceButton_Click(object sender, RoutedEventArgs e) => PickChoice(ImageSourceButton, ImageSources, _settingsImagesLikeChat, likeChat =>
     {
-        _settingsImagesLikeChat = Equals(((RadioButton)sender).Tag, "chat");
+        _settingsImagesLikeChat = likeChat;
+        ShowChoice(ImageSourceButton, ImageSources, likeChat);
         ShowImageSettings();
-    }
+    });
 
     void ShowChatGptAccount()
     {
@@ -630,9 +632,12 @@ public partial class MainWindow
         FileActions.OpenUrl(e.Uri.AbsoluteUri);
     }
 
-    void ThemePill_Checked(object sender, RoutedEventArgs e)
+    void ThemeButton_Click(object sender, RoutedEventArgs e) => PickChoice(ThemeButton, Themes, _settingsTheme, PreviewTheme);
+
+    void PreviewTheme(string? theme)
     {
-        _settingsTheme = (string)((RadioButton)sender).Tag is var tag && tag == "dark" ? null : tag;
+        _settingsTheme = theme;
+        ShowChoice(ThemeButton, Themes, theme);
         // Preview only: state.json keeps the saved theme until «Сохранить».
         var saved = _state.Theme;
         _state.Theme = _settingsTheme;

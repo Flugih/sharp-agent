@@ -48,7 +48,8 @@ public partial class CompactChatWindow : Window
     internal void SetStatus(string text, string color = "TextMuted")
     {
         StatusText.Text = text;
-        StatusText.SetResourceReference(TextBlock.ForegroundProperty, color);
+        StatusText.Base = color;
+        ShimmerStatus();
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
         UpdateTranscript(scroll: true);
     }
@@ -60,8 +61,12 @@ public partial class CompactChatWindow : Window
         ActionButton.ToolTip = label;
         AutomationProperties.SetName(ActionButton, label);
         ActionButton.IsEnabled = enabled;
+        ShimmerStatus();
         UpdateTranscript(scroll: running);
     }
+
+    // Only a running agent's neutral status shimmers; results and warnings keep their colour.
+    void ShimmerStatus() => StatusText.IsActive = StatusText.Base == "TextMuted" && Equals(ActionButton.Content, "");
 
     internal void SyncHistory((JsonObject Message, string? File)[] messages)
     {
@@ -74,9 +79,9 @@ public partial class CompactChatWindow : Window
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
             else Transcript.Children.Add(new Border
             {
-                CornerRadius = new(10), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(18, 6, 2, 3), Padding = new(9, 5, 9, 5),
-                Child = new TextBlock { Text = UserText(message), TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextSoft"),
-            }.Paint(BackgroundProperty, "Surface3"));
+                CornerRadius = new(14), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(24, 6, 2, 4), Padding = new(12, 6, 12, 6),
+                Child = new TextBlock { Text = UserText(message), TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "UserBubbleText"),
+            }.Paint(BackgroundProperty, "UserBubble"));
         UpdateTranscript(scroll: true);
     }
 

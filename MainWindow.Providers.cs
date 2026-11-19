@@ -207,7 +207,8 @@ public partial class MainWindow
             menu.Items.Insert(0, new Separator());
             foreach (var provider in Enumerable.Reverse(ready))
             {
-                var item = FileActions.Item(ProviderName(provider), provider == _config.Provider ? Glyphs.Check : null, () => SwitchProvider(provider));
+                var item = FileActions.Item(ProviderName(provider), null, () => SwitchProvider(provider));
+                item.IsChecked = provider == _config.Provider;
                 item.FontWeight = FontWeights.SemiBold;
                 AutomationProperties.SetName(item, "Провайдер " + ProviderName(provider));
                 menu.Items.Insert(0, item);
@@ -224,16 +225,42 @@ public partial class MainWindow
         if (EffortLevelsOf(CurrentModel()) is { Length: > 0 } levels)
         {
             var divider = new Separator();
-            var hidden = menu.Items.OfType<UIElement>().Append(divider).ToArray();
+            var label = new MenuItem { Header = new TextBlock { Style = Theme.Style("MenuLabel"), Text = "Выбрать модель" }, Style = Theme.Style("EffortHeader"), Margin = new(6, 0, 6, 0) };
+            var list = menu.Items.OfType<FrameworkElement>().ToList();
+            // The popover template has no padding, so the list keeps the menu inset itself.
+            foreach (var item in list) item.Margin = new(6, 0, 6, 0);
+            if (list.Count > 0) list[^1].Margin = new(6, 0, 6, 6);
+            var hidden = list.Append(divider).Append(label).ToArray();
             menu.Style = Theme.Style("EffortPickerMenu");
             menu.MinWidth = 0;
+            menu.Items.Insert(0, label);
             menu.Items.Insert(0, divider);
             menu.Items.Insert(0, EffortMenuItem(levels, () =>
             {
                 bool show = !IsShown(divider);
-                foreach (var item in hidden) item.Visibility = VisibleIf(show);
+                foreach (var item in hidden)
+                {
+                    item.Visibility = VisibleIf(show);
+                    if (show) Settle(item);
+                }
                 return show;
             }));
+            menu.Opened += (_, _) =>
+            {
+                if (!Theme.AnimationsEnabled || VisualTreeHelper.GetChild(menu, 0) is not FrameworkElement chrome) return;
+                Settle(chrome);
+                // A fading popup keeps its window for 150 ms after closing, long enough for the 50 ms fade;
+                // Closed comes only after that, so the fade starts on IsOpen.
+                ((Popup)menu.Parent).PopupAnimation = PopupAnimation.Fade;
+                var isOpen = DependencyPropertyDescriptor.FromProperty(ContextMenu.IsOpenProperty, typeof(ContextMenu));
+                void FadeOut(object? sender, EventArgs e)
+                {
+                    if (menu.IsOpen) return;
+                    isOpen.RemoveValueChanged(menu, FadeOut);
+                    chrome.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(50)));
+                }
+                isOpen.AddValueChanged(menu, FadeOut);
+            };
         }
         else
         {
@@ -242,6 +269,23 @@ public partial class MainWindow
                 () => SetFastMode(!_state.FastMode)));
         }
         menu.IsOpen = true;
+    }
+
+    static void Settle(UIElement element)
+    {
+        if (!Theme.AnimationsEnabled) return;
+        static AnimationTimeline Ease(double from, double to) => new DoubleAnimationUsingKeyFrames
+        {
+            KeyFrames =
+            {
+                new DiscreteDoubleKeyFrame(from, KeyTime.FromPercent(0)),
+                new SplineDoubleKeyFrame(to, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(180)), new KeySpline(0, 0, 0.2, 1)),
+            },
+        };
+        var shift = new TranslateTransform();
+        element.RenderTransform = shift;
+        element.BeginAnimation(OpacityProperty, Ease(0, 1));
+        shift.BeginAnimation(TranslateTransform.YProperty, Ease(8, 0));
     }
 
     private void SwitchProvider(AgentProvider provider)
@@ -270,7 +314,11 @@ public partial class MainWindow
         var names = _modelNames.GetValueOrDefault(provider);
         var current = picker == ModelButton ? CurrentModel() : picker.Content as string;
         foreach (var model in picker.Tag as IEnumerable<string> ?? [])
-            menu.Items.Add(FileActions.Item((names?.GetValueOrDefault(model) ?? model).Replace("_", "__"), model == current ? Glyphs.Check : null, () => choose(model)));
+        {
+            var item = FileActions.Item((names?.GetValueOrDefault(model) ?? model).Replace("_", "__"), null, () => choose(model));
+            item.IsChecked = model == current;
+            menu.Items.Add(item);
+        }
         return menu;
     }
 
@@ -306,13 +354,13 @@ public partial class MainWindow
         string?[] values = [null, .. levels];
         int committed = Array.IndexOf(values, EffectiveEffort(levels));
         var modelName = ModelDisplayName(CurrentModel());
-        var heading = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 2) };
+        var heading = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 1) };
         heading.SetResourceReference(ForegroundProperty, "AccentText");
         var chevron = new TextBlock
         {
-            Text = Glyphs.ChevronDown, FontFamily = Theme.Icons, FontSize = 8, Foreground = Theme.TextMuted, Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
-        };
-        var caption = new TextBlock { Text = modelName, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.TextSoft, MaxWidth = 135 };
+            Text = Glyphs.ChevronDown, FontFamily = Theme.Icons, FontSize = 10, Margin = new Thickness(4, 1, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+        }.Paint(ForegroundProperty, "TextDim");
+        var caption = new TextBlock { Text = modelName, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 150 }.Paint(ForegroundProperty, "TextDim");
         var choose = new Button
         {
             Style = Theme.Style("RowButton"),
@@ -325,8 +373,8 @@ public partial class MainWindow
         };
         AutomationProperties.SetName(choose, "Выбрать модель · " + modelName);
         choose.Click += (_, _) => chevron.Text = toggleModels() ? Glyphs.ChevronDown : Glyphs.ChevronRight;
-        var slider = new EffortSlider { Style = Theme.Style("EffortSlider"), Maximum = values.Length - 1, Value = committed, Margin = new Thickness(0, 10, 0, 0) };
-        var reset = Theme.IconButton(Glyphs.Refresh, "Сбросить силу рассуждения", 24, 14);
+        var slider = new EffortSlider { Style = Theme.Style("EffortSlider"), Maximum = values.Length - 1, Value = committed, Margin = new Thickness(0, 6, 0, 0) };
+        var reset = Theme.IconButton(Glyphs.Refresh, "Сбросить силу рассуждения", 28);
         reset.HorizontalAlignment = HorizontalAlignment.Right;
         reset.VerticalAlignment = VerticalAlignment.Top;
         reset.RenderTransform = new ScaleTransform(-1, 1);
@@ -374,7 +422,7 @@ public partial class MainWindow
         ShowValue();
         var lightning = new ToggleButton
         {
-            Style = Theme.Style("IconToggle"), Content = Glyphs.Lightning, Width = 28, Height = 28, FontSize = 13, IsChecked = _state.FastMode,
+            Style = Theme.Style("IconToggle"), Content = Glyphs.Lightning, Width = 28, Height = 28, IsChecked = _state.FastMode,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
             ToolTip = "Параллельный поиск и чтение кода с обычной глубиной проверки",
         };
@@ -385,8 +433,8 @@ public partial class MainWindow
         {
             Header = new StackPanel
             {
-                Margin = new Thickness(12, 6, 12, 10),
-                Children = { new Grid { Margin = new Thickness(-6, 0, -4, 0), Children = { lightning, choose, reset } }, slider },
+                Margin = new Thickness(12, 8, 12, 12),
+                Children = { new Grid { Margin = new Thickness(-6, 0, -6, 0), Children = { lightning, choose, reset } }, slider },
             },
             Style = Theme.Style("EffortHeader"),
         };

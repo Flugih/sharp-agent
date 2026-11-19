@@ -5,10 +5,15 @@ public partial class MainWindow
     sealed class SubagentRow(SubagentUpdate update)
     {
         public SubagentUpdate State = update;
-        public readonly TextBlock Status = new() { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
-        public readonly TextBlock Placeholder = new TextBlock { TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextMuted");
+        public readonly Shimmer Status = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis };
+        public readonly TextBlock Placeholder = new TextBlock
+        {
+            FontSize = 13, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new(0, 12, 0, 0),
+        }.Paint(ForegroundProperty, "TextMuted");
+        StackPanel? _empty;
+        public StackPanel Empty => _empty ??= new() { Margin = new(0, 48, 0, 0), Children = { EmptyGlyph(Glyphs.Plugin), Placeholder } };
         public readonly StackPanel Activity = new();
-        public readonly Dictionary<string, TextBlock> Tools = new();
+        public readonly Dictionary<string, Shimmer> Tools = new();
         public TextBlock? Commentary;
         public ProgressSection? Searches;
     }
@@ -30,21 +35,21 @@ public partial class MainWindow
         row.State = update;
         UpdateSubagentStatus(row);
         bool newTool = update.Action is { } next && !row.Tools.ContainsKey(next.Id);
-        if (update.Commentary != null || update.Action != null || update.Result != null) row.Activity.Children.Remove(row.Placeholder);
+        if (update.Commentary != null || update.Action != null || update.Result != null) row.Activity.Children.Remove(row.Empty);
         if (update.NewStep || newTool) row.Commentary = null;
         if (update.Commentary is { } commentary)
         {
             if (row.Commentary == null)
                 row.Activity.Children.Add(row.Commentary = new TextBlock
                 {
-                    LineHeight = 22, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
+                    LineHeight = 23, TextWrapping = TextWrapping.Wrap, Margin = new(0, 4, 0, 12),
                 }.Paint(ForegroundProperty, "Text"));
             if (row.Commentary.Text != commentary) row.Commentary.Text = commentary;
         }
         if (newTool && update.Action is { } call)
         {
             var label = Activity(call.Name, call.ArgumentsJson).Trim();
-            var text = new TextBlock { Text = label, ToolTip = label, TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "TextMuted");
+            var text = new Shimmer { Text = label, ToolTip = label, TextWrapping = TextWrapping.Wrap, IsActive = true };
             if (call.Name == "search_text")
             {
                 text.Text = OneLine(ArgumentOf(call.ArgumentsJson, "query"));
@@ -53,8 +58,8 @@ public partial class MainWindow
             }
             else row.Activity.Children.Add(new DockPanel
             {
-                Margin = new(0, 0, 0, 14),
-                Children = { GlyphText(Describe(call.Name).Glyph, 13, "TextMuted", new(0, 2, 8, 0), false), text },
+                Margin = new(0, 6, 0, 7),
+                Children = { GlyphText(Describe(call.Name).Glyph, 16, "TextMuted", new(0, 2, 10, 0), false), text },
             });
             row.Tools.Add(call.Id, text);
         }
@@ -62,14 +67,16 @@ public partial class MainWindow
         {
             bool failed = done.IsError || done.IsWarning;
             tool.Text = (done.Name == "search_text" ? tool.Text : Describe(done.Name).Label) + (failed ? " · ошибка" : " · выполнено");
-            tool.Paint(ForegroundProperty, failed ? "Warning" : "TextMuted");
+            tool.IsActive = false;
+            tool.Base = failed ? "Warning" : "TextMuted";
         }
         if (update.Failed && update.Elapsed != null)
         {
             foreach (var pending in row.Tools.Values)
             {
                 pending.Text = "Остановлено · " + pending.Text;
-                pending.Paint(ForegroundProperty, "Warning");
+                pending.IsActive = false;
+                pending.Base = "Warning";
             }
             row.Tools.Clear();
         }
@@ -86,17 +93,13 @@ public partial class MainWindow
 
     Button SubagentListRow(SubagentRow row)
     {
-        var arrow = GlyphText(Glyphs.ChevronRight, 11, "TextMuted");
+        var arrow = GlyphText(Glyphs.ChevronRight, 12, "TextMuted");
         DockPanel.SetDock(arrow, Dock.Right);
-        var title = new TextBlock
-        {
-            Text = row.State.Title, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new(0, 0, 0, 3),
-        }.Paint(ForegroundProperty, "Text");
+        var title = new TextBlock { Text = row.State.Title, TextTrimming = TextTrimming.CharacterEllipsis }.Paint(ForegroundProperty, "Text");
         var button = new Button
         {
             Content = new DockPanel { Children = { arrow, new StackPanel { Margin = new(0, 0, 10, 0), Children = { title, row.Status } } } },
             Style = Theme.Style("RowButton"), HorizontalContentAlignment = HorizontalAlignment.Stretch, ToolTip = row.State.Title,
-            Margin = new(0, 0, 0, 4),
         };
         AutomationProperties.SetName(button, "Открыть активность субагента " + row.State.Title);
         button.Click += (_, _) => ShowSubagentPage(row);
@@ -109,7 +112,8 @@ public partial class MainWindow
         var time = update.Elapsed ?? DateTimeOffset.Now - update.Started;
         var status = update.Action is { } action ? Activity(action.Name, action.ArgumentsJson).Trim() : update.Status;
         row.Placeholder.Text = row.Status.Text = time is { } elapsed ? $"{status} · {Tokens.Duration(elapsed)}" : status;
-        row.Status.Paint(ForegroundProperty, update.Failed ? "Warning" : "TextMuted");
+        row.Status.Base = update.Failed ? "Warning" : "TextMuted";
+        row.Status.IsActive = update is { Started: not null, Elapsed: null, Failed: false };
     }
 
     void UpdateSubagentTimes()
@@ -137,7 +141,7 @@ public partial class MainWindow
         SubagentActivity.Content = null;
         if (row != null)
         {
-            if (row.Activity.Children.Count == 0) row.Activity.Children.Add(row.Placeholder);
+            if (row.Activity.Children.Count == 0) row.Activity.Children.Add(row.Empty);
             SubagentActivity.Content = row.Activity;
             UpdateSubagentHeader(row);
         }

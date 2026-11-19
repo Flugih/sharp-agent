@@ -60,9 +60,10 @@ public partial class MainWindow
             int start = FindHistoryPageStart(_historyStart);
             var page = new StackPanel();
             var live = _chatView;
-            _chatView = new(page);
+            var older = _chatView = new(page);
             try { RenderHistory(_agent.History.Take(start.._historyStart).ToArray()); }
             finally { _chatView = live; }
+            live.LastChanges ??= older.LastChanges;
             _historyStart = start;
             double offset = ChatScroll.VerticalOffset;
             ChatPages.Children.Insert(0, page);
@@ -71,6 +72,7 @@ public partial class MainWindow
             ChatScroll.UpdateLayout();
         }
         finally { _changingHistory = false; }
+        UpdateChangesPill();
         UpdateScrollDownButton();
     }
 

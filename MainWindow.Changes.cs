@@ -1,4 +1,4 @@
-namespace SharpAgent;
+﻿namespace SharpAgent;
 
 public partial class MainWindow
 {
@@ -7,37 +7,21 @@ public partial class MainWindow
         var undoLabel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { new TextBlock { Text = "Отменить" }, GlyphText(Glyphs.Undo, 10, null, new(5, 0, 0, 0)) },
+            Children = { new TextBlock { Text = "Отменить" }, GlyphText(Glyphs.Undo, 12, null, new(6, 0, 0, 0)) },
         };
         var undo = ChangeAction(undoLabel, "Отменить изменения в этой группе");
-        undo.Background = undo.BorderBrush = Brushes.Transparent;
         ToolTipService.SetShowOnDisabled(undo, true);
         var review = ChangeAction("Просмотреть изменения", "Открыть список изменений справа");
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { undo, review } };
+        review.Margin = new(8, 0, 0, 0);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(8, 0, 0, 0), Children = { undo, review } };
         DockPanel.SetDock(buttons, Dock.Right);
-        var heading = new TextBlock { FontWeight = FontWeights.SemiBold, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis };
-        var caption = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0), Children = { heading } };
-        var totals = DiffSummary(files.Sum(file => file.Diff?.Added ?? 0L), files.Sum(file => file.Diff?.Removed ?? 0L));
-        totals.Margin = new(0, 3, 0, 0);
-        totals.HorizontalAlignment = HorizontalAlignment.Left;
-        if (files.Any(file => file.Diff != null)) caption.Children.Add(totals);
-        var glyph = GlyphText(Glyphs.Edit, 17, "TextMuted");
-        glyph.HorizontalAlignment = HorizontalAlignment.Center;
-        var icon = new Border
-        {
-            Width = 40, Height = 40, CornerRadius = new(9), Margin = new(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center, Child = glyph,
-        }.Paint(BackgroundProperty, "SidebarBg");
-        var rows = new StackPanel().Paint(BackgroundProperty, "Bg");
+        var heading = new TextBlock { FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        var header = new DockPanel { Children = { buttons, heading } };
+        var totals = Totals(files);
+        if (files.Any(file => file.Diff != null)) header.Children.Add(totals);
+        var rows = new StackPanel { Margin = new(-8, 8, -8, 0) };
         var extra = new StackPanel();
         var reveal = new RevealPanel { Child = extra };
-        var list = new StackPanel
-        {
-            Children =
-            {
-                new DockPanel { Margin = new(12, 10, 12, 10), Children = { icon, buttons, caption } },
-                new Border { BorderThickness = new(0, 1, 0, 0), Child = rows }.Paint(BorderBrushProperty, "Line"),
-            },
-        };
         const int shown = 3;
         var rowButtons = new Button[files.Length];
         for (int i = 0; i < files.Length; i++)
@@ -55,7 +39,7 @@ public partial class MainWindow
             row.Children.Add(new TextBlock { Text = title, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
             var button = rowButtons[i] = new Button
             {
-                Content = row, Style = Theme.Style("RowButton"), Height = 36, FontSize = 13, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Content = row, Style = Theme.Style("RowButton"), Height = 32, Padding = new(8, 0, 8, 0), HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 ToolTip = file.Path, ContextMenu = FileActions.BuildMenu(this, file.Path),
             };
             AutomationProperties.SetName(button, $"Просмотреть {title}");
@@ -67,12 +51,12 @@ public partial class MainWindow
         {
             int remaining = files.Length - shown;
             var expand = $"Показать ещё {remaining} {FileCountWord(remaining)}";
-            var toggle = new Button { Style = Theme.Style("RowButton"), Height = 35, FontSize = 13 };
+            var toggle = new Button { Style = Theme.Style("RowButton"), Height = 32, Padding = new(8, 0, 8, 0) };
             void UpdateToggle()
             {
                 bool opened = reveal.IsOpen;
                 var label = opened ? "Свернуть список" : expand;
-                var chevron = GlyphText(Glyphs.ChevronDown, 10, null, new(8, 0, 0, 0));
+                var chevron = GlyphText(Glyphs.ChevronDown, 12, null, new(8, 0, 0, 0));
                 chevron.RenderTransformOrigin = new(.5, .5);
                 chevron.RenderTransform = opened ? new RotateTransform(180) : Transform.Identity;
                 toggle.Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = label }, chevron } };
@@ -85,15 +69,13 @@ public partial class MainWindow
                 UpdateToggle();
             };
             UpdateToggle();
-            list.Children.Add(toggle);
+            rows.Children.Add(toggle);
         }
         void Refresh()
         {
-            int remaining = files.Count(file => !file.Undone);
-            heading.Text = remaining == 0 ? "Изменения отменены"
-                : remaining < files.Length ? $"Осталось {remaining} {FileCountWord(remaining)}" : $"Изменено {files.Length} {FileCountWord(files.Length)}";
-            totals.Visibility = VisibleIf(remaining == files.Length);
-            undo.Visibility = VisibleIf(remaining != 0);
+            heading.Text = ChangesHeading(files);
+            totals.Visibility = VisibleIf(files.All(file => !file.Undone));
+            undo.Visibility = VisibleIf(files.Any(file => !file.Undone));
             undo.IsEnabled = files.Where(file => !file.Undone).All(file => file.Change is { Created: true } or { Backup: not null });
             undo.ToolTip = undo.IsEnabled ? "Отменить изменения в этой группе" : "Для части файлов нет резервной копии";
             for (int i = 0; i < files.Length; i++) rowButtons[i].Opacity = files[i].Undone ? .55 : 1;
@@ -102,10 +84,11 @@ public partial class MainWindow
         {
             await RunChatOperationAsync(() => UndoChangesAsync(files));
             Refresh();
+            UpdateChangesPill();
         };
-        review.Click += (_, _) => ReviewChanges(files, Math.Max(0, Array.FindIndex(files, file => file.Diff != null)));
+        review.Click += (_, _) => ReviewGroup(files);
         Refresh();
-        return SurfaceBox(list, 10);
+        return BlockBox(new StackPanel { Children = { header, rows } }, new(12));
     }
 
     static string FileCountWord(int count) => count % 100 is >= 11 and <= 14 ? "файлов" : (count % 10) switch
@@ -115,27 +98,50 @@ public partial class MainWindow
         _ => "файлов",
     };
 
+    static string ChangesHeading(ProducedFile[] files) => files.Count(file => !file.Undone) switch
+    {
+        0 => "Изменения отменены",
+        var remaining when remaining < files.Length => $"Осталось {remaining} {FileCountWord(remaining)}",
+        _ => $"Изменено {files.Length} {FileCountWord(files.Length)}",
+    };
+
+    static StackPanel Totals(ProducedFile[] files) => DiffSummary(files.Sum(file => file.Diff?.Added ?? 0L), files.Sum(file => file.Diff?.Removed ?? 0L));
+
+    static bool IsChange(ProducedFile file) => file.Change != null || file.Diff != null;
+
     static Button ChangeAction(object content, string hint)
     {
-        var button = new Button { Content = content, ToolTip = hint, Height = 28, FontSize = 12, Padding = new(8, 0, 8, 0) };
+        var button = new Button { Content = content, ToolTip = hint };
         AutomationProperties.SetName(button, hint);
         return button;
+    }
+
+    void ReviewGroup(ProducedFile[] files) => ReviewChanges(files, Math.Max(0, Array.FindIndex(files, file => file.Diff != null)));
+
+    // The pill follows the bottom-most changes group of the chat while some of its changes are still in place.
+    void UpdateChangesPill()
+    {
+        var files = _chatView.LastChanges;
+        ChangesPill.Visibility = VisibleIf(files != null && files.Any(file => !file.Undone && IsChange(file)));
+        if (files == null) return;
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = ChangesHeading(files) } } };
+        if (files.All(file => !file.Undone) && files.Any(file => file.Diff != null)) content.Children.Add(Totals(files));
+        ChangesPill.Content = content;
+        ChangesPill.ToolTip = "Открыть последние изменения справа";
+        AutomationProperties.SetName(ChangesPill, "Открыть последние изменения справа");
     }
 
     void ReviewChanges(ProducedFile[] files, int selected)
     {
         var file = files[selected];
         ShowPreview(file.Path, file.Diff, review: true);
-        PreviewChangePicker.Content = new TextBlock
-        {
-            Text = $"{selected + 1}/{files.Length} · {CardTitle(file.Path, keepExtension: true)}", TextTrimming = TextTrimming.CharacterEllipsis,
-        };
+        PreviewChangePicker.Content = $"{selected + 1}/{files.Length} · {CardTitle(file.Path, keepExtension: true)}";
         var picker = new ContextMenu { PlacementTarget = PreviewChangePicker, Placement = PlacementMode.Bottom, MaxHeight = 320 };
         for (int i = 0; i < files.Length; i++)
         {
             int index = i;
-            var item = FileActions.Item(CardTitle(files[i].Path, keepExtension: true).Replace("_", "__"), i == selected ? Glyphs.Check : null,
-                () => ReviewChanges(files, index));
+            var item = FileActions.Item(CardTitle(files[i].Path, keepExtension: true).Replace("_", "__"), null, () => ReviewChanges(files, index));
+            item.IsChecked = i == selected;
             item.ToolTip = files[i].Path;
             picker.Items.Add(item);
         }
@@ -144,7 +150,15 @@ public partial class MainWindow
 
     void PreviewChangePicker_Click(object sender, RoutedEventArgs e)
     {
-        if (PreviewChangePicker.ContextMenu is { } menu) menu.IsOpen = true;
+        if (PreviewChangePicker.ContextMenu is not { } menu) return;
+        // The menu chrome adds a 20 px shadow margin on each side.
+        menu.MinWidth = PreviewChangePicker.ActualWidth + 40;
+        menu.IsOpen = true;
+    }
+
+    void ChangesPill_Click(object sender, RoutedEventArgs e)
+    {
+        if (_chatView.LastChanges is { } files) ReviewGroup(files);
     }
 
     async Task UndoChangesAsync(ProducedFile[] files)

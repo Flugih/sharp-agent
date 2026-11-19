@@ -116,7 +116,7 @@ public static class FileActions
     public static MenuItem Item(string header, string? glyph, Action action, string? gesture = null)
     {
         var item = new MenuItem { Header = header, InputGestureText = gesture ?? "" };
-        if (glyph != null) item.Icon = new TextBlock { Text = glyph, FontFamily = Theme.Icons, FontSize = 14 };
+        if (glyph != null) item.Icon = new TextBlock { Text = glyph, FontFamily = Theme.Icons, FontSize = 16 };
         item.Click += (_, _) => action();
         return item;
     }

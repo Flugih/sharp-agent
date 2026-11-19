@@ -1,3 +1,4 @@
+using System.Windows.Data;
 using System.Windows.Documents;
 
 namespace SharpAgent.Ui;
@@ -5,7 +6,7 @@ namespace SharpAgent.Ui;
 public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openInApp)
 {
     public MarkdownContext Markdown => new(paths, FileLink, WebLink,
-        (code, language) => new BlockUIContainer(new CodeBlockView(code, language)) { Margin = new(0, 5, 0, 12) });
+        (code, language) => new BlockUIContainer(new CodeBlockView(code, language)) { Margin = new(0, 4, 0, 12) });
 
     static string GlyphFor(string path) => Directory.Exists(path) ? Glyphs.Folder : Attachment.IsImagePath(path) ? Glyphs.Picture : Glyphs.Document;
 
@@ -36,7 +37,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
 
     Inline WebLink(string url, string text)
     {
-        var link = new Hyperlink(new Run(text)) { ToolTip = "Открыть во внешнем браузере\n" + url, Style = LinkStyle, TextDecorations = TextDecorations.Underline };
+        var link = new Hyperlink(new Run(text)) { ToolTip = "Открыть во внешнем браузере\n" + url, Style = LinkStyle };
         link.Click += (_, _) => FileActions.OpenUrl(url);
         link.ContextMenu = new ContextMenu
         {
@@ -64,7 +65,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
                     {
                         Text = GlyphFor(path), FontFamily = Theme.Icons, FontSize = 13,
                         VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 1, 6, 0),
-                    }.Paint(TextBlock.ForegroundProperty, "TextMuted"),
+                    }.Paint(TextBlock.ForegroundProperty, "TextDim"),
                     new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center, MaxWidth = 260, TextTrimming = TextTrimming.CharacterEllipsis },
                 },
             },
@@ -75,6 +76,23 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
         chip.Click += (_, _) => Click(path);
         FileActions.EnableDragOut(chip, path);
         return chip;
+    }
+
+    // A file name inside a quiet row: plain text with a dotted underline, the same actions as a chip.
+    public TextBlock FileRef(string path, string? text = null)
+    {
+        var name = text ?? DisplayName(path);
+        var pen = new Pen { Thickness = 1, DashStyle = DashStyles.Dot };
+        var link = new Hyperlink(new Run(name))
+        {
+            ToolTip = HintFor(path), Style = LinkStyle, ContextMenu = FileActions.BuildMenu(owner, path),
+            TextDecorations = [new TextDecoration { Location = TextDecorationLocation.Underline, Pen = pen }],
+        }.Paint(TextElement.ForegroundProperty, "TextSoft");
+        BindingOperations.SetBinding(pen, Pen.BrushProperty, new Binding(nameof(link.Foreground)) { Source = link });
+        AutomationProperties.SetName(link, (Directory.Exists(path) ? "Папка " : "Файл ") + name);
+        link.Click += (_, _) => Click(path);
+        FileActions.EnableDragOut(link, path);
+        return new TextBlock(link) { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     }
 
     public static string DisplayName(string path)
@@ -91,7 +109,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
             return;
         }
         button.Content = Glyphs.Check;
-        button.Foreground = Theme.Success;
+        button.Paint(Control.ForegroundProperty, "Success");
         button.ToolTip = "Скопировано";
         Theme.After(TimeSpan.FromSeconds(1.4), () =>
         {
@@ -108,24 +126,21 @@ sealed class CodeBlockView : Border
     {
         var text = new TextBox
         {
-            Text = code, IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, FontFamily = Theme.Mono, FontSize = 13,
+            Text = code, IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, FontFamily = Theme.Mono, FontSize = 12.5,
             TextWrapping = TextWrapping.Wrap, Background = Brushes.Transparent, BorderThickness = new(0),
-            Padding = new(0, 7, 0, 0), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
+            Padding = new(0, 4, 0, 4), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
         }.Paint(TextBox.ForegroundProperty, "TextSoft").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
+        TextBlock.SetLineHeight(text, 19);
         var label = language != null ? $"Скопировать код ({language})" : "Скопировать код";
-        var copy = Theme.IconButton(Glyphs.Copy, label, 24);
-        copy.HorizontalContentAlignment = HorizontalAlignment.Center;
-        copy.Padding = new(0, 8, 0, 0);
+        var copy = Theme.IconButton(Glyphs.Copy, label, 28, 14);
         copy.Click += (_, _) => ChatLinks.CopyWithFeedback(copy, code, label);
         var grid = new Grid { ColumnDefinitions = { new(), new() { Width = GridLength.Auto } }, Children = { text, copy } };
         Grid.SetColumn(copy, 1);
         copy.VerticalAlignment = VerticalAlignment.Center;
         text.SizeChanged += (_, _) => copy.VerticalAlignment = text.LineCount > 1 ? VerticalAlignment.Top : VerticalAlignment.Center;
-        SetResourceReference(BackgroundProperty, "Surface");
-        SetResourceReference(BorderBrushProperty, "Line");
-        BorderThickness = new(1);
-        CornerRadius = new(8);
-        Padding = new(12, 6, 6, 6);
+        SetResourceReference(BackgroundProperty, "BlockBg");
+        CornerRadius = new(12);
+        Padding = new(12, 8, 8, 8);
         Child = grid;
         RequestBringIntoView += (_, e) =>
         {

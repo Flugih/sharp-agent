@@ -25,7 +25,7 @@ public sealed class VoiceWave : FrameworkElement
         {
             int index = _levels.Count - bars + i;
             double height = Math.Max(BarWidth, (index >= 0 ? _levels[index] : 0) * ActualHeight);
-            context.DrawRoundedRectangle(index >= 0 ? Theme.TextSoft : Theme.LineStrong, null,
+            context.DrawRoundedRectangle(index >= 0 ? Theme.TextSoft : Theme.Get("Track"), null,
                 new(Math.Round(ActualWidth - (bars - i) * Step + Step - BarWidth), (ActualHeight - height) / 2, BarWidth, height),
                 BarWidth / 2, BarWidth / 2);
         }

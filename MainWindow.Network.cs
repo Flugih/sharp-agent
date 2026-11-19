@@ -4,6 +4,10 @@ public partial class MainWindow
 {
     // All nodes go into one .env line and one menu, so a huge subscription is cut.
     const int MaxVpnProfiles = 200;
+    static readonly (NetworkMode Value, string Label)[] NetworkModes =
+        [(NetworkMode.System, "Системные настройки"), (NetworkMode.Direct, "Напрямую"), (NetworkMode.Proxy, "Прокси"), (NetworkMode.Vpn, "VPN")];
+    static readonly (string? Value, string Label)[] ProxyTypes = [("SOCKS5", "SOCKS5"), ("HTTP", "HTTP"), ("HTTPS", "HTTPS")];
+    NetworkMode _networkMode;
     List<VpnProfile> _vpnProfiles = [];
     VpnProfile? _vpnSelection;
     (string Path, string Sha256) _networkEngineApproval;
@@ -32,42 +36,35 @@ public partial class MainWindow
         NetworkImportStatus.Text = "";
         NetworkTestStatus.Text = "";
         NetworkImportButton.IsEnabled = NetworkTestButton.IsEnabled = true;
-        var mode = NetworkModeChoices.Children.OfType<RadioButton>().First(item => Equals(item.Tag, settings.Mode.ToString()));
-        if (mode.IsChecked == true && settings.Mode == NetworkMode.Vpn) FindNetworkEngine();
-        else mode.IsChecked = true;
+        ShowNetworkMode(settings.Mode);
     }
 
     NetworkSettings ReadNetworkSettings()
     {
-        var mode = NetworkModeChoices.Children.OfType<RadioButton>().FirstOrDefault(item => item.IsChecked == true)?.Tag as string;
         string engine = NetworkEngine.Text.Trim().Trim('"');
-        return new(Enum.TryParse<NetworkMode>(mode, out var selectedMode) ? selectedMode : NetworkMode.System,
-            ((string?)NetworkProxyType.Content ?? "SOCKS5").ToLowerInvariant(),
+        return new(_networkMode, ((string?)NetworkProxyType.Content ?? "SOCKS5").ToLowerInvariant(),
             NetworkHost.Text.Trim(), NetworkPort.Text.Trim(), NetworkUser.Text, NetworkPassword.Password,
             NetworkSubscription.Password.Trim(), engine, _vpnSelection?.Save() ?? "", ApprovedEngineHash(engine));
     }
 
-    void NetworkMode_Checked(object sender, RoutedEventArgs e)
+    void NetworkModeButton_Click(object sender, RoutedEventArgs e) => PickChoice(NetworkModeButton, NetworkModes, _networkMode, ShowNetworkMode);
+
+    void ShowNetworkMode(NetworkMode mode)
     {
-        var button = (RadioButton)sender;
-        NetworkProxyFields.Visibility = VisibleIf(Equals(button.Tag, "Proxy"));
-        bool vpn = Equals(button.Tag, "Vpn");
-        NetworkVpnFields.Visibility = VisibleIf(vpn);
-        if (vpn) FindNetworkEngine();
+        _networkMode = mode;
+        ShowChoice(NetworkModeButton, NetworkModes, mode);
+        NetworkProxyFields.Visibility = VisibleIf(mode == NetworkMode.Proxy);
+        NetworkVpnFields.Visibility = VisibleIf(mode == NetworkMode.Vpn);
+        if (mode == NetworkMode.Vpn) FindNetworkEngine();
         NetworkTestStatus.Text = "";
     }
 
-    void NetworkProxyType_Click(object sender, RoutedEventArgs e)
-    {
-        var menu = new ContextMenu { PlacementTarget = NetworkProxyType, MinWidth = NetworkProxyType.ActualWidth };
-        foreach (var type in new[] { "SOCKS5", "HTTP", "HTTPS" })
-            menu.Items.Add(FileActions.Item(type, null, () =>
-            {
-                NetworkProxyType.Content = type;
-                NetworkTestStatus.Text = "";
-            }));
-        menu.IsOpen = true;
-    }
+    void NetworkProxyType_Click(object sender, RoutedEventArgs e) =>
+        PickChoice(NetworkProxyType, ProxyTypes, NetworkProxyType.Content as string, type =>
+        {
+            NetworkProxyType.Content = type;
+            NetworkTestStatus.Text = "";
+        });
 
     async void NetworkBrowse_Click(object sender, RoutedEventArgs e)
     {
@@ -173,17 +170,12 @@ public partial class MainWindow
         ShowVpnSelection();
     }
 
-    void NetworkVpnServer_Click(object sender, RoutedEventArgs e)
-    {
-        var menu = new ContextMenu { PlacementTarget = NetworkVpnServer, MaxHeight = 320, MinWidth = NetworkVpnServer.ActualWidth };
-        foreach (var server in _vpnProfiles)
-            menu.Items.Add(FileActions.Item(server.Label.Replace("_", "__"), server == _vpnSelection ? Glyphs.Check : null, () =>
-            {
-                _vpnSelection = server;
-                ShowVpnSelection();
-            }));
-        menu.IsOpen = true;
-    }
+    void NetworkVpnServer_Click(object sender, RoutedEventArgs e) =>
+        PickChoice(NetworkVpnServer, _vpnProfiles.Select(server => ((VpnProfile?)server, server.Label)).ToArray(), _vpnSelection, server =>
+        {
+            _vpnSelection = server;
+            ShowVpnSelection();
+        });
 
     string NetworkProbeUrl() => (_settingsProvider switch
     {

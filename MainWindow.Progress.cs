@@ -1,12 +1,14 @@
+using System.Windows.Documents;
+using Glyphs = SharpAgent.Ui.Glyphs;
+
 namespace SharpAgent;
 
 public partial class MainWindow
 {
     sealed class ProgressSection
     {
-        readonly TextBlock _label = new TextBlock { FontSize = 13, VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "TextMuted");
-        readonly StackPanel _header = new() { Orientation = Orientation.Horizontal };
-        FrameworkElement? _spinner;
+        readonly Shimmer _label = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+        readonly DockPanel _header = new() { MinHeight = 25 };
         TextBlock? _error;
         int _errors;
         public readonly StackPanel Items = new();
@@ -16,19 +18,20 @@ public partial class MainWindow
 
         public ProgressSection(string title, string? glyph = null)
         {
-            if (glyph != null) _header.Children.Add(GlyphText(glyph, 13, "TextMuted", new(0, 0, 8, 0)));
+            if (glyph != null) _header.Children.Add(GlyphText(glyph, 16, "TextMuted", new(0, 0, 8, 0)));
             _header.Children.Add(_label);
             View.Header = _header;
+            // Children sit 34 in, with a guide line under the centre of the group glyph.
             View.Content = glyph == null ? Items : new Border
             {
-                BorderThickness = new(1, 0, 0, 0), Margin = new(11, 2, 0, 3), Padding = new(13, 0, 0, 0), Child = Items,
+                BorderThickness = new(1, 0, 0, 0), Margin = new(7, 0, 0, 0), Padding = new(26, 0, 0, 0), Child = Items,
             }.Paint(BorderBrushProperty, "Line");
             SetTitle(title);
         }
 
-        public void SetTitle(string title)
+        public void SetTitle(string title, string? label = null)
         {
-            _label.Text = title;
+            _label.Text = label ?? title;
             AutomationProperties.SetName(View, title);
             View.ToolTip = title + " · раскрыть или свернуть";
         }
@@ -37,7 +40,7 @@ public partial class MainWindow
         {
             if (_error == null)
             {
-                _error = new TextBlock { FontSize = 13, Margin = new(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "DangerText");
+                _error = new TextBlock { Margin = new(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, "DangerText");
                 _header.Children.Add(_error);
             }
             _error.Text = ++_errors > 1 ? $"Ошибок: {_errors} · {text}" : text;
@@ -45,7 +48,7 @@ public partial class MainWindow
 
         public static ProgressSection Collapsed(string title, string glyph, Panel parent)
         {
-            var group = new ProgressSection(title, glyph) { View = { IsExpanded = false, Margin = new(-3, 2, 0, 2) } };
+            var group = new ProgressSection(title, glyph);
             parent.Children.Add(group.View);
             return group;
         }
@@ -60,68 +63,36 @@ public partial class MainWindow
         public void Start()
         {
             SetTitle("Думаю…");
-            View.IsExpanded = true;
-            _spinner = MakeSpinner(12);
-            _spinner.Margin = new(0, 0, 8, 0);
-            _header.Children.Insert(0, _spinner);
+            _label.IsActive = View.IsExpanded = true;
         }
 
         public void Finish(string title)
         {
             SetTitle(title);
+            _label.IsActive = false;
             View.IsExpanded = false;
-            if (_spinner == null) return;
-            StopSpinner(_spinner);
-            _header.Children.Remove(_spinner);
-            _spinner = null;
         }
     }
 
     sealed class PlanCard
     {
-        const double TextInset = 42;
-        readonly TextBlock _count = new() { FontSize = 12, FontWeight = FontWeights.SemiBold };
-        readonly TextBlock _title = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-        readonly ProgressBar _meter = new() { Style = Theme.Style("Meter"), Margin = new(0, 8, 0, 0) };
-        readonly StackPanel _tasks = new() { Margin = new(0, 4, 0, 1) };
-        readonly Expander _expander = new()
-        {
-            Style = Theme.Style("ProgressSection"), HorizontalContentAlignment = HorizontalAlignment.Stretch, IsExpanded = true,
-        };
-        public readonly Border View;
+        readonly ProgressSection _section = new("", Glyphs.Check) { View = { IsExpanded = true } };
+        readonly ProgressBar _meter = new() { Style = Theme.Style("Meter"), Margin = new(0, 8, 0, 6) };
+        readonly StackPanel _tasks = new();
+        public FrameworkElement View => _section.View;
 
         public PlanCard()
         {
-            _count.SetResourceReference(TextBlock.ForegroundProperty, "AccentText");
-            _title.SetResourceReference(TextBlock.ForegroundProperty, "Text");
-            var countBadge = new Border
-            {
-                CornerRadius = new(6), Padding = new(0, 2, 0, 2), Width = 32,
-                Margin = new(0, 0, TextInset - 32, 0), Child = _count,
-            };
-            _count.TextAlignment = TextAlignment.Center;
-            countBadge.SetResourceReference(Border.BackgroundProperty, "AccentSoft");
-            DockPanel.SetDock(countBadge, Dock.Left);
-            _expander.Header = new DockPanel { Children = { countBadge, _title } };
-            _expander.Content = new StackPanel { Margin = new(3, 0, 3, 0), Children = { _meter, _tasks } };
-            View = new Border
-            {
-                BorderThickness = new(1), CornerRadius = new(10),
-                Margin = new(0, 4, 0, 8), Padding = new(8, 6, 8, 6), Child = _expander,
-            };
-            View.SetResourceReference(Border.BackgroundProperty, "Surface");
-            View.SetResourceReference(Border.BorderBrushProperty, "Line");
+            _section.Items.Children.Add(_meter);
+            _section.Items.Children.Add(_tasks);
         }
 
         public void Update(IReadOnlyList<AgentRunner.PlanItem> items)
         {
             int done = items.Count(item => item.Done);
-            _count.Text = $"{done}/{items.Count}";
-            _title.Text = items.FirstOrDefault(item => item.Status == "in_progress").Step ??
-                          items.FirstOrDefault(item => !item.Done).Step ?? "План выполнен";
-            _title.ToolTip = _title.Text;
+            var step = items.FirstOrDefault(item => item.Status == "in_progress").Step ?? items.FirstOrDefault(item => !item.Done).Step ?? "План выполнен";
             var summary = $"План. Выполнено {done} из {items.Count}";
-            AutomationProperties.SetName(_expander, summary);
+            _section.SetTitle(summary, $"{done}/{items.Count} · {step}");
             AutomationProperties.SetName(_meter, summary);
             _meter.Maximum = items.Count;
             _meter.Value = done;
@@ -132,22 +103,21 @@ public partial class MainWindow
                 var check = new CheckBox
                 {
                     Style = Theme.Style("PlanCheck"), IsThreeState = true, IsChecked = active ? null : item.Done,
-                    VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 1, 8, 0),
+                    VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 2, 8, 0),
                 };
                 AutomationProperties.SetName(check, item.Step);
                 DockPanel.SetDock(check, Dock.Left);
                 var text = new TextBlock
                 {
-                    Text = item.Step, FontSize = 13,
-                    TextWrapping = TextWrapping.Wrap, TextDecorations = item.Done ? TextDecorations.Strikethrough : null,
+                    Text = item.Step, TextWrapping = TextWrapping.Wrap, TextDecorations = item.Done ? TextDecorations.Strikethrough : null,
                 };
                 text.SetResourceReference(TextBlock.ForegroundProperty, active ? "Text" : "TextMuted");
-                var row = new DockPanel { Margin = new(0, 3, 0, 3), Children = { check, text } };
+                var row = new DockPanel { Margin = new(0, 6, 0, 6), Children = { check, text } };
                 if (active)
                 {
                     var status = new TextBlock
                     {
-                        Text = "В работе", FontSize = 12, Margin = new(10, 1, 0, 0),
+                        Text = "В работе", FontSize = 13, Margin = new(10, 1, 0, 0),
                         VerticalAlignment = VerticalAlignment.Top,
                     };
                     status.SetResourceReference(TextBlock.ForegroundProperty, "AccentText");
@@ -161,15 +131,15 @@ public partial class MainWindow
 
     readonly StringBuilder _draftText = new();
     DispatcherTimer? _draftTimer;
-    TextBox? _draftView;
+    RichTextBox? _draftView;
+    int _draftShown;
     bool _draftIsProgress;
 
     ProgressSection EnsureProgress()
     {
         if (_chatView.Progress is { } progress) return progress;
         progress = _chatView.Progress = new("Ход работы");
-        progress.View.Margin = new(-3, 8, 0, 0);
-        progress.Items.Margin = new(3, 2, 0, 2);
+        progress.View.Margin = new(0, 8, 0, 8);
         AppendToChat(progress.View);
         return progress;
     }
@@ -193,7 +163,7 @@ public partial class MainWindow
             _chatView.ProgressHint = null;
         }
         if (text == null) return;
-        _chatView.ProgressHint = new TextBlock { Text = text, FontSize = 13, Margin = new(0, 5, 0, 5) }.Paint(ForegroundProperty, "TextMuted");
+        _chatView.ProgressHint = new TextBlock { Text = text, Margin = new(0, 6, 0, 6) }.Paint(ForegroundProperty, "TextMuted");
         EnsureProgress().Items.Children.Add(_chatView.ProgressHint);
     }
 
@@ -234,8 +204,11 @@ public partial class MainWindow
             row = null;
         }
         else if (row == null) AddProgressItem(row = ProgressText(markdown, label));
-        else row.Document = ChatDocument(markdown, "TextMuted");
+        else row.Document = ChatDocument(markdown, ProgressColor(label));
     }
+
+    // Reasoning stays quiet; interim messages read like the answer.
+    static string ProgressColor(string label) => label == "Рассуждения модели" ? "TextMuted" : "Text";
 
     void OnAssistantDelta(string? text, bool usesTools)
     {
@@ -261,19 +234,47 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(text)) return;
         if (_draftView == null)
         {
-            _draftView = SelectableText(text, "Text");
-            _draftView.Margin = new(0, 8, 0, 8);
-            AutomationProperties.SetName(_draftView, "Ответ агента");
+            var document = new FlowDocument(new Paragraph(new Run()) { Margin = new(0) })
+            {
+                PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 23,
+            }.Paint(TextElement.ForegroundProperty, "Text");
+            _draftView = ReadOnlyChatText(document, "Ответ агента");
+            _draftView.Margin = new(-5, 8, -5, 8);
+            _draftView.ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"];
+            _draftShown = 0;
             if (!_draftIsProgress) AppendToChat(_draftView);
         }
         if (_draftIsProgress && _draftView.Parent != EnsureProgress().Items)
         {
             ChatPanel.Children.Remove(_draftView);
-            _draftView.Paint(ForegroundProperty, "TextMuted");
             AutomationProperties.SetName(_draftView, "Промежуточное сообщение");
             AddProgressItem(_draftView);
         }
-        _draftView.Text = text;
+        AppendDraft(text[_draftShown..]);
+        _draftShown = text.Length;
+    }
+
+    // Each chunk fades in as its own Run and then joins the first plain Run, so a long stream keeps no brushes or clocks.
+    void AppendDraft(string chunk)
+    {
+        if (chunk.Length == 0) return;
+        var paragraph = (Paragraph)_draftView!.Document.Blocks.FirstBlock;
+        var settled = (Run)paragraph.Inlines.FirstInline;
+        if (!Theme.AnimationsEnabled)
+        {
+            settled.ContentEnd.InsertTextInRun(chunk);
+            return;
+        }
+        var brush = new SolidColorBrush(((SolidColorBrush)Theme.Text).Color);
+        var run = new Run(chunk) { Foreground = brush };
+        paragraph.Inlines.Add(run);
+        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160));
+        fade.Completed += (_, _) =>
+        {
+            settled.ContentEnd.InsertTextInRun(run.Text);
+            paragraph.Inlines.Remove(run);
+        };
+        brush.BeginAnimation(Brush.OpacityProperty, fade);
     }
 
     void ClearDraft(bool interrupted = false)
@@ -316,8 +317,8 @@ public partial class MainWindow
 
     RichTextBox ProgressText(string markdown, string label)
     {
-        var text = ChatText(markdown, "TextMuted", label);
-        text.Margin = new(0, 6, 0, 6);
+        var text = ChatText(markdown, ProgressColor(label), label);
+        text.Margin = text.Margin with { Top = 6, Bottom = 6 };
         return text;
     }
 
@@ -359,9 +360,7 @@ public partial class MainWindow
         bool commands = name is "run_command" or "run_plugin";
         if (_chatView.ToolGroup is not { } group || group.Commands != commands)
         {
-            var section = new ProgressSection(commands ? "Команды" : "Действия", commands ? Glyphs.Terminal : Glyphs.Tool);
-            section.View.IsExpanded = true;
-            section.View.Margin = new(-3, 2, 0, 2);
+            var section = new ProgressSection(commands ? "Команды" : "Действия", commands ? Glyphs.Terminal : Glyphs.Tool) { View = { IsExpanded = true } };
             AddProgressItem(section.View);
             _chatView.ToolGroup = group = (section, commands);
         }

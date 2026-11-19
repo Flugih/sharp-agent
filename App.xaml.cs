@@ -24,6 +24,8 @@ public partial class App
         }
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         DispatcherUnhandledException += OnUnhandledException;
+        ToolTipService.InitialShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(500));
+        ToolTipService.BetweenShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(500));
         base.OnStartup(e);
         var id = "SharpAgent_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(AppPaths.AppFolder.ToLowerInvariant())))[..16];
         var mutex = new Mutex(true, id, out bool isFirst);

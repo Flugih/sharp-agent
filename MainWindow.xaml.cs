@@ -201,30 +201,19 @@ public partial class MainWindow
         ApplyWorkDir();
         ApplyProvider();
         ApplyFastMode();
-        ApplyModeColors();
         ModeText.Text = _config.Sandbox ? "Песочница" : "Весь ПК";
-        ModeIcon.Text = _config.Sandbox ? Glyphs.Lock : Glyphs.Globe;
+        ModeIcon.Text = _config.Sandbox ? Glyphs.Lock : Glyphs.Laptop;
         ModePill.ToolTip = (_config.Sandbox
             ? $"Агент работает только внутри папки {FolderKind}:\n{AppPaths.AppFolder}\nКоманды PowerShell и cmd отключены."
             : "Агент работает с любыми файлами пользователя, без прав администратора.") + "\nЩелчок — открыть настройки";
         AutomationProperties.SetName(ModePill, $"Режим: {ModeText.Text}. Открыть настройки");
     }
 
-    void ApplyModeColors()
-    {
-        ModePill.Foreground = _config.Sandbox ? Theme.AccentText : Theme.TextMuted;
-        ModePill.BorderBrush = _config.Sandbox ? Theme.AccentLine : Theme.LineStrong;
-    }
-
     public void ApplyTheme()
     {
         if (!Theme.Apply(Application.Current.Resources, _state.Theme)) return;
-        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
+        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.Line).Color);
         if (_config == null) return;
-        ApplyModeColors();
-        Composer.BorderBrush = InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;
-        RenderBanner();
-        RenderPendingAttachments();
         UpdateBalanceIndicator();
     }
 
@@ -323,12 +312,7 @@ public partial class MainWindow
             ? "Агент спрашивает разрешение перед удалением, перезаписью файлов и запуском команд. Щелчок — отключить"
             : "Агент удаляет, перезаписывает файлы и запускает команды без вопросов. Щелчок — снова спрашивать";
         AutomationProperties.SetName(ConfirmToggle, on ? "Подтверждения включены" : "Подтверждения выключены");
-        if (on)
-        {
-            ConfirmToggle.ClearValue(ForegroundProperty);
-            ConfirmToggle.ClearValue(BorderBrushProperty);
-        }
-        else ConfirmToggle.Paint(ForegroundProperty, "Warning").Paint(BorderBrushProperty, "WarningLine");
+        ConfirmToggle.Paint(ForegroundProperty, on ? "TextDim" : "Warning");
     }
 
     Task<bool> ConfirmAsync(ConfirmRequest request)
@@ -388,9 +372,6 @@ public partial class MainWindow
         MicButton.Visibility = VisibleIf(!voice);
         UpdateSendButton();
     }
-
-    void InputBox_FocusChanged(object s, KeyboardFocusChangedEventArgs e) =>
-        Composer.BorderBrush = ReferenceEquals(e.NewFocus, InputBox) ? Theme.Accent : Theme.LineStrong;
 
     async Task SendAsync()
     {
@@ -585,30 +566,33 @@ public partial class MainWindow
         for (int i = 0; i < rows.Length; i++)
         {
             grid.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            var keys = new TextBlock { Text = rows[i].Keys, FontFamily = Theme.Mono, FontSize = 13, Foreground = Theme.Text, Margin = new(0, 0, 24, 8) };
-            var action = new TextBlock { Text = rows[i].Action, FontSize = 13, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) };
+            var keys = Theme.KeyBadge(rows[i].Keys);
+            keys.Margin = new(0, 0, 16, 8);
+            keys.HorizontalAlignment = HorizontalAlignment.Left;
+            keys.VerticalAlignment = VerticalAlignment.Top;
+            var action = new TextBlock { Text = rows[i].Action, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 8) }.Paint(TextBlock.ForegroundProperty, "TextSoft");
             Grid.SetRow(keys, i);
             Grid.SetRow(action, i);
             Grid.SetColumn(action, 1);
             grid.Children.Add(keys);
             grid.Children.Add(action);
         }
-        DarkDialog.Show(this, "Сочетания клавиш", grid, 480);
+        DarkDialog.Show(this, "Сочетания клавиш", grid);
     }
 
     void About_Click(object s, RoutedEventArgs e) => DarkDialog.Show(this, "Sharp Agent", new StackPanel
     {
         Children =
         {
-            new TextBlock { Text = $"Версия {App.Version}", FontSize = 14, Foreground = Theme.Text, Margin = new(0, 0, 0, 8) },
+            new TextBlock { Text = $"Версия {App.Version}", Margin = new(0, 0, 0, 8) },
             new TextBlock
             {
                 Text = "ИИ-агент для работы с файлами и папками на этом компьютере. Работает от вашего имени, " +
                        $"без прав администратора. Провайдер выбирается в настройках. Всё своё хранит в папке {FolderKind}.",
-                FontSize = 13, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
-            },
-            new TextBlock { Text = $"Папка {FolderKind}", FontSize = 12, Foreground = Theme.TextMuted, Margin = new(0, 0, 0, 6) },
+                TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 16),
+            }.Paint(TextBlock.ForegroundProperty, "TextSoft"),
+            new TextBlock { Text = $"Папка {FolderKind}", FontSize = 13, Margin = new(0, 0, 0, 8) }.Paint(TextBlock.ForegroundProperty, "TextDim"),
             _links.FileChip(AppPaths.AppFolder, AppPaths.AppFolder),
         },
-    }, 480);
+    });
 }

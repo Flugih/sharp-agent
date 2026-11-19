@@ -7,14 +7,14 @@ public partial class MainWindow
         CloseSubagents();
         ExpandBrowser(false);
         var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var choices = new WrapPanel();
+        var choices = new StackPanel();
         foreach (var choice in question.Choices)
         {
             var button = new Button
             {
                 Style = Theme.Style("RowButton"), Content = new TextBlock { Text = choice, TextWrapping = TextWrapping.Wrap }, ToolTip = choice,
-                MaxWidth = 360, Margin = new(0, 0, 6, 5),
-            }.Paint(BackgroundProperty, "Surface2");
+                Padding = new(12, 6, 12, 6), Margin = new(0, 0, 0, 6), BorderThickness = new(1),
+            }.Paint(BackgroundProperty, "Raised").Paint(BorderBrushProperty, "RaisedLine");
             AutomationProperties.SetName(button, choice);
             button.Click += (_, _) => reply.TrySetResult(choice);
             choices.Children.Add(button);
@@ -23,7 +23,7 @@ public partial class MainWindow
         AutomationProperties.SetName(custom, "Свой ответ");
         var send = Theme.IconButton("\uE74A", "Отправить свой ответ", 32);
         send.IsEnabled = false;
-        send.Margin = new(5, 0, 0, 0);
+        send.Margin = new(6, 0, 0, 0);
         DockPanel.SetDock(send, Dock.Right);
         custom.TextChanged += (_, _) => send.IsEnabled = !string.IsNullOrWhiteSpace(custom.Text);
         send.Click += (_, _) => reply.TrySetResult(custom.Text.Trim());
@@ -39,8 +39,7 @@ public partial class MainWindow
             {
                 new TextBlock
                 {
-                    Text = question.Question, FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-                    Margin = new(0, 0, 0, 7),
+                    Text = question.Question, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new(0, 0, 0, 10),
                 },
                 choices,
                 new DockPanel { Margin = new(0, 2, 0, 0), Children = { send, custom } },
@@ -48,9 +47,9 @@ public partial class MainWindow
         };
         _questionCard = new Border
         {
-            Child = new ScrollViewer { Content = body, MaxHeight = 185, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-            BorderThickness = new(1), CornerRadius = new(10), Padding = new(12, 8, 12, 8),
-        }.Paint(BackgroundProperty, "Surface").Paint(BorderBrushProperty, "LineStrong");
+            Style = Theme.Style("Card"), Padding = new(16, 12, 16, 12),
+            Child = new ScrollViewer { Content = body, MaxHeight = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+        };
         _questionFocus = (Button)choices.Children[0];
         _compactChat?.SetStatus("Жду ответа");
         PlaceQuestion();

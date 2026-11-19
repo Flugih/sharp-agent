@@ -26,7 +26,7 @@ public partial class MainWindow
         {
             bool overComposer = IsPointerOver(Composer, e);
             e.Effects = overComposer ? DragDropEffects.Copy : DragDropEffects.None;
-            Composer.BorderBrush = overComposer || InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;
+            Composer.Paint(Border.BorderBrushProperty, overComposer ? "Accent" : "ComposerLine");
             return;
         }
         e.Effects = DragDropEffects.Copy;
@@ -88,7 +88,7 @@ public partial class MainWindow
     {
         _dropHideTimer?.Stop();
         DropOverlay.Visibility = Visibility.Collapsed;
-        Composer.BorderBrush = InputBox.IsKeyboardFocused ? Theme.Accent : Theme.LineStrong;
+        Composer.Paint(Border.BorderBrushProperty, "ComposerLine");
     }
 
     static bool IsPointerOver(FrameworkElement element, DragEventArgs e) => new Rect(element.RenderSize).Contains(e.GetPosition(element));
@@ -256,18 +256,16 @@ public partial class MainWindow
             }
             var chip = _links.FileChip(attachment.Path, attachment.Name, FileActions.Item("Убрать из сообщения", Glyphs.Cancel, Remove));
             chip.ToolTip = $"{attachment.Path}\n{attachment.Describe()}\nЩелчок — открыть, правая кнопка — другие действия";
-            chip.Background = Brushes.Transparent;
-            chip.BorderThickness = new Thickness(0);
             if (attachment.Kind == AttachmentKind.Image) _ = LoadThumbnailAsync(chip, attachment.Path);
-            var remove = Theme.IconButton(Glyphs.Cancel, "Убрать вложение " + attachment.Name, 22, 9);
-            remove.Margin = new Thickness(0, 0, 3, 0);
+            var remove = Theme.IconButton(Glyphs.Cancel, "Убрать вложение " + attachment.Name, 24, 10);
+            remove.Margin = new Thickness(0, 0, 1, 0);
             remove.VerticalAlignment = VerticalAlignment.Center;
             remove.Click += (_, _) => Remove();
             AttachPanel.Children.Add(new Border
             {
                 Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { chip, remove } },
-                Background = Theme.Surface2, CornerRadius = new CornerRadius(7), Margin = new Thickness(0, 0, 6, 5),
-            });
+                CornerRadius = new CornerRadius(8), Margin = new Thickness(0, 0, 6, 6),
+            }.Paint(Border.BackgroundProperty, "Surface3"));
         }
         AttachPanel.Visibility = VisibleIf(_pendingAttachments.Count > 0);
         if (_cts == null && _pendingAttachments.Count > 0) _compactChat?.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");

@@ -16,7 +16,7 @@ public partial class MainWindow
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.LineStrong).Color);
+        WindowEffects.ApplyFrame(this, ((SolidColorBrush)Theme.Line).Color);
         (PresentationSource.FromVisual(this) as HwndSource)?.AddHook(WindowMessageHook);
         _maxHoverTimer.Tick += (_, _) =>
         {
@@ -104,11 +104,11 @@ public partial class MainWindow
 
     void UpdateLayoutWidths()
     {
-        double row = Composer.ActualWidth, folderRoom = row - (row < 558 ? 397 : 492);
+        double row = Composer.ActualWidth, folderRoom = row - 210;
         ConfirmLabel.Visibility = VisibleIf(row >= 558);
-        FolderText.MaxWidth = Math.Clamp(folderRoom, 0, 150);
+        FolderText.MaxWidth = Math.Clamp(folderRoom, 0, 240);
         FolderText.Visibility = VisibleIf(folderRoom >= 40);
-        double room = MainWidth - 300 - (SubagentsOpenButton?.Visibility == Visibility.Visible ? 120 : 0);
+        double room = RootGrid.ActualWidth - 250 - (SubagentsOpenButton?.Visibility == Visibility.Visible ? 140 : 0);
         ChatTitleText.MaxWidth = Math.Max(0, room);
         ChatTitleText.Visibility = VisibleIf(room >= 60);
     }

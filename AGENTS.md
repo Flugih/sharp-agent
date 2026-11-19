@@ -22,9 +22,13 @@ Rules for every change to Sharp Agent.
 
 ## Keep stable
 - UI texts are Russian. Keep UI strings, the system prompt, tool names, descriptions, JSON schemas and output prefixes unchanged unless the change is the point.
+- `README.md` changes only when a human directly asks for it; never edit it on your own initiative, even to match code changes.
 - Stored formats stay compatible: `.env` keys, `state.json`, `history/`, `auth/chatgpt.json`.
 - Portable builds keep data in the program folder (`AppPaths`). Installed builds store user data in `%LOCALAPPDATA%\SharpAgent`; preserve both modes and their secret/app-file guards. Apart from that, never write to `%APPDATA%`, `%TEMP%` or the registry.
 - Safety: every tool path goes through `ToolContext.Resolve` and the secret/app-file guards; risky actions ask when settings say so; sandbox mode disables commands, plugins and Computer Use; `.env`, `auth/` and keys never reach the model, logs or UI.
+
+## Design
+- UI follows `design/DESIGN.md`: tokens, typography, components and motion. New or changed UI must match it.
 
 ## Before finishing
 - `dotnet build SharpAgent.csproj -o <folder outside bin\Debug>` with 0 warnings (the owner may be running `bin\Debug`).

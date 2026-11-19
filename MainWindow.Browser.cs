@@ -4,8 +4,7 @@ public partial class MainWindow
 {
     sealed class BrowserTab
     {
-        public readonly StackPanel Header = new() { Orientation = Orientation.Horizontal, Margin = new(1, 0, 4, 0) };
-        public readonly RadioButton Select = new() { Style = Theme.Style("PillToggle"), GroupName = "BrowserTabs", MaxWidth = 165 };
+        public readonly RadioButton Select = new() { Style = Theme.Style("TabToggle"), GroupName = "BrowserTabs", MaxWidth = 165, Padding = new(10, 0, 4, 0), Margin = new(0, 0, 2, 0) };
         public readonly TextBlock Title = new() { Text = "Новая вкладка", TextTrimming = TextTrimming.CharacterEllipsis };
         public BrowserView? Page;
         public Uri? Url;
@@ -59,16 +58,16 @@ public partial class MainWindow
     void AddBrowserTab(Uri? url)
     {
         var tab = new BrowserTab { Url = url };
-        tab.Select.Content = tab.Title;
-        tab.Select.Checked += (_, _) => SelectBrowserTab(tab);
-        tab.Header.Children.Add(tab.Select);
-        var close = Theme.IconButton(Glyphs.Cancel, "Закрыть вкладку", 23, 9);
+        var close = new Button { Style = (Style)BrowserPane.Resources["BrowserTabClose"] };
         close.Click += (_, _) => CloseBrowserTab(tab);
-        tab.Header.Children.Add(close);
+        DockPanel.SetDock(close, Dock.Right);
+        tab.Select.Content = new DockPanel { Children = { close, tab.Title } };
+        tab.Select.SetBinding(AutomationProperties.NameProperty, new System.Windows.Data.Binding(nameof(TextBlock.Text)) { Source = tab.Title });
+        tab.Select.Checked += (_, _) => SelectBrowserTab(tab);
         _tabs.Add(tab);
-        BrowserTabs.Children.Add(tab.Header);
+        BrowserTabs.Children.Add(tab.Select);
         tab.Select.IsChecked = true;
-        tab.Header.BringIntoView();
+        tab.Select.BringIntoView();
         if (url == null) BrowserAddress.Focus();
     }
 
@@ -76,7 +75,7 @@ public partial class MainWindow
     {
         int index = _tabs.IndexOf(tab);
         _tabs.RemoveAt(index);
-        BrowserTabs.Children.Remove(tab.Header);
+        BrowserTabs.Children.Remove(tab.Select);
         ReleaseBrowserPage(tab);
         if (tab != _browserTab) return;
         _browserTab = null;
@@ -99,7 +98,7 @@ public partial class MainWindow
         bool empty = tab.Url == null;
         Grid.SetRow(BrowserToolbar, empty ? 2 : 1);
         BrowserToolbar.VerticalAlignment = empty ? VerticalAlignment.Center : VerticalAlignment.Top;
-        BrowserToolbar.Margin = empty ? new(14, 0, 14, 0) : new(2, 5, 2, 6);
+        BrowserToolbar.Margin = empty ? new(16, 0, 16, 0) : new(8, 0, 8, 8);
         BrowserNavigation.Visibility = VisibleIf(!empty);
         BrowserNetworkButton.ToolTip = _config.Network.Mode switch
         {
@@ -111,7 +110,7 @@ public partial class MainWindow
         BrowserForward.IsEnabled = tab.Page?.CanForward == true;
         if (address) BrowserAddress.Text = tab.Url?.AbsoluteUri ?? "";
         BrowserError.Text = tab.Error ?? "";
-        BrowserError.Visibility = VisibleIf(tab.Error != null);
+        BrowserErrorView.Visibility = VisibleIf(tab.Error != null);
     }
 
     void BrowserAddress_KeyDown(object sender, KeyEventArgs e)

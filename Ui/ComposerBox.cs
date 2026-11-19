@@ -196,16 +196,15 @@ public sealed partial class ComposerBox : RichTextBox
     {
         var title = new TextBlock
         {
-            Text = raw.Length > 48 ? raw[..45] + "…" : raw, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 225, Margin = new(7, 0, 1, 0),
+            Text = raw.Length > 48 ? raw[..45] + "…" : raw, FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 225, Margin = new(8, 0, 2, 0),
         };
-        title.SetResourceReference(ForegroundProperty, "AccentText");
-        var remove = Theme.IconButton(Glyphs.Cancel, "Убрать ссылку: " + raw, 20, 9);
+        var remove = Theme.IconButton(Glyphs.Cancel, "Убрать ссылку: " + raw, 22, 10);
         var chip = new Border
         {
             Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, remove } },
-            CornerRadius = new(6), ToolTip = raw,
-        }.Paint(Border.BackgroundProperty, "Surface2");
+            CornerRadius = new(8), ToolTip = raw,
+        }.Paint(Border.BackgroundProperty, "Surface3");
         AutomationProperties.SetName(chip, raw);
         remove.Click += (_, _) =>
         {
