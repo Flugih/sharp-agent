@@ -21,6 +21,11 @@ partial class AgentRunner
         Не меняй файлы. Отвечай основному агенту на языке пользователя. Кратко сообщи результаты, основания и полные пути
         проверенных файлов. Если данных недостаточно, укажи, каких именно.
         """;
+    const string EnglishSubagentPrompt = """
+        You are a Sharp Agent subagent. Complete your assignment using only the available read and search tools.
+        Do not change files. Reply in the user's language and briefly give your findings, evidence, and full paths
+        to files you checked. If evidence is missing, say what you need.
+        """;
 
     static readonly JsonNode AskDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"ask_user","description":"Уточнить существенную неоднозначность прямо у пользователя и дождаться ответа.","parameters":{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}},"required":["question","choices"]}}}""")!;
 
@@ -30,6 +35,8 @@ partial class AgentRunner
 
     public bool UseSubagents { get; set; }
     public bool FastMode { get; set; }
+    int SubagentTaskLimit => FastMode ? MaxSubagentTasks : 2;
+    int SubagentStepsPerTask => FastMode ? MaxSubagentSteps : 3;
     int SubagentStepLimit { get; init; } = MaxSubagentSteps;
     public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
@@ -40,6 +47,11 @@ partial class AgentRunner
     {
         if (delegated) return tools.Definitions;
         var definitions = (JsonArray)tools.Definitions.DeepClone();
+        if (!WorkMode)
+        {
+            if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
+            return definitions;
+        }
         if (_activePlugins.Count > 0 &&
             definitions.OfType<JsonObject>().FirstOrDefault(tool => JsonUtil.Str(tool["function"]?["name"]) == "use_plugin") is { } activate)
         {
@@ -54,31 +66,51 @@ partial class AgentRunner
         if (UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
         {
             var definition = DelegateDefinition.DeepClone();
-            definition["function"]!["parameters"]!["properties"]!["tasks"]!["maxItems"] = remaining;
+            var tasks = definition["function"]!["parameters"]!["properties"]!["tasks"]!;
+            tasks["maxItems"] = remaining;
+            var steps = tasks["items"]!["properties"]!["steps"]!;
+            steps["maximum"] = SubagentStepsPerTask;
+            if (!FastMode) steps["description"] = "Дай 2 шага для точечной проверки и 3, если нужно больше чтения.";
             definitions.Add(definition);
         }
         return definitions;
     }
 
-    string InteractionPrompt() => delegated ? $"\nРабочая папка: {tools.Context.WorkingDirectory}" :
+    string InteractionPrompt() => !RussianLanguage ? EnglishInteractionPrompt() : delegated ? $"\nРабочая папка: {tools.Context.WorkingDirectory}" :
         (ClarifyAsync == null ? "" :
             "\nВызывай ask_user только при существенной неоднозначности, которую нельзя разрешить по контексту " +
             "и без которой нельзя правильно продолжить. Давай короткий вопрос и различимые варианты. " +
             "Не спрашивай о мелочах и не используй этот инструмент для подтверждения действий.") +
         (UseSubagents
-            ? "\nКогда доступен delegate_tasks, делегируй независимые проверки и анализ в начале работы. " +
-              "При исследовании проекта, диагностике, ревью или задаче с несколькими файлами выдели хотя бы одну проверку, " +
-              "если её можно выполнить отдельно. Собери независимые проверки в один параллельный вызов " +
-              "и используй результаты в основной работе. Простой ответ, одиночную проверку или точечную правку делай сам. " +
+            ? (FastMode
+                ? "\nКогда доступен delegate_tasks, активно делегируй независимые проверки и анализ в начале работы. " +
+                  "При исследовании проекта, диагностике, ревью или задаче с несколькими файлами распредели независимые направления " +
+                  "между субагентами в одном параллельном вызове и используй результаты. Простые задачи делай сам. "
+                : "\nКогда доступен delegate_tasks, используй субагентов для отдельных проверок, которые заметно помогают задаче. " +
+                  "Обычно поручай одну точечную проверку за 2–3 шага. Не дублируй собственный поиск. ") +
               "Формулируй самодостаточные поручения, включая нужные требования, " +
               "и выбирай только относящиеся к поручению вложения по точным путям через attachments. " +
-              $"Число поручений (до {MaxSubagentTasks} за запрос) и шагов каждого (steps) выбирай сам по объёму работы, без лишнего запаса. " +
+              $"За запрос можно дать до {SubagentTaskLimit} поручений, до {SubagentStepsPerTask} шагов на каждое. " +
               "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
             : "") +
         (FastMode
             ? "\nВ быстром режиме объединяй независимые поиски и чтения в один пакет вызовов. Зависимые шаги выполняй по результатам предыдущих. " +
               "Применяй обычные критерии проверки и завершения задачи."
             : "");
+
+    string EnglishInteractionPrompt()
+    {
+        if (delegated) return $"\nWorking directory: {tools.Context.WorkingDirectory}";
+        var clarification = ClarifyAsync == null ? "" :
+            "\nUse ask_user only to resolve ambiguity that blocks the task. Give a short question and distinct options. Do not use it for action confirmations.";
+        var delegation = !UseSubagents ? "" :
+            (FastMode
+                ? "\nWhen delegate_tasks is available, delegate independent research, debugging, review, and multi-file checks early. Batch independent assignments in parallel and use their findings. Handle simple tasks yourself. "
+                : "\nWhen delegate_tasks is available, delegate focused checks that materially help. Usually assign one check in 2–3 steps and avoid duplicating your own search. ") +
+            $"Give each worker a self-contained brief and only relevant attachment paths. Up to {SubagentTaskLimit} assignments per request, with up to {SubagentStepsPerTask} steps each. Subagents are read-only. Apply changes yourself with the usual confirmations.";
+        return clarification + delegation + (FastMode
+            ? "\nBatch independent searches and reads. Run dependent steps after their prerequisites, and verify the result as usual." : "");
+    }
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
     {
@@ -135,9 +167,9 @@ partial class AgentRunner
                     if (!files.Contains(file)) files.Add(file);
                 }
             }
-            briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", 4), 2, MaxSubagentSteps)));
+            briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", FastMode ? 4 : 2), 2, SubagentStepsPerTask)));
         }
-        EnsureMeta(user)["delegated_tasks"] = (long)MaxSubagentTasks - remaining + briefs.Count;
+        EnsureMeta(_history.Edit(_history.LastIndex(ChatJournal.Flags.User)))["delegated_tasks"] = (long)SubagentTaskLimit - remaining + briefs.Count;
         await SaveAsync();
         var registry = new ToolRegistry(tools.Context, readOnly: true);
         using var slots = new SemaphoreSlim(4);
@@ -150,7 +182,7 @@ partial class AgentRunner
             failed, DelegatedUsage: usage);
     }
 
-    static int RemainingSubagentTasks(JsonObject user) => MaxSubagentTasks - (int)Math.Clamp(Long(MetaOf(user)?["delegated_tasks"]), 0, MaxSubagentTasks);
+    int RemainingSubagentTasks(JsonObject user) => SubagentTaskLimit - (int)Math.Clamp(Long(MetaOf(user)?["delegated_tasks"]), 0, SubagentTaskLimit);
 
     async Task<(string Text, bool Failed, UsageInfo Usage)> RunSubagentAsync(ToolRegistry registry, SemaphoreSlim slots, string model,
         string title, string task, List<Attachment> files, int steps, CancellationToken ct)
@@ -181,7 +213,8 @@ partial class AgentRunner
             var worker = new AgentRunner(registry, store, true)
             {
                 // Providers count reasoning into the output limit, so the short answer gets room for thinking on top.
-                Api = Api, Provider = Provider, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens) + SubagentReasoningTokens,
+                Api = Api, Provider = Provider, RussianLanguage = RussianLanguage, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens) +
+                    (FastMode ? SubagentReasoningTokens : SubagentReasoningTokens / 2),
                 ReasoningEffort = effort, SubagentStepLimit = steps, CanSpendAsync = CanSpendAsync,
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
             };
@@ -215,7 +248,7 @@ partial class AgentRunner
                 completionTokens += usage.CompletionTokens;
                 UsageReported?.Invoke(id, usage);
             };
-            await worker.RunAsync($"Поручение основного агента:\n{task}", files, model, ct);
+            await worker.RunAsync(PromptText("Поручение основного агента:\n", "Assignment from the main agent:\n") + task, files, model, ct);
             failed = string.IsNullOrWhiteSpace(answer);
             if (failed) answer = warning ?? "Модель не вернула результат. Уточни поручение или выполни его самостоятельно.";
         }

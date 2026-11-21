@@ -27,11 +27,11 @@ public sealed record Attachment(string Path, AttachmentKind Kind, long Size)
         catch { return null; }
     }
 
-    public string Describe() => Kind switch
+    public string Describe(bool russian = false) => Kind switch
     {
-        AttachmentKind.Folder => "папка",
-        AttachmentKind.Image => $"изображение, {PathHelper.FormatSize(Size)}",
-        _ => $"файл, {PathHelper.FormatSize(Size)}",
+        AttachmentKind.Folder => russian ? "папка" : "folder",
+        AttachmentKind.Image => $"{(russian ? "изображение" : "image")}, {PathHelper.FormatSize(Size)}",
+        _ => $"{(russian ? "файл" : "file")}, {PathHelper.FormatSize(Size)}",
     };
 
     public JsonObject ToJson() => new() { ["path"] = Path, ["kind"] = Kind.ToString().ToLowerInvariant(), ["size"] = Size };

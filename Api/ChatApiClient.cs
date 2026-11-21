@@ -64,7 +64,7 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
     internal static async Task<ChatResult> RetryAsync(Func<CancellationToken, Action, Task<ChatResult>> send, Func<ApiException, bool?> fallback,
         Action reset, Action<int, int>? retrying, CancellationToken ct)
     {
-        const int maxAttempts = 3;
+        const int maxAttempts = 5;
         for (int attempt = 1; ; attempt++)
         {
             ct.ThrowIfCancellationRequested();
@@ -109,7 +109,7 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
     static TimeSpan? RetryDelay(Exception ex, int attempt, CancellationToken ct) => ex switch
     {
         ApiException { Retryable: true, RetryAfter: { } wait } => wait <= MaxWait ? wait : null,
-        ApiException { Retryable: true } => TimeSpan.FromSeconds(2 * attempt * attempt),
+        ApiException { Retryable: true } => TimeSpan.FromSeconds(Math.Min(MaxWait.TotalSeconds, 2 * attempt * attempt)),
         HttpRequestException or IOException => TimeSpan.FromSeconds(2 * attempt),
         TaskCanceledException when !ct.IsCancellationRequested => TimeSpan.Zero,
         _ => null,

@@ -4,8 +4,8 @@ public partial class MainWindow
 {
     // All nodes go into one .env line and one menu, so a huge subscription is cut.
     const int MaxVpnProfiles = 200;
-    static readonly (NetworkMode Value, string Label)[] NetworkModes =
-        [(NetworkMode.System, "Системные настройки"), (NetworkMode.Direct, "Напрямую"), (NetworkMode.Proxy, "Прокси"), (NetworkMode.Vpn, "VPN")];
+    static (NetworkMode Value, string Label)[] NetworkModes =>
+        [(NetworkMode.System, Tr("Системные настройки", "System settings")), (NetworkMode.Direct, Tr("Напрямую", "Direct")), (NetworkMode.Proxy, Tr("Прокси", "Proxy")), (NetworkMode.Vpn, "VPN")];
     static readonly (string? Value, string Label)[] ProxyTypes = [("SOCKS5", "SOCKS5"), ("HTTP", "HTTP"), ("HTTPS", "HTTPS")];
     NetworkMode _networkMode;
     List<VpnProfile> _vpnProfiles = [];
@@ -109,9 +109,9 @@ public partial class MainWindow
         var hash = await SingBox.FingerprintAsync(settings.Engine);
         if (generation != _networkGeneration || !SettingsOpen || ReadNetworkSettings() != before) return null;
         if (string.Equals(hash, settings.EngineSha256, StringComparison.OrdinalIgnoreCase)) return settings;
-        if (!DarkDialog.Ask(this, "Разрешить запуск sing-box.exe?",
-                "Sharp Agent будет запускать этот файл для VPN. Подтвердите путь, если вы доверяете источнику файла.",
-                "Разрешить запуск", code: settings.Engine, delayed: true)) return null;
+        if (!DarkDialog.Ask(this, Tr("Разрешить запуск sing-box.exe?", "Allow Sharp Agent to start sing-box.exe?"),
+                Tr("Sharp Agent будет запускать этот файл для VPN. Подтвердите путь, если вы доверяете источнику файла.", "Sharp Agent will run this file for VPN access. Confirm the path if you trust where the file came from."),
+                Tr("Разрешить запуск", "Allow launch"), code: settings.Engine, delayed: true)) return null;
         _networkEngineApproval = (settings.Engine, hash);
         FindNetworkEngine();
         return settings with { EngineSha256 = hash };
@@ -124,7 +124,7 @@ public partial class MainWindow
         int generation = _networkGeneration;
         string source = NetworkSubscription.Password.Trim();
         NetworkImportButton.IsEnabled = false;
-        SetStatus(NetworkImportStatus, "Загружаю подписку…", "TextMuted");
+        SetStatus(NetworkImportStatus, Tr("Загружаю подписку…", "Loading subscription…"), "TextMuted");
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(65));
@@ -139,14 +139,14 @@ public partial class MainWindow
             _vpnProfiles = profiles.Take(MaxVpnProfiles).ToList();
             _vpnSelection = _vpnProfiles.Find(profile => profile.Save() == current) ?? _vpnProfiles[0];
             ShowVpnSelection();
-            SetStatus(NetworkImportStatus, $"Серверов: {profiles.Count}." +
-                (profiles.Count > MaxVpnProfiles ? $" Сохранены первые {MaxVpnProfiles}." : "") +
-                (skipped > 0 ? $" Пропущено несовместимых записей: {skipped}." : ""), "Success");
+            SetStatus(NetworkImportStatus, Tr($"Серверов: {profiles.Count}.", $"Servers: {profiles.Count}.") +
+                (profiles.Count > MaxVpnProfiles ? Tr($" Сохранены первые {MaxVpnProfiles}.", $" Saved the first {MaxVpnProfiles}.") : "") +
+                (skipped > 0 ? Tr($" Пропущено несовместимых записей: {skipped}.", $" Skipped {skipped} incompatible entries.") : ""), "Success");
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
         {
             if (generation != _networkGeneration || !SettingsOpen || source != NetworkSubscription.Password.Trim()) return;
-            SetStatus(NetworkImportStatus, ex is InvalidOperationException ? ex.Message : "Не удалось загрузить подписку.", "DangerText");
+            SetStatus(NetworkImportStatus, ex is InvalidOperationException ? ex.Message : Tr("Не удалось загрузить подписку.", "Could not load the subscription."), "DangerText");
         }
         finally
         {
@@ -156,7 +156,7 @@ public partial class MainWindow
 
     void ShowVpnSelection()
     {
-        NetworkVpnServer.Content = _vpnSelection?.Label ?? "Сначала загрузите серверы";
+        NetworkVpnServer.Content = _vpnSelection?.Label ?? Tr("Сначала загрузите серверы", "Load the servers first");
         NetworkVpnServer.IsEnabled = _vpnProfiles.Count != 0;
         NetworkTestStatus.Text = "";
     }
@@ -202,7 +202,7 @@ public partial class MainWindow
             settings = ReadNetworkSettings();
         }
         NetworkTestButton.IsEnabled = false;
-        SetStatus(NetworkTestStatus, "Проверяю сетевой маршрут…", "TextMuted");
+        SetStatus(NetworkTestStatus, Tr("Проверяю сетевой маршрут…", "Checking network route…"), "TextMuted");
         try
         {
             if (await ApproveNetworkEngineAsync(settings.Validate()) is not { } approved)
@@ -213,13 +213,13 @@ public partial class MainWindow
             settings = approved;
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0)
-                throw new InvalidOperationException("Проверьте адрес API в настройках провайдера.");
+                throw new InvalidOperationException(Tr("Проверьте адрес API в настройках провайдера.", "Check the API address in provider settings."));
             var status = await AppNetwork.CheckAsync(settings, endpoint, timeout.Token);
             if (NetworkProbeUrl() != endpoint) return;
             if (generation != _networkGeneration || !SettingsOpen || ReadNetworkSettings() != settings) return;
             if (status == HttpStatusCode.Forbidden)
-                SetStatus(NetworkTestStatus, "Сервер отклонил запрос (HTTP 403). Проверьте доступ к API по этому маршруту.", "Warning");
-            else SetStatus(NetworkTestStatus, "API доступен по выбранному маршруту.", "Success");
+                SetStatus(NetworkTestStatus, Tr("Сервер отклонил запрос (HTTP 403). Проверьте доступ к API по этому маршруту.", "The server rejected the request (HTTP 403). Check API access over this route."), "Warning");
+            else SetStatus(NetworkTestStatus, Tr("API доступен по выбранному маршруту.", "The API is reachable over this route."), "Success");
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or OperationCanceledException)
         {
@@ -227,10 +227,10 @@ public partial class MainWindow
             SetStatus(NetworkTestStatus, ex switch
             {
                 InvalidOperationException or NetworkRouteException => ex.Message,
-                OperationCanceledException => "Проверка подключения не завершилась вовремя.",
-                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => "Не удалось разрешить адрес сервера API.",
-                HttpRequestException { HttpRequestError: HttpRequestError.ProxyTunnelError } => "Прокси не смог открыть соединение с сервером API.",
-                _ => "Нет ответа от сервера API по выбранному маршруту.",
+                OperationCanceledException => Tr("Проверка подключения не завершилась вовремя.", "The connection check timed out."),
+                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => Tr("Не удалось разрешить адрес сервера API.", "Could not resolve the API server address."),
+                HttpRequestException { HttpRequestError: HttpRequestError.ProxyTunnelError } => Tr("Прокси не смог открыть соединение с сервером API.", "The proxy could not connect to the API server."),
+                _ => Tr("Нет ответа от сервера API по выбранному маршруту.", "The API server did not respond over the selected route."),
             }, "DangerText");
             if (ex is NetworkRouteException { InvalidEngine: true })
             {

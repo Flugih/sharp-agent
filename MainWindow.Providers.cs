@@ -11,9 +11,11 @@ public partial class MainWindow
 
     private static string ProviderName(AgentProvider provider) => provider switch
     {
-        AgentProvider.ChatGpt => "ChatGPT", AgentProvider.Groq => "Groq", AgentProvider.Gemini => "Google Gemini",
-        AgentProvider.OpenRouter => "OpenRouter", AgentProvider.Mistral => "Mistral AI", _ => "Tooken Club",
+        AgentProvider.ChatGpt => "ChatGPT", AgentProvider.OpenAI => "OpenAI API", AgentProvider.Groq => "Groq", AgentProvider.Gemini => "Google Gemini",
+        AgentProvider.OpenRouter => "OpenRouter", AgentProvider.Mistral => "Mistral AI", AgentProvider.Anthropic => "Claude API", _ => "Tooken Club",
     };
+
+    static IEnumerable<AgentProvider> ProvidersByName() => Enum.GetValues<AgentProvider>().OrderBy(ProviderName, StringComparer.OrdinalIgnoreCase);
 
     private static string[] DefaultModelsOf(AgentProvider provider) =>
         provider switch
@@ -27,9 +29,9 @@ public partial class MainWindow
 
     private string NotReadyText() => _config.Provider switch
     {
-        AgentProvider.ChatGpt when _chatGpt.Connected => "Разрешите Sharp Agent использовать подписку ChatGPT в настройках",
-        AgentProvider.ChatGpt => "Сначала войдите в ChatGPT в настройках",
-        _ => "Сначала укажите API-ключ в настройках",
+        AgentProvider.ChatGpt when _chatGpt.Connected => Tr("Разрешите Sharp Agent использовать подписку ChatGPT в настройках", "Allow Sharp Agent to use your ChatGPT subscription in settings"),
+        AgentProvider.ChatGpt => Tr("Сначала войдите в ChatGPT в настройках", "Sign in to ChatGPT in settings first"),
+        _ => Tr("Сначала укажите API-ключ в настройках", "Enter an API key in settings first"),
     };
 
     private void ApplyProvider()
@@ -42,6 +44,8 @@ public partial class MainWindow
         _provider = provider switch
         {
             AgentProvider.ChatGpt when _chatGpt.PlanAllowed => new ChatGptClient(_chatGpt),
+            AgentProvider.OpenAI when _config.ApiKeyFor(provider) is { } openAiKey => new OpenAiResponsesClient(openAiKey),
+            AgentProvider.Anthropic when _config.ApiKeyFor(provider) is { } anthropicKey => new AnthropicClient(anthropicKey),
             AgentProvider.Tooken => _tooken,
             _ when _config.ApiKeyFor(provider) is { } key => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
             _ => null,
@@ -74,10 +78,10 @@ public partial class MainWindow
         else
         {
             var (title, text, action) = provider != AgentProvider.ChatGpt
-                ? ("Нужен API-ключ", "Введите API-ключ, чтобы агент мог отвечать.", "Указать ключ")
-                : _chatGpt.Connected ? ("Подписка ChatGPT не подключена",
-                    "Разрешите Sharp Agent использовать подписку в настройках или выберите другого провайдера.", "Разрешить")
-                : ("Нужен вход в ChatGPT", "Войдите на сайте OpenAI и разрешите Sharp Agent использовать подписку.", "Войти");
+                ? (Tr("Нужен API-ключ", "API key required"), Tr("Введите API-ключ, чтобы агент мог отвечать.", "Enter an API key so the agent can respond."), Tr("Указать ключ", "Enter API key"))
+                : _chatGpt.Connected ? (Tr("Подписка ChatGPT не подключена", "ChatGPT subscription not connected"),
+                    Tr("Разрешите Sharp Agent использовать подписку в настройках или выберите другого провайдера.", "Allow subscription use in settings or choose another provider."), Tr("Разрешить", "Allow"))
+                : (Tr("Нужен вход в ChatGPT", "ChatGPT sign-in required"), Tr("Войдите на сайте OpenAI и разрешите Sharp Agent использовать подписку.", "Sign in on the OpenAI website and allow Sharp Agent to use your subscription."), Tr("Войти", "Sign in"));
             ShowBanner("key", Glyphs.Warning, title, text, action, ShowSettings);
         }
         _usage.Reset();
@@ -95,19 +99,19 @@ public partial class MainWindow
         UpdateBalanceIndicator();
         if (FlyoutShows(UsageCard)) BuildUsagePanel();
         if ((_provider as ChatGptClient)?.LimitMessage is { } limit)
-            ShowBanner("plan", Glyphs.Warning, "Ограничение подписки ChatGPT", limit, "Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl), warning: true);
+            ShowBanner("plan", Glyphs.Warning, "Ограничение подписки ChatGPT", limit, Tr("Управлять использованием", "Manage usage"), () => FileActions.OpenUrl(ChatGptClient.UsageUrl), warning: true);
         else HideBanner("plan");
     }
 
-    private void ShowPlanWelcome() => DarkDialog.Show(this, "Вы используете подписку ChatGPT", new TextBlock
+    private void ShowPlanWelcome() => DarkDialog.Show(this, Tr("Вы используете подписку ChatGPT", "You are using a ChatGPT subscription"), new TextBlock
     {
         FontSize = 14, Foreground = Theme.TextSoft, TextWrapping = TextWrapping.Wrap,
         Inlines =
         {
-            new Run("Запросы в Sharp Agent будут расходовать вашу подписку ChatGPT. Сколько из неё уходит на Sharp Agent и какие у него лимиты, смотрите и меняйте в настройках ChatGPT. "),
-            MakeLink("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
+            new Run(Tr("Запросы в Sharp Agent будут расходовать вашу подписку ChatGPT. Сколько из неё уходит на Sharp Agent и какие у него лимиты, смотрите и меняйте в настройках ChatGPT. ", "Sharp Agent requests count toward your ChatGPT subscription. Check your usage and limits in ChatGPT settings. ")),
+            MakeLink(Tr("Управлять использованием", "Manage usage"), () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
         },
-    }, closeText: "Понятно");
+    }, closeText: Tr("Понятно", "OK"));
 
     private async Task LoadModelListAsync(IChatProvider api)
     {
@@ -132,10 +136,10 @@ public partial class MainWindow
             else
                 ShowBanner("key", Glyphs.Warning, provider switch
                 {
-                    AgentProvider.ChatGpt => "ChatGPT не принял вход",
-                    AgentProvider.Groq => "Groq не принял API-ключ",
-                    _ => "Сервер не принял API-ключ",
-                }, ex.Message.Split('\n')[0], "Открыть настройки", ShowKeySettings, warning: true);
+                    AgentProvider.ChatGpt => Tr("ChatGPT не принял вход", "ChatGPT rejected the sign-in"),
+                    AgentProvider.Groq => Tr("Groq не принял API-ключ", "Groq rejected the API key"),
+                    _ => Tr("Сервер не принял API-ключ", "The server rejected the API key"),
+                }, ex.Message.Split('\n')[0], Tr("Открыть настройки", "Open settings"), ShowKeySettings, warning: true);
         }
         catch { }
         finally
@@ -194,14 +198,22 @@ public partial class MainWindow
 
     private void ModelButton_Click(object sender, RoutedEventArgs e)
     {
-        var menu = ModelMenu(ModelButton, _config.Provider, model =>
+        var menu = ModelMenu(ModelButton, _config.Provider, async model => await RunChatOperationAsync(async () =>
         {
+            var previous = CurrentModel();
+            if (_cts != null || string.Equals(previous, model, StringComparison.OrdinalIgnoreCase)) return;
+            var previousName = ModelDisplayName(previous);
             _selectedModel = model;
             RememberModel(model);
             UpdateModelEffort();
             UpdateContextBanner();
-        });
-        var ready = Enum.GetValues<AgentProvider>().Where(IsReady).ToList();
+            if (_agent.History.Count == 0) return;
+            var currentName = ModelDisplayName(model);
+            ScrollToLatest();
+            AddModelChange(previousName, currentName);
+            await _agent.RecordModelChangeAsync(previousName, currentName);
+        }));
+        var ready = ProvidersByName().Where(IsReady).ToList();
         if (ready.Exists(p => p != _config.Provider))
         {
             menu.Items.Insert(0, new Separator());
@@ -210,22 +222,22 @@ public partial class MainWindow
                 var item = FileActions.Item(ProviderName(provider), null, () => SwitchProvider(provider));
                 item.IsChecked = provider == _config.Provider;
                 item.FontWeight = FontWeights.SemiBold;
-                AutomationProperties.SetName(item, "Провайдер " + ProviderName(provider));
+                AutomationProperties.SetName(item, Tr("Провайдер ", "Provider ") + ProviderName(provider));
                 menu.Items.Insert(0, item);
             }
         }
         if (_provider is ChatGptClient)
         {
-            var note = FileActions.Item("Используется подписка ChatGPT", Glyphs.Info, () => { });
+            var note = FileActions.Item(Tr("Используется подписка ChatGPT", "Using your ChatGPT subscription"), Glyphs.Info, () => { });
             note.IsEnabled = false;
             menu.Items.Add(new Separator());
             menu.Items.Add(note);
-            menu.Items.Add(FileActions.Item("Управлять использованием", Glyphs.Open, () => FileActions.OpenUrl(ChatGptClient.UsageUrl)));
+            menu.Items.Add(FileActions.Item(Tr("Управлять использованием", "Manage usage"), Glyphs.Open, () => FileActions.OpenUrl(ChatGptClient.UsageUrl)));
         }
         if (EffortLevelsOf(CurrentModel()) is { Length: > 0 } levels)
         {
             var divider = new Separator();
-            var label = new MenuItem { Header = new TextBlock { Style = Theme.Style("MenuLabel"), Text = "Выбрать модель" }, Style = Theme.Style("EffortHeader"), Margin = new(6, 0, 6, 0) };
+            var label = new MenuItem { Header = new TextBlock { Style = Theme.Style("MenuLabel"), Text = Tr("Выбрать модель", "Choose a model") }, Style = Theme.Style("EffortHeader"), Margin = new(6, 0, 6, 0) };
             var list = menu.Items.OfType<FrameworkElement>().ToList();
             // The popover template has no padding, so the list keeps the menu inset itself.
             foreach (var item in list) item.Margin = new(6, 0, 6, 0);
@@ -265,7 +277,7 @@ public partial class MainWindow
         else
         {
             menu.Items.Add(new Separator());
-            menu.Items.Add(FileActions.Item(_state.FastMode ? "Выключить быстрый режим" : "Включить быстрый режим", Glyphs.Lightning,
+            menu.Items.Add(FileActions.Item(_state.FastMode ? Tr("Выключить быстрый режим", "Turn off fast mode") : Tr("Включить быстрый режим", "Turn on fast mode"), Glyphs.Lightning,
                 () => SetFastMode(!_state.FastMode)));
         }
         menu.IsOpen = true;
@@ -292,7 +304,7 @@ public partial class MainWindow
     {
         if (AnyRunning)
         {
-            ShowToast("Остановите агента, чтобы переключить провайдера", ToastKind.Warning);
+            ShowToast(Tr("Остановите агента, чтобы переключить провайдера", "Stop active tasks before switching providers"), ToastKind.Warning);
             return;
         }
         if (provider == _config.Provider || !SaveEnvChoice("AGENT_PROVIDER", provider.ToString().ToLowerInvariant())) return;
@@ -304,7 +316,7 @@ public partial class MainWindow
     private bool SaveEnvChoice(string key, string value)
     {
         if (SaveEnv(new() { [key] = value }) is not { } error) return true;
-        ShowToast("Не удалось сохранить выбор в .env: " + error, ToastKind.Error);
+        ShowToast(Tr("Не удалось сохранить выбор в .env: ", "Could not save the selection to .env: ") + error, ToastKind.Error);
         return false;
     }
 
@@ -344,9 +356,10 @@ public partial class MainWindow
         var pending = _loadingModelCatalog && !_models.ContainsKey(model) ? _config.ReasoningEffort : null;
         bool showEffort = levels.Length > 0 || pending != null || _state.FastMode;
         ModelEffortText.Visibility = VisibleIf(showEffort);
-        ModelEffortText.Text = (_state.FastMode ? "Быстро · " : "") +
-            (effort != null ? EffortNames[effort].Label : pending != null ? EffortNames[pending].Label + "…" : "Обычное");
-        AutomationProperties.SetName(ModelButton, showEffort ? $"Модель {label}, рассуждение: {ModelEffortText.Text}" : $"Модель {label}");
+        var level = effort ?? pending;
+        ModelEffortText.Text = (_state.FastMode ? Tr("Быстро · ", "Fast · ") : "") +
+            (level != null ? Tr(EffortNames[level].Russian, EffortNames[level].English) : Tr("Обычное", "Default")) + (effort == null && pending != null ? "…" : "");
+        AutomationProperties.SetName(ModelButton, showEffort ? Tr($"Модель {label}, рассуждение: {ModelEffortText.Text}", $"Model {label}, reasoning: {ModelEffortText.Text}") : Tr($"Модель {label}", $"Model {label}"));
     }
 
     private MenuItem EffortMenuItem(string[] levels, Func<bool> toggleModels)
@@ -371,10 +384,10 @@ public partial class MainWindow
             MinWidth = 102, Height = 40, Padding = new Thickness(8, 0, 8, 0), HorizontalAlignment = HorizontalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Center,
         };
-        AutomationProperties.SetName(choose, "Выбрать модель · " + modelName);
+        AutomationProperties.SetName(choose, Tr("Выбрать модель · ", "Choose a model · ") + modelName);
         choose.Click += (_, _) => chevron.Text = toggleModels() ? Glyphs.ChevronDown : Glyphs.ChevronRight;
         var slider = new EffortSlider { Style = Theme.Style("EffortSlider"), Maximum = values.Length - 1, Value = committed, Margin = new Thickness(0, 6, 0, 0) };
-        var reset = Theme.IconButton(Glyphs.Refresh, "Сбросить силу рассуждения", 28);
+        var reset = Theme.IconButton(Glyphs.Refresh, Tr("Сбросить силу рассуждения", "Reset reasoning effort"), 28);
         reset.HorizontalAlignment = HorizontalAlignment.Right;
         reset.VerticalAlignment = VerticalAlignment.Top;
         reset.RenderTransform = new ScaleTransform(-1, 1);
@@ -384,10 +397,13 @@ public partial class MainWindow
         void ShowValue()
         {
             var value = values[(int)slider.Value];
-            var (name, hint) = value != null ? EffortNames[value] : ("Обычное", "как решит модель");
+            var entry = value != null ? EffortNames[value] : ("Обычное", "Default", "как решит модель", "Model decides");
+            var (russian, english, russianHint, englishHint) = entry;
+            var name = Tr(russian, english);
+            var hint = Tr(russianHint, englishHint);
             heading.Text = name;
             slider.ToolTip = name + " · " + hint;
-            AutomationProperties.SetName(slider, "Сила рассуждения · " + name);
+            AutomationProperties.SetName(slider, Tr("Сила рассуждения · ", "Reasoning effort · ") + name);
             reset.IsEnabled = value != null;
         }
         void RestoreValue()
@@ -424,9 +440,9 @@ public partial class MainWindow
         {
             Style = Theme.Style("IconToggle"), Content = Glyphs.Lightning, Width = 28, Height = 28, IsChecked = _state.FastMode,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
-            ToolTip = "Параллельный поиск и чтение кода с обычной глубиной проверки",
+            ToolTip = Tr("Параллельный поиск и больше независимых проверок с субагентами", "Parallel searches and more independent checks with subagents"),
         };
-        AutomationProperties.SetName(lightning, "Быстрый режим");
+        AutomationProperties.SetName(lightning, Tr("Быстрый режим", "Fast mode"));
         lightning.Checked += (_, _) => SetFastMode(true);
         lightning.Unchecked += (_, _) => SetFastMode(false);
         return new MenuItem
@@ -445,7 +461,7 @@ public partial class MainWindow
         _state.FastMode = on;
         _state.Save();
         ApplyFastMode();
-        ShowToast(on ? "Быстрый режим включён" : "Быстрый режим выключен");
+        ShowToast(on ? Tr("Быстрый режим включён", "Fast mode on") : Tr("Быстрый режим выключен", "Fast mode off"));
     }
 
     private void ApplyFastMode()
@@ -468,7 +484,7 @@ public partial class MainWindow
             if (!known.Contains(fallback)) fallback = known[0];
             _selectedModel = fallback;
             RememberModel(fallback);
-            ShowToast($"Модели {model} нет у {ProviderName(provider)}, выбрана {fallback}.");
+            ShowToast(Tr($"Модели {model} нет у {ProviderName(provider)}, выбрана {fallback}.", $"{ProviderName(provider)} does not offer {model}. Selected {fallback}."));
             return;
         }
         if (!DrawsOnly(model)) return;

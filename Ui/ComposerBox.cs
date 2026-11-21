@@ -145,6 +145,11 @@ public sealed partial class ComposerBox : RichTextBox
     void FormatLinks()
     {
         if (_replacing) return;
+        if (IsMouseCaptureWithin)
+        {
+            _links.Start();
+            return;
+        }
         var text = Text;
         if (!text.Contains("http", StringComparison.OrdinalIgnoreCase)) return;
         var parts = Parts();
@@ -198,7 +203,7 @@ public sealed partial class ComposerBox : RichTextBox
             Text = raw.Length > 48 ? raw[..45] + "…" : raw, FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 225, Margin = new(8, 0, 2, 0),
         };
-        var remove = Theme.IconButton(Glyphs.Cancel, "Убрать ссылку: " + raw, 22, 10);
+        var remove = Theme.IconButton(Glyphs.Cancel, Tr("Убрать ссылку: ", "Remove link: ") + raw, 22, 10);
         var chip = new Border
         {
             Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, remove } },

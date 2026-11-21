@@ -18,9 +18,9 @@ public partial class MainWindow
             button.Click += (_, _) => reply.TrySetResult(choice);
             choices.Children.Add(button);
         }
-        var custom = new TextBox { Style = Theme.Style("FieldTextBox"), ToolTip = "Введите свой ответ", MaxLength = 4000 };
-        AutomationProperties.SetName(custom, "Свой ответ");
-        var send = Theme.IconButton("\uE74A", "Отправить свой ответ", 32);
+        var custom = new TextBox { Style = Theme.Style("FieldTextBox"), ToolTip = Tr("Введите свой ответ", "Enter your own answer"), MaxLength = 4000 };
+        AutomationProperties.SetName(custom, Tr("Свой ответ", "Your answer"));
+        var send = Theme.IconButton("\uE74A", Tr("Отправить свой ответ", "Send custom answer"), 32);
         send.IsEnabled = false;
         send.Margin = new(6, 0, 0, 0);
         DockPanel.SetDock(send, Dock.Right);
@@ -54,7 +54,6 @@ public partial class MainWindow
         {
             CloseSubagents();
             ExpandBrowser(false);
-            _compactChat?.SetStatus("Жду ответа");
             PlaceQuestion();
         }
         RenderChatList();

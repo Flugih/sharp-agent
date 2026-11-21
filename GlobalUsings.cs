@@ -24,3 +24,4 @@ global using SharpAgent.Core;
 global using SharpAgent.Tools;
 global using SharpAgent.Ui;
 global using static SharpAgent.Core.JsonUtil;
+global using static SharpAgent.Ui.UiLanguage;

@@ -37,14 +37,14 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
 
     Inline WebLink(string url, string text)
     {
-        var link = new Hyperlink(new Run(text)) { ToolTip = "Открыть во внешнем браузере\n" + url, Style = LinkStyle };
+        var link = new Hyperlink(new Run(text)) { ToolTip = Tr("Открыть во внешнем браузере", "Open in external browser") + "\n" + url, Style = LinkStyle };
         link.Click += (_, _) => FileActions.OpenUrl(url);
         link.ContextMenu = new ContextMenu
         {
             Items =
             {
-                FileActions.Item("Открыть во внешнем браузере", Glyphs.Globe, () => FileActions.OpenUrl(url)),
-                FileActions.Item("Копировать ссылку", Glyphs.Copy, () => FileActions.Copy(url, "Ссылка скопирована")),
+                FileActions.Item(Tr("Открыть во внешнем браузере", "Open in external browser"), Glyphs.Globe, () => FileActions.OpenUrl(url)),
+                FileActions.Item(Tr("Копировать ссылку", "Copy link"), Glyphs.Copy, () => FileActions.Copy(url, Tr("Ссылка скопирована", "Link copied"))),
             },
         };
         return link;
@@ -72,7 +72,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
             ToolTip = HintFor(path),
             ContextMenu = FileActions.BuildMenu(owner, path, extra),
         };
-        AutomationProperties.SetName(chip, (Directory.Exists(path) ? "Папка " : "Файл ") + name);
+        AutomationProperties.SetName(chip, (Directory.Exists(path) ? Tr("Папка ", "Folder ") : Tr("Файл ", "File ")) + name);
         chip.Click += (_, _) => Click(path);
         FileActions.EnableDragOut(chip, path);
         return chip;
@@ -89,7 +89,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
             TextDecorations = [new TextDecoration { Location = TextDecorationLocation.Underline, Pen = pen }],
         }.Paint(TextElement.ForegroundProperty, "TextSoft");
         BindingOperations.SetBinding(pen, Pen.BrushProperty, new Binding(nameof(link.Foreground)) { Source = link });
-        AutomationProperties.SetName(link, (Directory.Exists(path) ? "Папка " : "Файл ") + name);
+        AutomationProperties.SetName(link, (Directory.Exists(path) ? Tr("Папка ", "Folder ") : Tr("Файл ", "File ")) + name);
         link.Click += (_, _) => Click(path);
         FileActions.EnableDragOut(link, path);
         return new TextBlock(link) { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
@@ -105,12 +105,12 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
     {
         if (!TextClipboard.SetText(text))
         {
-            FileActions.RaiseNotify("Буфер обмена занят другой программой — попробуйте ещё раз", true);
+            FileActions.RaiseNotify(Tr("Буфер обмена занят другой программой — попробуйте ещё раз", "The clipboard is busy. Try again."), true);
             return;
         }
         button.Content = Glyphs.Check;
         button.Paint(Control.ForegroundProperty, "Success");
-        button.ToolTip = "Скопировано";
+        button.ToolTip = Tr("Скопировано", "Copied");
         Theme.After(TimeSpan.FromSeconds(1.4), () =>
         {
             button.Content = Glyphs.Copy;
@@ -131,7 +131,7 @@ sealed class CodeBlockView : Border
             Padding = new(0, 4, 0, 4), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
         }.Paint(TextBox.ForegroundProperty, "TextSoft").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         TextBlock.SetLineHeight(text, 19);
-        var label = language != null ? $"Скопировать код ({language})" : "Скопировать код";
+        var label = Tr("Скопировать код", "Copy code") + (language != null ? $" ({language})" : "");
         var copy = Theme.IconButton(Glyphs.Copy, label, 28, 14);
         copy.Click += (_, _) => ChatLinks.CopyWithFeedback(copy, code, label);
         var grid = new Grid { ColumnDefinitions = { new(), new() { Width = GridLength.Auto } }, Children = { text, copy } };

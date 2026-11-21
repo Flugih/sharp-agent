@@ -6,7 +6,7 @@ public partial class MainWindow
     const double HistoryEdge = 110;
     readonly LinkedList<(int Start, int End, StackPanel View)> _historyPages = new();
     int _tailStart, _historyVersion;
-    IReadOnlyList<JsonNode> _renderedHistory = [];
+    ChatHistory.View _renderedHistory = new ChatHistory().Snapshot();
     bool _changingHistory, _historyPagePending;
     DispatcherTimer? _chatMotion;
 
@@ -21,9 +21,9 @@ public partial class MainWindow
             ChatPages.Children.RemoveRange(0, ChatPages.Children.Count - 1);
             _historyPages.Clear();
             ChatPanel.Visibility = Visibility.Visible;
-            _renderedHistory = CurrentRun?.History ?? _agent.History.ToArray();
+            _renderedHistory = CurrentRun?.History ?? _agent.HistoryView;
             _tailStart = FindHistoryPageStart(_renderedHistory.Count);
-            RenderHistory(_renderedHistory.Skip(_tailStart).ToArray());
+            RenderHistory(_renderedHistory.Range(_tailStart, _renderedHistory.Count).ToArray(), _tailStart);
         }
         finally { _changingHistory = false; }
         Dispatcher.InvokeAsync(() =>
@@ -38,7 +38,7 @@ public partial class MainWindow
     {
         int remaining = HistoryPageSize;
         for (int i = end - 1; i >= 0; i--)
-            if (_renderedHistory[i] is JsonObject message && JsonUtil.Str(message["role"]) == "user" && --remaining == 0)
+            if (_renderedHistory.IsUser(i) && --remaining == 0)
                 return i;
         return 0;
     }
@@ -47,7 +47,7 @@ public partial class MainWindow
     {
         int remaining = HistoryPageSize;
         for (int i = start + 1; i < _tailStart; i++)
-            if (AgentRunner.Role(_renderedHistory[i]) == "user" && --remaining == 0) return i;
+            if (_renderedHistory.IsUser(i) && --remaining == 0) return i;
         return _tailStart;
     }
 
@@ -57,14 +57,14 @@ public partial class MainWindow
 
     void CheckHistory(bool older)
     {
-        if (_changingHistory || _historyPagePending || !NearHistoryEdge(older)) return;
+        if (_changingHistory || _historyPagePending || ChatScroll.IsMouseCaptureWithin || !NearHistoryEdge(older)) return;
         _historyPagePending = true;
         int version = _historyVersion;
         Dispatcher.InvokeAsync(() =>
         {
             if (version != _historyVersion) return;
             _historyPagePending = false;
-            if (_chatMotion == null && NearHistoryEdge(older)) LoadHistoryPage(older);
+            if (_chatMotion == null && !ChatScroll.IsMouseCaptureWithin && NearHistoryEdge(older)) LoadHistoryPage(older);
         }, DispatcherPriority.Background);
     }
 
@@ -77,12 +77,7 @@ public partial class MainWindow
             int boundary = older ? _historyPages.First?.Value.Start ?? _tailStart : _historyPages.Last!.Value.End;
             int start = older ? FindHistoryPageStart(boundary) : boundary;
             int end = older ? boundary : FindHistoryPageEnd(boundary);
-            var page = new StackPanel();
-            FlushModelProgress();
-            var live = _chatView;
-            _chatView = new(page);
-            try { RenderHistory(_renderedHistory.Take(start..end).ToArray()); }
-            finally { _chatView = live; }
+            var page = RenderHistoryPage(start, end);
             double offset = ChatScroll.VerticalOffset;
             if (older)
             {
@@ -113,6 +108,17 @@ public partial class MainWindow
         }
         finally { _changingHistory = false; }
         UpdateScrollDownButton();
+    }
+
+    StackPanel RenderHistoryPage(int start, int end)
+    {
+        var page = new StackPanel();
+        FlushModelProgress();
+        var live = _chatView;
+        _chatView = new(page);
+        try { RenderHistory(_renderedHistory.Range(start, end).ToArray(), start); }
+        finally { _chatView = live; }
+        return page;
     }
 
     void ScrollChatBy(double delta)
@@ -171,7 +177,7 @@ public partial class MainWindow
     void ChatScroll_PreviewMouseLeftButtonDown(object s, MouseButtonEventArgs e)
     {
         for (var node = e.OriginalSource as DependencyObject; node != null && node != ChatScroll; node = ParentOf(node))
-            if (node is ScrollBar or CodeBlockView)
+            if (node is ScrollBar or CodeBlockView or TextBoxBase)
             {
                 StopChatMotion();
                 _autoScroll = false;

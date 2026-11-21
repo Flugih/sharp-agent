@@ -41,6 +41,24 @@ public sealed class Shimmer : TextBlock
         }
     }
 
+    internal void SetAnimatedText(string text, bool animate)
+    {
+        bool changed = !Equals(GetAnimationBaseValue(TextProperty), text);
+        if (!changed && animate) return;
+        BeginAnimation(TextProperty, null);
+        Text = text;
+        if (!changed || !animate || !IsVisible || !Theme.AnimationsEnabled) return;
+        var reveal = new StringAnimationUsingKeyFrames { FillBehavior = FillBehavior.Stop };
+        int frames = Math.Min(text.Length, 48);
+        for (int i = 1; i <= frames; i++)
+        {
+            int end = (int)((long)i * text.Length / frames);
+            if (end < text.Length && char.IsHighSurrogate(text[end - 1])) end--;
+            reveal.KeyFrames.Add(new DiscreteStringKeyFrame(text[..end], KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds((i - 1) * 9))));
+        }
+        BeginAnimation(TextProperty, reveal);
+    }
+
     // Runs only while shown in a window, so finished or removed rows cost nothing.
     void Update()
     {

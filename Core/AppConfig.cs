@@ -1,6 +1,6 @@
 namespace SharpAgent.Core;
 
-public enum AgentProvider { Tooken, ChatGpt, Groq, Gemini, OpenRouter, Mistral }
+public enum AgentProvider { Tooken, ChatGpt, Groq, Gemini, OpenRouter, Mistral, OpenAI, Anthropic }
 
 public sealed class AppConfig
 {
@@ -23,6 +23,8 @@ public sealed class AppConfig
     public string WorkingDirectory { get; private init; } = "";
     public bool Sandbox { get; private init; }
     public bool UseSubagents { get; private init; }
+    public bool AutoChatTitles { get; private init; }
+    public bool RussianLanguage { get; private init; }
     public bool ComputerUse { get; private init; }
     internal NetworkSettings Network { get; private init; } = new();
     public int? MaxTokens { get; private init; }
@@ -33,6 +35,8 @@ public sealed class AppConfig
     public bool HasGroqKey => GroqApiKey != null;
 
     public string? ApiKeyFor(AgentProvider provider) => ApiKeys.GetValueOrDefault(provider) is { Length: > 0 } key ? key : null;
+
+    internal static bool IsRussianLanguage(string? value) => string.Equals(value?.Trim(), "ru", StringComparison.OrdinalIgnoreCase);
 
     public static AppConfig Load()
     {
@@ -68,6 +72,8 @@ public sealed class AppConfig
             WorkingDirectory = workDir,
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
+            AutoChatTitles = !string.Equals(Get("AGENT_AUTO_CHAT_TITLES"), "false", StringComparison.OrdinalIgnoreCase),
+            RussianLanguage = IsRussianLanguage(Get("AGENT_LANGUAGE")),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
             // The saved route is unknown, so a proxy route that never connects keeps traffic from bypassing a configured VPN.
             Network = loadError == null ? NetworkSettings.Load(key => vars.GetValueOrDefault(key))
@@ -111,6 +117,8 @@ public sealed class AppConfig
         AgentProvider.Gemini => "gemini-3.8-flash",
         AgentProvider.OpenRouter => "openrouter/auto",
         AgentProvider.Mistral => "mistral-small-latest",
+        AgentProvider.OpenAI => "gpt-6.2-sol",
+        AgentProvider.Anthropic => "claude-sonnet-5-5",
         _ => DefaultModel,
     };
 
@@ -120,6 +128,8 @@ public sealed class AppConfig
         AgentProvider.Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
         AgentProvider.OpenRouter => "https://openrouter.ai/api/v1",
         AgentProvider.Mistral => "https://api.mistral.ai/v1",
+        AgentProvider.OpenAI => OpenAiResponsesClient.BaseUrl,
+        AgentProvider.Anthropic => AnthropicClient.BaseUrl,
         _ => DefaultBaseUrl,
     };
 
@@ -142,7 +152,7 @@ public sealed class AppConfig
     }
 
     public static readonly string EnvTemplate = $"""
-        # Через кого отвечает агент: tooken, chatgpt, groq, gemini, openrouter или mistral
+        # Через кого отвечает агент: tooken, chatgpt, groq, gemini, openrouter, mistral, openai или anthropic
         AGENT_PROVIDER=tooken
         # Ключ берётся в личном кабинете: https://tooken.club/dashboard (выглядит как tc_live_...)
         TOOKEN_API_KEY=
@@ -158,6 +168,14 @@ public sealed class AppConfig
         CHATGPT_MODEL=gpt-6.1-sol
         # low, medium, high, xhigh, max или ultra — если модель это поддерживает (пусто — как решит модель)
         CHATGPT_REASONING_EFFORT=
+        # OpenAI API: ключ из https://platform.openai.com/api-keys
+        OPENAI_API_KEY=
+        OPENAI_MODEL={DefaultModelOf(AgentProvider.OpenAI)}
+        OPENAI_REASONING_EFFORT=
+        # Claude API: ключ из https://platform.claude.com/settings/keys
+        ANTHROPIC_API_KEY=
+        ANTHROPIC_MODEL={DefaultModelOf(AgentProvider.Anthropic)}
+        ANTHROPIC_REASONING_EFFORT=
         # Ключ Groq создаётся на https://console.groq.com/keys (выглядит как gsk_...); он же нужен для голосового ввода
         GROQ_API_KEY=
         GROQ_MODEL=openai/gpt-oss-120b
@@ -196,6 +214,8 @@ public sealed class AppConfig
         # true — агент работает ТОЛЬКО внутри папки программы (команды PowerShell/cmd, плагины и Computer Use отключены)
         AGENT_SANDBOX=false
         AGENT_USE_SUBAGENTS=false
+        AGENT_AUTO_CHAT_TITLES=true
+        AGENT_LANGUAGE=en
         # true — агент управляет программами на экране и смотрит скриншоты (скриншоты расходуют много токенов)
         AGENT_COMPUTER_USE=false
         # Свои лимиты расхода в миллионах токенов баланса Tooken Club (пусто — без лимита)

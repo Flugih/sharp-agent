@@ -25,16 +25,18 @@ public partial class MainWindow
     {
         public readonly Panel? Target = target;
         public readonly Dictionary<string, ToolRow> ToolRows = new();
+        public readonly Dictionary<string, string> ActiveTools = new();
         public readonly List<ProducedFile> TurnFiles = [];
         public readonly List<(FrameworkElement View, ProducedFile[] Files)> ChangeCards = [];
         public readonly Dictionary<string, ProgressSection> FileEditGroups = new(StringComparer.OrdinalIgnoreCase);
         public StackPanel? LastAnswer;
         public FrameworkElement? LastStopNotice;
         public ProgressSection? Progress;
-        public (ProgressSection Section, bool Commands)? ToolGroup;
+        public ProgressSection? Commands;
         public RichTextBox? ReasoningRow, CommentaryRow;
         public TextBlock? ProgressHint;
         public ToolCallEvent? PendingPlan;
+        public bool Compacting;
         public string[] NextActions = [];
     }
 
@@ -61,7 +63,7 @@ public partial class MainWindow
         SetRunning(_cts != null);
         PlaceQuestion();
         if (_cts == null && _agent.ChatPath is { } path && _chatErrors.TryGetValue(path, out var error)) AddError(error.Message, error.Fix);
-        EmptyChat.Visibility = VisibleIf(ChatPanel.Children.Count == 0);
+        UpdateChatMode();
         UpdateContextBanner();
         SyncChat(_agent, touched: false);
         SyncCompactChat();
@@ -87,7 +89,7 @@ public partial class MainWindow
             foreach (var attachment in attachments)
             {
                 var chip = _links.FileChip(attachment.Path, attachment.Name, attachment.Kind == AttachmentKind.Image
-                    ? [FileActions.Item("Прикрепить к новому сообщению", Glyphs.Picture, () => _ = AddAttachmentsAsync([attachment.Path]))]
+                    ? [FileActions.Item(Tr("Прикрепить к новому сообщению", "Attach to a new message"), Glyphs.Picture, () => _ = AddAttachmentsAsync([attachment.Path]))]
                     : []);
                 chip.Margin = new(6, 0, 0, 6);
                 files.Children.Add(chip);
@@ -103,11 +105,11 @@ public partial class MainWindow
             {
                 FontFamily = Theme.Ui, FontSize = 14, PagePadding = new(0), LineHeight = 23,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            }.Paint(System.Windows.Documents.FlowDocument.ForegroundProperty, "UserBubbleText"), "Сообщение пользователя");
+            }.Paint(System.Windows.Documents.FlowDocument.ForegroundProperty, "UserBubbleText"), Tr("Сообщение пользователя", "User message"));
             var menu = new ContextMenu();
-            menu.Items.Add(FileActions.Item("Копировать", Glyphs.Copy,
+            menu.Items.Add(FileActions.Item(Tr("Копировать", "Copy"), Glyphs.Copy,
                 () => TextClipboard.SetText(body.Selection.IsEmpty ? text : body.Selection.Text), "Ctrl+C"));
-            menu.Items.Add(FileActions.Item("Вставить в поле ввода", Glyphs.Edit, () => PutIntoInput(text)));
+            menu.Items.Add(FileActions.Item(Tr("Вставить в поле ввода", "Insert into composer"), Glyphs.Edit, () => PutIntoInput(text)));
             body.ContextMenu = menu;
             var bubble = new Border
             {
@@ -121,6 +123,29 @@ public partial class MainWindow
         AppendToChat(stack);
     }
 
+    void AddModelChange(string previous, string current)
+    {
+        var line = new Grid { Margin = new(0, 12, 0, 12) };
+        line.Children.Add(new Border { Height = 1, VerticalAlignment = VerticalAlignment.Center }.Paint(BackgroundProperty, "Line"));
+        var label = new DockPanel
+        {
+            Children =
+            {
+                GlyphText(Glyphs.Plugin, 14, "TextMuted", new(0, 0, 8, 0)),
+                new TextBlock
+                {
+                    Text = Tr($"Модель изменена с {previous} на {current}.", $"Model changed from {previous} to {current}."),
+                    FontSize = 13, TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap,
+                }.Paint(ForegroundProperty, "TextSoft"),
+            },
+        };
+        line.Children.Add(new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Center, Margin = new(16, 0, 16, 0), Padding = new(14, 0, 14, 0), Child = label,
+        }.Paint(BackgroundProperty, "Bg"));
+        AppendToChat(line);
+    }
+
     void PutIntoInput(string text)
     {
         InputBox.Text = text;
@@ -131,7 +156,7 @@ public partial class MainWindow
     void RenderNextActions()
     {
         NextActionPanel.Children.Clear();
-        if (_cts != null) return;
+        if (_cts != null || !_agent.WorkMode) return;
         foreach (var action in _chatView.NextActions)
         {
             var button = new Button
@@ -154,13 +179,28 @@ public partial class MainWindow
         var box = new RichTextBox
         {
             Document = content, IsReadOnly = true, IsDocumentEnabled = true, IsReadOnlyCaretVisible = false, IsTabStop = false,
+            AutoWordSelection = false, IsInactiveSelectionHighlightEnabled = true,
             // The editor insets its text by 5 on each side; the negative margin puts it on the column edge.
             Background = Brushes.Transparent, BorderThickness = new(0), Padding = new(0), Margin = new(-5, 0, -5, 0),
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, FocusVisualStyle = null,
         }.Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         AutomationProperties.SetName(box, label);
+        box.SelectionChanged += ApplyPendingChatDocument;
+        box.LostMouseCapture += ApplyPendingChatDocument;
         return box;
+    }
+
+    static void ApplyPendingChatDocument(object sender, RoutedEventArgs e)
+    {
+        var box = (RichTextBox)sender;
+        if (!box.Selection.IsEmpty || box.IsMouseCaptureWithin || box.Tag == null) return;
+        box.Dispatcher.InvokeAsync(() =>
+        {
+            if (!box.Selection.IsEmpty || box.IsMouseCaptureWithin || box.Tag is not System.Windows.Documents.FlowDocument pending) return;
+            box.Tag = null;
+            box.Document = pending;
+        }, DispatcherPriority.Background);
     }
 
     static TextBlock GlyphText(string glyph, double size, string? foreground, Thickness margin = default, bool center = true)
@@ -179,18 +219,18 @@ public partial class MainWindow
 
     StackPanel AnswerView(string markdown, DateTimeOffset? sentAt)
     {
-        var document = ChatText(markdown, "Text", "Ответ агента");
-        const string copyHint = "Скопировать ответ";
+        var document = ChatText(markdown, "Text", Tr("Ответ агента", "Agent response"));
+        var copyHint = Tr("Скопировать ответ", "Copy response");
         var copy = Theme.IconButton(Glyphs.Copy, copyHint, 28);
         copy.Style = Theme.Style("QuietIconButton");
         copy.Margin = new(-6, 0, 0, 0);
         copy.Click += (_, _) => ChatLinks.CopyWithFeedback(copy, markdown, copyHint);
-        var copySelection = FileActions.Item("Копировать выделенное", Glyphs.Copy, () => document.Copy(), "Ctrl+C");
+        var copySelection = FileActions.Item(Tr("Копировать выделенное", "Copy selection"), Glyphs.Copy, () => document.Copy(), "Ctrl+C");
         var menu = new ContextMenu();
         menu.Items.Add(copySelection);
-        menu.Items.Add(FileActions.Item("Копировать ответ целиком", null, () => ChatLinks.CopyWithFeedback(copy, markdown, copyHint)));
+        menu.Items.Add(FileActions.Item(Tr("Копировать ответ целиком", "Copy full response"), null, () => ChatLinks.CopyWithFeedback(copy, markdown, copyHint)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(FileActions.Item("Выделить всё", null, () =>
+        menu.Items.Add(FileActions.Item(Tr("Выделить всё", "Select all"), null, () =>
         {
             document.Focus();
             document.SelectAll();
@@ -200,8 +240,8 @@ public partial class MainWindow
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 4, 0, 0), Children = { copy } };
         footer.Children.Add(new TextBlock
         {
-            Text = sentAt?.ToLocalTime().ToString("HH:mm", Ru) ?? "—",
-            ToolTip = sentAt?.ToLocalTime().ToString("d MMMM yyyy, HH:mm:ss", Ru) ?? "Время ответа не сохранено",
+            Text = sentAt?.ToLocalTime().ToString("HH:mm", UiLanguage.Culture) ?? "—",
+            ToolTip = sentAt?.ToLocalTime().ToString("d MMMM yyyy, HH:mm:ss", UiLanguage.Culture) ?? Tr("Время ответа не сохранено", "Response time was not saved"),
             FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new(4, 0, 0, 0),
         }.Paint(ForegroundProperty, "TextMuted"));
         return new StackPanel { Margin = new(0, 8, 0, 8), Children = { document, footer } };
@@ -257,7 +297,7 @@ public partial class MainWindow
         if (files.Length > 0)
         {
             FrameworkElement card = files.Length > 1 ? ChangesCard(files)
-                : files[0].Undone ? new TextBlock { Text = "Изменение отменено" }.Paint(ForegroundProperty, "TextMuted")
+                : files[0].Undone ? new TextBlock { Text = Tr("Изменение отменено", "Change undone") }.Paint(ForegroundProperty, "TextMuted")
                 : FileCard(files[0].Path, files[0].Diff, files[0].Created);
             var cards = new Border { Margin = new(0, 12, 0, 4), Child = card };
             _chatView.ChangeCards.Add((cards, files));
@@ -286,7 +326,7 @@ public partial class MainWindow
 
     void AddError(string text, ErrorFix fix = ErrorFix.None)
     {
-        _compactChat?.SetStatus("Ошибка", "DangerText");
+        _compactChat?.SetStatus(Tr("Ошибка", "Error"), "DangerText");
         _compactChat?.ShowError(text);
         if (!IsActive)
         {
@@ -303,9 +343,9 @@ public partial class MainWindow
         var body = new StackPanel { Children = { SelectableText(text, "DangerText") } };
         (string Label, Action Run)? action = fix switch
         {
-            ErrorFix.Retry when _agent.CanContinue => ("Повторить", () => _ = RetryAsync()),
-            ErrorFix.Settings => ("Открыть настройки", ShowKeySettings),
-            ErrorFix.Usage => ("Управлять использованием", () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
+            ErrorFix.Retry when _agent.CanContinue => (Tr("Повторить", "Retry"), () => _ = RetryAsync()),
+            ErrorFix.Settings => (Tr("Открыть настройки", "Open settings"), ShowKeySettings),
+            ErrorFix.Usage => (Tr("Управлять использованием", "Manage usage"), () => FileActions.OpenUrl(ChatGptClient.UsageUrl)),
             _ => null,
         };
         if (action is { } fixIt)
@@ -325,7 +365,7 @@ public partial class MainWindow
             },
         }.Paint(BackgroundProperty, "DangerSoft");
         AutomationProperties.SetLiveSetting(card, AutomationLiveSetting.Assertive);
-        AutomationProperties.SetName(card, "Ошибка: " + text);
+        AutomationProperties.SetName(card, Tr("Ошибка: ", "Error: ") + text);
         _lastErrorCard = card;
         AppendToChat(card);
     }
@@ -354,13 +394,32 @@ public partial class MainWindow
     void OnToolCallStarted(ToolCallEvent e)
     {
         FlushModelProgress();
-        _compactChat?.SetStatus(CurrentRun?.ComputerUsing == true ? ComputerUseStatus : Activity(e.Name, e.ArgumentsJson));
+        _chatView.ActiveTools[e.Id] = e.Name switch
+        {
+            "read_file" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
+            "search_files" or "search_text" => Tr("Поиск по проекту…", "Searching project…"),
+            "write_file" or "edit_file" => Tr("Редактирование файлов…", "Editing files…"),
+            "create_directory" => Tr("Создание папки…", "Creating folder…"),
+            "copy_path" => Tr("Копирование файлов…", "Copying files…"),
+            "move_path" => Tr("Перемещение файлов…", "Moving files…"),
+            "delete_path" => Tr("Удаление файлов…", "Deleting files…"),
+            "run_command" => Tr("Выполнение команды…", "Running command…"),
+            "run_plugin" => Tr("Выполнение плагина…", "Running plugin…"),
+            "generate_image" => Tr("Создание изображения…", "Generating image…"),
+            "open_path" => Tr("Открытие файла или ссылки…", "Opening file or link…"),
+            "delegate_tasks" => Tr("Проверка субагентами…", "Subagents are checking…"),
+            ComputerTools.Name => Tr("Управление компьютером…", "Controlling computer…"),
+            ComputerTools.AppName => Tr("Проверка приложения…", "Checking application…"),
+            _ => Tr("Думаю…", "Thinking…"),
+        };
+        UpdateWorkStatus();
         if (e.Name == "update_plan") _chatView.PendingPlan = e;
         else AddToolRow(e.Id, e.Name, e.ArgumentsJson);
     }
 
     void OnToolCallFinished(ToolResultEvent e)
     {
+        if (_chatView.ActiveTools.Remove(e.Id)) UpdateWorkStatus();
         if (_chatView.PendingPlan is { } plan && plan.Id == e.Id)
         {
             _chatView.PendingPlan = null;
@@ -378,71 +437,72 @@ public partial class MainWindow
         string Name(string key = "path", string fallback = "") => Get(key) is { Length: > 0 } path ? ShortName(path) : fallback;
         return tool switch
         {
-            "read_file" => "Читаю файл " + Name(),
-            "list_directory" => ShortName(Get("path")) is var name and not ("" or ".") ? "Смотрю папку " + name : "Смотрю рабочую папку",
-            "get_file_info" => "Смотрю сведения о " + Name(fallback: "файле"),
-            "search_files" => "Ищу файлы " + OneLine(Get("pattern")),
-            "search_text" => $"Ищу текст «{OneLine(Get("query"))}»",
-            "write_file" => "Записываю файл " + Name(),
-            "edit_file" => "Правлю файл " + Name(),
-            "create_directory" => "Создаю папку " + Name(),
-            "move_path" => "Перемещаю " + Name("source"),
-            "copy_path" => "Копирую " + Name("source"),
-            "delete_path" => "Удаляю " + Name(),
-            "open_path" => "Открываю " + Name(),
-            "run_command" => "Выполняю " + OneLine(Get("command")),
-            "run_plugin" => "Запускаю плагин " + Get("name"),
-            "use_plugin" => "Открываю плагин " + Get("name"),
-            "generate_image" => "Рисую изображение",
-            "get_system_info" => "Смотрю сведения о системе",
-            "read_log" => "Читаю журнал команды",
-            "ask_user" => "Ожидаю ответа на уточнение",
-            "delegate_tasks" => "Субагенты выполняют поручения",
-            "update_plan" => "Обновляю план",
-            ComputerTools.Name => ComputerActivity(Get("action")) + ((Get("element") ?? Get("path")) is { } target ? " " + OneLine(target) : ""),
-            _ => "Выполняю " + tool,
+            "read_file" => Tr("Читаю файл ", "Reading ") + Name(),
+            "list_directory" => ShortName(Get("path")) is var name and not ("" or ".") ? Tr("Смотрю папку ", "Inspecting folder ") + name : Tr("Смотрю рабочую папку", "Inspecting the working folder"),
+            "get_file_info" => Tr("Смотрю сведения о ", "Checking details for ") + Name(fallback: Tr("файле", "file")),
+            "search_files" => Tr("Ищу файлы ", "Searching for files ") + OneLine(Get("pattern")),
+            "search_text" => Tr($"Ищу текст «{OneLine(Get("query"))}»", $"Searching for “{OneLine(Get("query"))}”"),
+            "write_file" => Tr("Записываю файл ", "Writing ") + Name(),
+            "edit_file" => Tr("Правлю файл ", "Editing ") + Name(),
+            "create_directory" => Tr("Создаю папку ", "Creating folder ") + Name(),
+            "move_path" => Tr("Перемещаю ", "Moving ") + Name("source"),
+            "copy_path" => Tr("Копирую ", "Copying ") + Name("source"),
+            "delete_path" => Tr("Удаляю ", "Deleting ") + Name(),
+            "open_path" => Tr("Открываю ", "Opening ") + Name(),
+            "run_command" => Tr("Выполняю ", "Running ") + OneLine(Get("command")),
+            "run_plugin" => Tr("Запускаю плагин ", "Running plugin ") + Get("name"),
+            "use_plugin" => Tr("Открываю плагин ", "Opening plugin ") + Get("name"),
+            "generate_image" => Tr("Рисую изображение", "Generating an image"),
+            "get_system_info" => Tr("Смотрю сведения о системе", "Checking system information"),
+            "read_log" => Tr("Читаю журнал команды", "Reading the command log"),
+            "ask_user" => Tr("Ожидаю ответа на уточнение", "Waiting for clarification"),
+            "delegate_tasks" => Tr("Субагенты выполняют поручения", "Subagents are working"),
+            "update_plan" => Tr("Обновляю план", "Updating the plan"),
+            ComputerTools.Name or ComputerTools.AppName => ComputerActivity(Get("action")) + ((Get("element") ?? Get("path")) is { } target ? " " + OneLine(target) : ""),
+            _ => Tr("Выполняю ", "Running ") + tool,
         };
     }
 
     static string ComputerActivity(string? action) => action switch
     {
-        "launch" => "Запускаю",
-        "windows" => "Смотрю список окон",
-        "tree" => "Смотрю элементы окна",
-        "click" => "Нажимаю",
-        "type" => "Ввожу текст",
-        "keys" => "Нажимаю клавиши",
-        "scroll" => "Прокручиваю к элементу",
-        "screenshot" => "Делаю скриншот",
-        "wait" => "Жду",
-        "close" => "Закрываю окно",
-        _ => "Управляю программой",
+        "launch" => Tr("Запускаю", "Launching"),
+        "windows" => Tr("Смотрю список окон", "Listing windows"),
+        "tree" => Tr("Смотрю элементы окна", "Inspecting window controls"),
+        "click" => Tr("Нажимаю", "Clicking"),
+        "type" => Tr("Ввожу текст", "Entering text"),
+        "keys" => Tr("Нажимаю клавиши", "Pressing keys"),
+        "scroll" => Tr("Прокручиваю к элементу", "Scrolling to the element"),
+        "screenshot" => Tr("Делаю скриншот", "Taking a screenshot"),
+        "wait" => Tr("Жду", "Waiting"),
+        "close" => Tr("Закрываю окно", "Closing the window"),
+        _ => Tr("Управляю программой", "Controlling the application"),
     };
 
     static (string Glyph, string Label) Describe(string tool) => tool switch
     {
-        "read_file" => (Glyphs.View, "Чтение файла"),
-        "list_directory" => (Glyphs.Folder, "Просмотр папки"),
-        "get_file_info" => (Glyphs.Info, "Сведения о файле"),
-        "write_file" => (Glyphs.Save, "Запись файла"),
-        "edit_file" => (Glyphs.Edit, "Правка файла"),
-        "create_directory" => (Glyphs.NewFolder, "Новая папка"),
-        "move_path" => (Glyphs.Move, "Перемещение"),
-        "copy_path" => (Glyphs.Copy, "Копирование"),
-        "delete_path" => (Glyphs.Delete, "Удаление"),
-        "search_files" => (Glyphs.Search, "Поиск файлов"),
-        "search_text" => (Glyphs.Search, "Поиск текста"),
-        "run_command" => (Glyphs.Terminal, "Команда"),
-        "read_log" => (Glyphs.Terminal, "Журнал команды"),
-        "open_path" => (Glyphs.Open, "Открытие"),
-        "get_system_info" => (Glyphs.Info, "Сведения о системе"),
-        "generate_image" => (Glyphs.Picture, "Создание изображения"),
-        "use_plugin" => (Glyphs.Plugin, "Плагин"),
-        "run_plugin" => (Glyphs.Plugin, "Работа плагина"),
-        "ask_user" => (Glyphs.Info, "Уточнение"),
-        "delegate_tasks" => (Glyphs.Tool, "Поручение субагентам"),
-        "update_plan" => (Glyphs.Check, "План"),
-        ComputerTools.Name => (Glyphs.Open, "Управление программой"),
+        "read_file" => (Glyphs.View, Tr("Чтение файла", "Read file")),
+        "list_directory" => (Glyphs.Folder, Tr("Просмотр папки", "List directory")),
+        "get_file_info" => (Glyphs.Info, Tr("Сведения о файле", "File information")),
+        "write_file" => (Glyphs.Save, Tr("Запись файла", "Write file")),
+        "edit_file" => (Glyphs.Edit, Tr("Правка файла", "Edit file")),
+        "create_directory" => (Glyphs.NewFolder, Tr("Новая папка", "New folder")),
+        "move_path" => (Glyphs.Move, Tr("Перемещение", "Move")),
+        "copy_path" => (Glyphs.Copy, Tr("Копирование", "Copy")),
+        "delete_path" => (Glyphs.Delete, Tr("Удаление", "Delete")),
+        "search_files" => (Glyphs.Search, Tr("Поиск файлов", "File search")),
+        "search_text" => (Glyphs.Search, Tr("Поиск текста", "Text search")),
+        "run_command" => (Glyphs.Terminal, Tr("Команда", "Command")),
+        "read_log" => (Glyphs.Terminal, Tr("Журнал команды", "Command log")),
+        "open_path" => (Glyphs.Open, Tr("Открытие", "Open")),
+        "get_system_info" => (Glyphs.Info, Tr("Сведения о системе", "System information")),
+        "generate_image" => (Glyphs.Picture, Tr("Создание изображения", "Image generation")),
+        "use_plugin" => (Glyphs.Plugin, Tr("Плагин", "Plugin")),
+        "run_plugin" => (Glyphs.Plugin, Tr("Работа плагина", "Plugin execution")),
+        "ask_user" => (Glyphs.Info, Tr("Уточнение", "Clarification")),
+        "delegate_tasks" => (Glyphs.Tool, Tr("Поручение субагентам", "Subagent task")),
+        "update_plan" => (Glyphs.Check, Tr("План", "Plan")),
+        ComputerTools.Name => (Glyphs.Open, Tr("Управление программой", "Application control")),
+        ComputerTools.AppName => (Glyphs.Open, Tr("Проверка приложения", "Application check")),
         _ => (Glyphs.Tool, tool),
     };
 
@@ -455,9 +515,9 @@ public partial class MainWindow
         }
         var progress = EnsureProgress();
         if (!_chatView.FileEditGroups.TryGetValue(path, out var group))
-            group = _chatView.FileEditGroups[path] = ProgressSection.Collapsed("Правки файла · " + ShortName(path), Glyphs.Edit, progress.Items);
+            group = _chatView.FileEditGroups[path] = ProgressSection.Collapsed(Tr("Правки файла · ", "File edits · ") + ShortName(path), Glyphs.Edit, progress.Items);
         group.Items.Children.Add(item);
-        group.SetTitle($"Правки файла · {ShortName(path)} · {group.Items.Children.Count}");
+        group.SetTitle(Tr($"Правки файла · {ShortName(path)} · {group.Items.Children.Count}", $"File edits · {ShortName(path)} · {group.Items.Children.Count}"));
         return group;
     }
 
@@ -469,7 +529,7 @@ public partial class MainWindow
         {
             FontFamily = Theme.Icons, FontSize = 14, Margin = new(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed,
         };
-        var expand = Theme.IconButton(Glyphs.ChevronRight, $"Подробности действия «{label}»", 24, 12);
+        var expand = Theme.IconButton(Glyphs.ChevronRight, Tr($"Подробности действия «{label}»", $"Details for “{label}”"), 24, 12);
         expand.Style = Theme.Style("QuietIconButton");
         expand.Margin = new(4, 0, 0, 0);
         expand.Visibility = Visibility.Collapsed;
@@ -523,12 +583,12 @@ public partial class MainWindow
         {
             "run_command" => Plain(OneLine(Get("command"))),
             "search_files" => Plain(OneLine(Get("pattern"))),
-            "search_text" => Plain(OneLine(Get("query"))) ?? Plain("Запрос без текста"),
+            "search_text" => Plain(OneLine(Get("query"))) ?? Plain(Tr("Запрос без текста", "Empty search query")),
             "generate_image" => Plain(OneLine(Get("prompt"))),
             "use_plugin" => Plain(Get("name")),
             "read_log" => Plain(Get("log_id")),
             "run_plugin" => Plain($"{Get("name")} · {Get("script")}"),
-            ComputerTools.Name => Plain(OneLine($"{ComputerActivity(Get("action"))} {Get("element") ?? Get("path") ?? Get("text") ?? Get("window")}")),
+            ComputerTools.Name or ComputerTools.AppName => Plain(OneLine($"{ComputerActivity(Get("action"))} {Get("element") ?? Get("path") ?? Get("text") ?? Get("window")}")),
             "delete_path" => Plain(ShortName(Get("path"))),
             "move_path" or "copy_path" => Plain($"{ShortName(Get("source"))} → {ShortName(Get("destination"))}"),
             "get_system_info" or "update_plan" => null,
@@ -544,7 +604,7 @@ public partial class MainWindow
             row.Status.Text = isError ? Glyphs.Cancel : Glyphs.Warning;
             row.Status.Paint(ForegroundProperty, isError ? "DangerText" : "Warning");
             row.Status.Visibility = Visibility.Visible;
-            row.Status.ToolTip = isError ? "Не выполнено" : "Команда завершилась с ошибкой или по таймауту — раскройте подробности";
+            row.Status.ToolTip = isError ? Tr("Не выполнено", "Failed") : "Команда завершилась с ошибкой или по таймауту — раскройте подробности";
             var line = output.Split('\n')[0].Trim();
             row.Root.Children.Add(new TextBlock
             {
@@ -605,7 +665,7 @@ public partial class MainWindow
             Cursor = Cursors.Hand, ToolTip = $"{path}\nЩелчок — посмотреть, правая кнопка — другие действия",
             ContextMenu = FileActions.BuildMenu(this, path),
         }.Paint(BackgroundProperty, "Surface");
-        AutomationProperties.SetName(preview, "Изображение " + Path.GetFileName(path));
+        AutomationProperties.SetName(preview, Tr("Изображение ", "Image ") + Path.GetFileName(path));
         preview.MouseLeftButtonUp += (_, _) => ShowPicture(path);
         FileActions.EnableDragOut(preview, path);
         _ = LoadAsync();
@@ -634,10 +694,10 @@ public partial class MainWindow
             Content = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Children = { GlyphText(Glyphs.Picture, 16, "TextMuted", new(0, 0, 8, 0)), new TextBlock { Text = "Просмотрено изображение" }.Paint(ForegroundProperty, "TextMuted"), chevron },
+                Children = { GlyphText(Glyphs.Picture, 16, "TextMuted", new(0, 0, 8, 0)), new TextBlock { Text = Tr("Просмотрено изображение", "Image viewed") }.Paint(ForegroundProperty, "TextMuted"), chevron },
             },
         };
-        AutomationProperties.SetName(toggle, "Просмотрено изображение — показать скриншот");
+        AutomationProperties.SetName(toggle, Tr("Просмотрено изображение — показать скриншот", "Image viewed. Show screenshot"));
         var reveal = new RevealPanel();
         toggle.Click += (_, _) =>
         {
@@ -671,12 +731,12 @@ public partial class MainWindow
                 var name = new TextBlock { Text = ShortName(row.FilePath) }.Paint(ForegroundProperty, "Text");
                 var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(12, 8, 12, 8), Children = { name, DiffSummary(diff.Added, diff.Removed) } };
                 TextBlock.SetFontSize(header, 13);
-                var view = BlockBox(new StackPanel { Children = { header, DiffView(diff, InlineDiffLines) } }, new(0, 0, 0, 8));
+                var view = BlockBox(new StackPanel { Children = { header, DiffView(row.FilePath, diff, InlineDiffLines) } }, new(0, 0, 0, 8));
                 view.Margin = new(0, 0, 0, 8);
                 if (row.FilePath is { } path)
                 {
                     view.Cursor = Cursors.Hand;
-                    view.ToolTip = "Открыть справа";
+                    view.ToolTip = Tr("Открыть справа", "Open in side panel");
                     view.MouseLeftButtonUp += (_, _) => ShowPreview(path, diff);
                 }
                 details.Children.Add(view);
@@ -684,7 +744,7 @@ public partial class MainWindow
             var log = row.Name is "run_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
             if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full) output = output.Split('\n', 2)[0] + "\n" + full;
             var command = row.Name == "run_command" ? ArgumentOf(row.ArgumentsJson, "command") : null;
-            var raw = SelectableText(KeepEnds(command != null ? output : $"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", 16_000),
+            var raw = SelectableText(KeepEnds(command != null ? output : Tr($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", $"Parameters:\n{PrettyJson(row.ArgumentsJson)}\n\nResult:\n{output}"), 16_000),
                 "TextSoft", mono: true, fontSize: 12.5);
             raw.MaxHeight = 360;
             raw.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
@@ -696,18 +756,18 @@ public partial class MainWindow
                 code.Children.Insert(0, line);
             }
             TextBlock.SetLineHeight(code, 19);
-            var state = BlockLabel(IsShown(row.Status) ? "Не выполнено" : "Выполнено");
+            var state = BlockLabel(IsShown(row.Status) ? Tr("Не выполнено", "Failed") : Tr("Выполнено", "Completed"));
             DockPanel.SetDock(state, Dock.Right);
             var footer = new DockPanel { LastChildFill = false, Margin = new(0, 8, 0, 0), Children = { state } };
             if (log != null)
             {
-                var journal = new Button { Content = "Открыть журнал" };
-                AutomationProperties.SetName(journal, "Открыть журнал команды");
+                var journal = new Button { Content = Tr("Открыть журнал", "Open log") };
+                AutomationProperties.SetName(journal, Tr("Открыть журнал команды", "Open command log"));
                 journal.Click += (_, _) =>
                 {
                     if (CommandLog.PathOf(AppPaths.LogsFolder, log) is { } path && File.Exists(path))
                         ShowPreview(path, title: OneLine(ArgumentOf(row.ArgumentsJson, "command") ?? Describe(row.Name).Label));
-                    else ShowToast($"Журнал команды удалён. Журналы хранятся {CommandLog.KeepDays} дней.", ToastKind.Warning);
+                    else ShowToast(Tr($"Журнал команды удалён. Журналы хранятся {CommandLog.KeepDays} дней.", $"Command log deleted. Logs are kept for {CommandLog.KeepDays} days."), ToastKind.Warning);
                 };
                 footer.Children.Add(journal);
             }
@@ -723,7 +783,7 @@ public partial class MainWindow
     static void ShowExpandState(ToolRow row, bool open)
     {
         row.Expand.Content = open ? Glyphs.ChevronDown : Glyphs.ChevronRight;
-        var hint = (open ? "Скрыть " : "Показать ") + "параметры и результат";
+        var hint = open ? Tr("Скрыть параметры и результат", "Hide parameters and result") : Tr("Показать параметры и результат", "Show parameters and result");
         row.Expand.ToolTip = hint;
         AutomationProperties.SetName(row.Expand, hint);
     }
@@ -731,14 +791,14 @@ public partial class MainWindow
     void FinishTurn()
     {
         MarkUnfinishedToolRows();
-        FinishProgress("Выполнение прервано");
+        FinishProgress(Tr("Выполнение прервано", "Interrupted"));
         FlushTurnFiles();
     }
 
     void MarkUnfinishedToolRows()
     {
         _chatView.PendingPlan = null;
-        foreach (var row in _chatView.ToolRows.Values.Where(r => r.Output == null)) CompleteToolRow(row, "Выполнение прервано.", isError: true);
+        foreach (var row in _chatView.ToolRows.Values.Where(r => r.Output == null)) CompleteToolRow(row, Tr("Выполнение прервано.", "Task interrupted."), isError: true);
     }
 
     static string OneLine(string? value) => Shorten((value ?? "").Replace("\r", "").Replace("\n", " ⏎ ").Trim(), 70);
@@ -751,7 +811,7 @@ public partial class MainWindow
     static string ShortName(string? path) => string.IsNullOrWhiteSpace(path) ? ""
         : path.Trim().TrimEnd('\\', '/') is var trimmed && Path.GetFileName(trimmed) is { Length: > 0 } name ? name : trimmed;
 
-    void RenderHistory(IReadOnlyList<JsonNode> history)
+    void RenderHistory(IReadOnlyList<JsonNode> history, int start)
     {
         bool wasSuppressed = _suppressAnimation;
         _suppressAnimation = true;
@@ -760,12 +820,14 @@ public partial class MainWindow
             var messages = history.OfType<JsonObject>().ToArray();
             for (int i = 0; i < messages.Length; i++)
             {
+                if (i > 0) RenderModelChanges(messages[i - 1]);
                 var m = messages[i];
                 var role = JsonUtil.Str(m["role"]);
                 if (role == "user")
                 {
                     FinishTurn();
                     AddUserBubble(AgentRunner.ExtractText(m["content"]) ?? "", Attachment.ListFrom(m));
+                    ((_chatView.Target ?? ChatPanel).Children[^1]).SetValue(SearchMessageProperty, start + i);
                 }
                 else if (role == "assistant")
                 {
@@ -775,7 +837,12 @@ public partial class MainWindow
                     var text = AgentRunner.ExtractText(m["content"])?.Trim() ?? "";
                     if (m["tool_calls"] is JsonArray { Count: > 0 } calls)
                     {
-                        if (text.Length > 0) AddProgressItem(ProgressText(text, "Промежуточное сообщение"));
+                        if (text.Length > 0)
+                        {
+                            var content = ProgressText(text, Tr("Промежуточное сообщение", "Interim message"));
+                            content.SetValue(SearchMessageProperty, start + i);
+                            AddProgressItem(content);
+                        }
                         var results = messages.Skip(i + 1).TakeWhile(next => JsonUtil.Str(next["role"]) == "tool").ToArray();
                         foreach (var call in calls.OfType<JsonObject>())
                         {
@@ -802,11 +869,21 @@ public partial class MainWindow
                         continue;
                     }
                     var elapsed = AgentRunner.ElapsedOf(m);
-                    if (AgentRunner.ReviewOf(m) != null) AddProgressItem(ProgressText(text, "Промежуточное сообщение"));
-                    else if (text.Length > 0 || elapsed != null) ShowFinalAnswer(text, elapsed, sentAt, AgentRunner.NextActionsOf(m));
+                    if (AgentRunner.ReviewOf(m) != null)
+                    {
+                        var content = ProgressText(text, Tr("Промежуточное сообщение", "Interim message"));
+                        content.SetValue(SearchMessageProperty, start + i);
+                        AddProgressItem(content);
+                    }
+                    else if (text.Length > 0 || elapsed != null)
+                    {
+                        ShowFinalAnswer(text, elapsed, sentAt, AgentRunner.NextActionsOf(m));
+                        if (text.Length > 0) _chatView.LastAnswer?.SetValue(SearchMessageProperty, start + i);
+                    }
                 }
                 if (AgentRunner.StopReasonOf(m) is { } stop) AddNotice(stop, warning: true, inProgress: false);
             }
+            if (messages.Length > 0) RenderModelChanges(messages[^1]);
             FinishTurn();
         }
         finally
@@ -815,19 +892,27 @@ public partial class MainWindow
         }
     }
 
+    void RenderModelChanges(JsonObject message)
+    {
+        foreach (var (previous, current) in AgentRunner.ModelChangesOf(message))
+        {
+            FinishTurn();
+            AddModelChange(previous, current);
+        }
+    }
+
     void CopyLastAnswer_Click(object sender, RoutedEventArgs e)
     {
-        var last = _agent.History.OfType<JsonObject>().Where(m => JsonUtil.Str(m["role"]) == "assistant" && m["tool_calls"] == null && AgentRunner.ReviewOf(m) == null)
-            .Select(m => AgentRunner.ExtractText(m["content"])).LastOrDefault(text => !string.IsNullOrWhiteSpace(text));
-        if (last == null) ShowToast("В этом чате пока нет ответов");
-        else if (TextClipboard.SetText(last.Trim())) ShowToast("Последний ответ скопирован", ToastKind.Success);
-        else ShowToast("Буфер обмена занят другой программой — попробуйте ещё раз", ToastKind.Error);
+        var last = _agent.LastAnswerText();
+        if (last == null) ShowToast(Tr("В этом чате пока нет ответов", "There are no responses in this chat yet."));
+        else if (TextClipboard.SetText(last.Trim())) ShowToast(Tr("Последний ответ скопирован", "Latest response copied"), ToastKind.Success);
+        else ShowToast(Tr("Буфер обмена занят другой программой — попробуйте ещё раз", "The clipboard is busy. Try again."), ToastKind.Error);
     }
 
     void AppendToChat(UIElement element)
     {
         (_chatView.Target ?? ChatPanel).Children.Add(element);
-        if (_chatView.Target == null) EmptyChat.Visibility = Visibility.Collapsed;
+        if (_chatView.Target == null) UpdateComposerPlacement();
         if (!_suppressAnimation && Theme.AnimationsEnabled)
             element.BeginAnimation(OpacityProperty,
                 new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
@@ -837,6 +922,7 @@ public partial class MainWindow
     {
         if (!IsShown(ChatStickyHost)) return;
         ChatStickyHost.Visibility = Visibility.Collapsed;
+        BindingOperations.ClearBinding(ChatStickyTitle, TextBlock.TextProperty);
         UpdateStickyClip();
         ChatStickyTitle.IsActive = false;
         var plan = ChatStickyPanel.Children.Count > 0 ? ChatStickyPanel.Children[0] : null;
@@ -860,7 +946,7 @@ public partial class MainWindow
         }
         if (!IsShown(ChatStickyHost))
         {
-            ChatStickyTitle.SetBinding(TextBlock.TextProperty, new Binding { Source = progress.View, Path = new(AutomationProperties.NameProperty) });
+            ChatStickyTitle.SetBinding(TextBlock.TextProperty, new Binding { Source = progress.Label, Path = new(TextBlock.TextProperty) });
             ChatStickyHost.Visibility = Visibility.Visible;
             ChatStickyTitle.IsActive = true;
             UpdateStickyClip();
@@ -878,7 +964,7 @@ public partial class MainWindow
     {
         if (_changingHistory || !ReferenceEquals(e.OriginalSource, ChatScroll)) return;
         if (e.ExtentHeightChange != 0 && _autoScroll && _chatMotion == null) ChatScroll.ScrollToEnd();
-        else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = IsShown(ChatPanel) && ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
+        else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = Mouse.LeftButton != MouseButtonState.Pressed && IsShown(ChatPanel) && ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
         if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckHistory(older: e.VerticalChange < 0);
         UpdateStickyProgress();
         if (IsShown(ChatStickyHost) && (e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0)) UpdateStickyClip();

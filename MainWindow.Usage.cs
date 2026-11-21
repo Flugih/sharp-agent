@@ -27,7 +27,7 @@ public partial class MainWindow
             await _usage.RefreshAsync(tooken, UsageTracker.KeyId(_config.ApiKey!, _config.BaseUrl), cts.Token);
         }
         catch (ApiException ex) when (ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented) { unavailable = true; }
-        catch (Exception ex) { error = ex is OperationCanceledException ? "сервер не ответил вовремя" : ex.Message.Split('\n')[0]; }
+        catch (Exception ex) { error = ex is OperationCanceledException ? Tr("сервер не ответил вовремя", "server did not respond in time") : ex.Message.Split('\n')[0]; }
         if (!ReferenceEquals(tooken, _provider)) return;
         _usageLoading = null;
         _usageError = error;
@@ -48,22 +48,22 @@ public partial class MainWindow
         };
         var text = provider switch
         {
-            AgentProvider.Tooken => snapshot != null ? "Баланс " + Tokens.Format(snapshot.Balance) : "Баланс и расход",
-            AgentProvider.ChatGpt or AgentProvider.Groq => "Лимиты " + ProviderName(provider),
-            _ => "Расход " + ProviderName(provider),
+            AgentProvider.Tooken => snapshot != null ? Tr("Баланс ", "Balance ") + Tokens.Format(snapshot.Balance) : Tr("Баланс и расход", "Balance and usage"),
+            AgentProvider.ChatGpt or AgentProvider.Groq => Tr("Лимиты ", "Limits for ") + ProviderName(provider),
+            _ => Tr("Расход ", "Usage for ") + ProviderName(provider),
         };
         BalanceButton.Visibility = VisibleIf(!(tooken && _usageUnavailable));
         BalanceText.Text = text;
         if (warning) BalanceButton.Paint(ForegroundProperty, "Warning");
         else BalanceButton.ClearValue(ForegroundProperty);
-        BalanceButton.ToolTip = (tooken ? "Баланс и расход" : text) + " (Ctrl+B)";
+        BalanceButton.ToolTip = (tooken ? Tr("Баланс и расход", "Balance and usage") : text) + " (Ctrl+B)";
         AutomationProperties.SetName(BalanceButton, provider switch
         {
-            AgentProvider.ChatGpt when warning => text + ": подписка сейчас ограничена",
-            AgentProvider.Groq when warning => text + " почти исчерпаны",
-            AgentProvider.Tooken when snapshot != null => $"Баланс {Tokens.Format(snapshot.Balance)} токенов{(warning ? ", лимит расхода исчерпан" : "")}",
+            AgentProvider.ChatGpt when warning => text + Tr(": подписка сейчас ограничена", ": subscription is currently limited"),
+            AgentProvider.Groq when warning => text + Tr(" почти исчерпаны", " are nearly exhausted"),
+            AgentProvider.Tooken when snapshot != null => Tr($"Баланс {Tokens.Format(snapshot.Balance)} токенов", $"Balance: {Tokens.Format(snapshot.Balance)} tokens") + (warning ? Tr(", лимит расхода исчерпан", ", usage limit reached") : ""),
             _ => text,
-        } + ". Открыть подробности");
+        } + Tr(". Открыть подробности", ". Open details"));
     }
 
     private static bool Low(long? left, long? limit) => left != null && limit is > 0 && left < limit * 0.1;
@@ -73,7 +73,7 @@ public partial class MainWindow
         if (SettingsOpen) return;
         if (FlyoutShows(UsageCard)) CloseFlyout();
         else if (_provider == null) ShowToast(NotReadyText(), ToastKind.Warning);
-        else if (_config.Provider == AgentProvider.Tooken && _usageUnavailable) ShowToast("Этот сервер не сообщает баланс и расход");
+        else if (_config.Provider == AgentProvider.Tooken && _usageUnavailable) ShowToast(Tr("Этот сервер не сообщает баланс и расход", "This provider does not report balance or usage"));
         else
         {
             BuildUsagePanel();
@@ -85,8 +85,8 @@ public partial class MainWindow
     private void UpdateContextBanner()
     {
         if (ContextUsage() is >= ContextWarning and var used)
-            ShowBanner("context", Glyphs.Warning, "Память модели почти заполнена",
-                $"Переписка занимает {Tokens.Percent(used)} памяти модели. Начните новый чат, чтобы агент не терял начало разговора.", "Новый чат", StartNewChat, warning: true);
+            ShowBanner("context", Glyphs.Warning, Tr("Память модели почти заполнена", "Model context is nearly full"),
+                Tr($"Переписка занимает {Tokens.Percent(used)} памяти модели. Начните новый чат, чтобы агент не терял начало разговора.", $"This chat uses {Tokens.Percent(used)} of the model’s context. Start a new chat to free up context."), Tr("Новый чат", "New chat"), StartNewChat, warning: true);
         else HideBanner("context");
     }
 
@@ -103,8 +103,8 @@ public partial class MainWindow
         else if (_config.Provider == AgentProvider.Tooken) BuildBalancePanel();
         else
         {
-            AddHeader("Расход " + ProviderName(_config.Provider));
-            if (!AddPlaceholder(_agent.Totals() is { PromptTokens: 0, CompletionTokens: 0 }, "Расход появится после первого ответа модели."))
+            AddHeader(Tr("Расход ", "Usage for ") + ProviderName(_config.Provider));
+            if (!AddPlaceholder(_agent.Totals() is { PromptTokens: 0, CompletionTokens: 0 }, Tr("Расход появится после первого ответа модели.", "Usage will appear after the first model response.")))
                 AddChatSection();
         }
     }
@@ -119,7 +119,7 @@ public partial class MainWindow
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
         if (refreshable)
         {
-            var refresh = Theme.IconButton(Glyphs.Refresh, "Обновить баланс и расход", 28, 14);
+            var refresh = Theme.IconButton(Glyphs.Refresh, Tr("Обновить баланс и расход", "Refresh balance and usage"), 28, 14);
             refresh.IsEnabled = !UsageLoading;
             refresh.Margin = new Thickness(0, -6, -6, -6);
             refresh.Click += (_, _) =>
@@ -137,7 +137,7 @@ public partial class MainWindow
     private bool AddPlaceholder(bool empty, string waiting)
     {
         if (!empty) return false;
-        AddUsage(UsageNote(UsageLoading ? "Загружаю данные…" : _usageError != null ? "Не удалось получить данные: " + _usageError : waiting,
+        AddUsage(UsageNote(UsageLoading ? Tr("Загружаю данные…", "Loading data…") : _usageError != null ? Tr("Не удалось получить данные: ", "Could not load data: ") + _usageError : waiting,
             _usageError != null && !UsageLoading ? "DangerText" : "TextSoft"));
         AddChatSection();
         return true;
@@ -148,31 +148,31 @@ public partial class MainWindow
 
     private void BuildBalancePanel()
     {
-        AddHeader("Баланс tooken.club", true);
+        AddHeader(Tr("Баланс tooken.club", "tooken.club balance"), true);
         var snapshot = _usage.Last;
-        if (AddPlaceholder(snapshot == null, "Данных пока нет.")) return;
+        if (AddPlaceholder(snapshot == null, Tr("Данных пока нет.", "No data yet."))) return;
         AddUsage(new TextBlock
         {
             Margin = new Thickness(0, 0, 0, 8),
             Inlines =
             {
                 new Run(Tokens.Format(snapshot!.Balance)) { FontSize = 20, FontWeight = FontWeights.SemiBold },
-                new Run(" токенов") { FontSize = 13 }.Paint(TextElement.ForegroundProperty, "TextDim"),
+                new Run(Tr(" токенов", " tokens")) { FontSize = 13 }.Paint(TextElement.ForegroundProperty, "TextDim"),
             },
         });
         if (snapshot.FullBalance > 0 && snapshot.FullBalance > snapshot.Balance)
         {
             double left = (double)snapshot.Balance / snapshot.FullBalance;
             AddUsage(Meter(left, left < 0.1),
-                Caption($"Осталось {Tokens.Percent(left)} от {Tokens.Format(snapshot.FullBalance)} (баланс после пополнения)", 4));
+                Caption(Tr($"Осталось {Tokens.Percent(left)} от {Tokens.Format(snapshot.FullBalance)} (баланс после пополнения)", $"{Tokens.Percent(left)} of {Tokens.Format(snapshot.FullBalance)} remaining since your last top-up"), 4));
         }
-        AddUsage(Divider(), Row("Потрачено сегодня", Tokens.Format(snapshot.Today)), Row("За 7 дней", Tokens.Format(snapshot.Week)),
-            Row("За 30 дней", (snapshot.HistoryComplete ? "" : "не меньше ") + Tokens.Format(snapshot.Month)));
+        AddUsage(Divider(), Row(Tr("Потрачено сегодня", "Used today"), Tokens.Format(snapshot.Today)), Row(Tr("За 7 дней", "Last 7 days"), Tokens.Format(snapshot.Week)),
+            Row(Tr("За 30 дней", "Last 30 days"), (snapshot.HistoryComplete ? "" : Tr("не меньше ", "at least ")) + Tokens.Format(snapshot.Month)));
         if (snapshot.Week > 0 && snapshot.Balance > 0)
         {
             int days = (int)Math.Min(9999, Math.Floor(snapshot.Balance / (snapshot.Week / 7.0)));
-            AddUsage(Caption(days < 1 ? "При расходе как за последнюю неделю баланса не хватит и на день"
-                : $"При расходе как за последнюю неделю хватит примерно на {Plural(days, "день", "дня", "дней")}", 4));
+            AddUsage(Caption(days < 1 ? Tr("При расходе как за последнюю неделю баланса не хватит и на день", "At last week’s rate the balance will last less than one day.")
+                : Tr($"При расходе как за последнюю неделю хватит примерно на {Plural(days, "день", "дня", "дней")}", $"At last week’s rate the balance will last about {days} {(days == 1 ? "day" : "days")}."), 4));
         }
         AddChatSection();
         AddUsage(Divider());
@@ -180,44 +180,44 @@ public partial class MainWindow
             AddUsage(new TextBlock
             {
                 FontSize = 13, TextWrapping = TextWrapping.Wrap,
-                Inlines = { new Run("Свои лимиты на день и месяц не заданы. "), MakeLink("Задать лимиты", () => OpenSettings(DayLimitBox)) },
+                Inlines = { new Run(Tr("Свои лимиты на день и месяц не заданы. ", "Daily and monthly limits are unset. ")), MakeLink(Tr("Задать лимиты", "Set limits"), () => OpenSettings(DayLimitBox)) },
             }.Paint(TextBlock.ForegroundProperty, "TextSoft"));
         else
         {
-            if (_config.DayLimit is { } day) AddLimit("Лимит на день", snapshot.Today, day);
-            if (_config.MonthLimit is { } month) AddLimit("Лимит на месяц", snapshot.MonthToDate, month);
+            if (_config.DayLimit is { } day) AddLimit(Tr("Лимит на день", "Daily limit"), snapshot.Today, day);
+            if (_config.MonthLimit is { } month) AddLimit(Tr("Лимит на месяц", "Monthly limit"), snapshot.MonthToDate, month);
         }
-        AddFooter(snapshot.RefreshedAt, "Пополнить в кабинете", "https://tooken.club/dashboard");
+        AddFooter(snapshot.RefreshedAt, Tr("Пополнить в кабинете", "Top up in dashboard"), "https://tooken.club/dashboard");
     }
 
     private void BuildPlanPanel(ChatGptClient chat)
     {
-        AddHeader("Подписка ChatGPT");
+        AddHeader(Tr("Подписка ChatGPT", "ChatGPT subscription"));
         if (_chatGpt.Label is { } label) AddUsage(Caption(label, bottom: 8));
         bool allowed = _chatGpt.PlanAllowed;
-        AddUsage(Row("Использование подписки", allowed ? "разрешено" : "не разрешено", warning: !allowed),
-            UsageNote(chat.LimitMessage ?? "Сколько подписки уходит на Sharp Agent и какие у него лимиты, показывают настройки ChatGPT.",
+        AddUsage(Row(Tr("Использование подписки", "Subscription access"), allowed ? Tr("разрешено", "Granted") : Tr("не разрешено", "Denied"), warning: !allowed),
+            UsageNote(chat.LimitMessage ?? Tr("Сколько подписки уходит на Sharp Agent и какие у него лимиты, показывают настройки ChatGPT.", "Open ChatGPT settings to see Sharp Agent’s subscription usage and limits."),
                 chat.LimitMessage != null ? "Warning" : "TextSoft"));
         AddChatSection();
-        AddFooter(null, "Управлять использованием", ChatGptClient.UsageUrl);
+        AddFooter(null, Tr("Управлять использованием", "Manage usage"), ChatGptClient.UsageUrl);
     }
 
     private void BuildGroqPanel(GroqLimits? limits)
     {
-        AddHeader("Лимиты Groq");
-        if (AddPlaceholder(limits == null, "Лимиты появятся после первого ответа модели.")) return;
-        AddQuota("Запросов в сутки", limits!.RequestsLeft, limits.Requests, limits.RequestsReset);
-        AddQuota("Токенов в минуту", limits.TokensLeft, limits.Tokens, limits.TokensReset);
+        AddHeader(Tr("Лимиты Groq", "Groq limits"));
+        if (AddPlaceholder(limits == null, Tr("Лимиты появятся после первого ответа модели.", "Limits will appear after the first model response."))) return;
+        AddQuota(Tr("Запросов в сутки", "Requests per day"), limits!.RequestsLeft, limits.Requests, limits.RequestsReset);
+        AddQuota(Tr("Токенов в минуту", "Tokens per minute"), limits.TokensLeft, limits.Tokens, limits.TokensReset);
         AddChatSection();
-        AddFooter(limits.Updated, "Консоль Groq", "https://console.groq.com");
+        AddFooter(limits.Updated, Tr("Консоль Groq", "Groq console"), "https://console.groq.com");
     }
 
     private void AddQuota(string title, long? left, long? limit, DateTime? reset)
     {
         if (left is not { } remaining || limit is not > 0) return;
         bool low = Low(left, limit);
-        AddUsage(Row(title, $"осталось {Tokens.Format(remaining)} из {Tokens.Format(limit.Value)}", warning: low), Meter((double)remaining / limit.Value, low),
-            Caption(reset - DateTime.Now is { } time && time > TimeSpan.Zero ? "Восстановится через " + Tokens.Duration(time) : "", 4, bottom: 8));
+        AddUsage(Row(title, Tr($"осталось {Tokens.Format(remaining)} из {Tokens.Format(limit.Value)}", $"{Tokens.Format(remaining)} of {Tokens.Format(limit.Value)} remaining"), warning: low), Meter((double)remaining / limit.Value, low),
+            Caption(reset - DateTime.Now is { } time && time > TimeSpan.Zero ? Tr("Восстановится через ", "Resets in ") + Tokens.Duration(time) : "", 4, bottom: 8));
     }
 
     private void AddChatSection()
@@ -231,21 +231,21 @@ public partial class MainWindow
         AddUsage(Divider());
         if (chatTokens > 0)
         {
-            AddUsage(Row("Этот чат", Tokens.Format(chatTokens) + " токенов"));
+            AddUsage(Row(Tr("Этот чат", "This chat"), Tokens.Format(chatTokens) + Tr(" токенов", " tokens")));
             if (tooken && totals.TokensByModel.Where(pair => pair.Key.Provider == AgentProvider.Tooken).Sum(pair => pair.Value * (_usage.RateOf(pair.Key.Model) ?? 0)) is >= 1 and var charged)
-                AddUsage(Caption($"С баланса за него списано около {Tokens.Format((long)Math.Round(charged))}", 2));
+                AddUsage(Caption(Tr($"С баланса за него списано около {Tokens.Format((long)Math.Round(charged))}", $"Charged about {Tokens.Format((long)Math.Round(charged))} tokens"), 2));
         }
         if (ContextUsage() is { } used && _models.TryGetValue(model, out var info))
         {
             bool full = used >= ContextWarning;
-            AddUsage(Row("Память модели", "занято " + Tokens.Percent(used), topMargin: 8), Meter(used, full),
-                Caption($"{Tokens.Format(totals.ContextTokens)} из {Tokens.Format(info.ContextTokens ?? 0)} токенов." + (full ? " Скоро чат перестанет помещаться — начните новый." : ""), 4));
+            AddUsage(Row(Tr("Память модели", "Model context"), Tr("занято ", "used ") + Tokens.Percent(used), topMargin: 8), Meter(used, full),
+                Caption($"{Tokens.Format(totals.ContextTokens)} из {Tokens.Format(info.ContextTokens ?? 0)} токенов." + (full ? Tr(" Скоро чат перестанет помещаться — начните новый.", " Start a new chat to free up context.") : ""), 4));
         }
         if (rate is { } factor)
         {
-            var shown = factor.ToString("0.##", Ru);
-            var row = Row("Коэффициент модели", "×" + shown, topMargin: 8);
-            row.ToolTip = $"За один токен запроса к {model} с баланса списывается {shown} токена.";
+            var shown = factor.ToString("0.##", UiLanguage.Culture);
+            var row = Row(Tr("Коэффициент модели", "Model multiplier"), "×" + shown, topMargin: 8);
+            row.ToolTip = Tr($"За один токен запроса к {model} с баланса списывается {shown} токена.", $"Each input token sent to {model} costs {shown} tokens.");
             AddUsage(row);
         }
     }
@@ -254,7 +254,7 @@ public partial class MainWindow
     {
         AddUsage(Divider());
         if (updated is { } time)
-            AddUsage(Caption(UsageLoading ? "Обновляю…" : _usageError != null ? "Не обновилось: " + _usageError : "Обновлено в " + time.ToString("HH:mm", Ru), bottom: 4));
+            AddUsage(Caption(UsageLoading ? Tr("Обновляю…", "Refreshing…") : _usageError != null ? Tr("Не обновилось: ", "Could not refresh: ") + _usageError : Tr("Обновлено в ", "Updated at ") + time.ToString("HH:mm", UiLanguage.Culture), bottom: 4));
         // Links are rows whose hover fill reaches the card edge, so the text still lines up with the rest.
         var link = new Button { Style = Theme.Style("RowButton"), Content = linkText, Height = 30, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(-8, 0, -8, 0) };
         link.Click += (_, _) => FileActions.OpenUrl(url);
@@ -265,8 +265,8 @@ public partial class MainWindow
     {
         double left = 1 - (double)spent / limit;
         bool reached = spent >= limit;
-        AddUsage(Row(title, reached ? "исчерпан" : "осталось " + Tokens.Percent(left), warning: reached),
-            Meter(left, false), Caption($"Израсходовано {Tokens.Format(spent)} из {Tokens.Format(limit)}", 4, bottom: 8));
+        AddUsage(Row(title, reached ? Tr("исчерпан", "Reached") : Tr("осталось ", "remaining ") + Tokens.Percent(left), warning: reached),
+            Meter(left, false), Caption(Tr($"Израсходовано {Tokens.Format(spent)} из {Tokens.Format(limit)}", $"{Tokens.Format(spent)} of {Tokens.Format(limit)} used"), 4, bottom: 8));
     }
 
     private static TextBlock Caption(string text, double top = 0, double bottom = 0) => new TextBlock
@@ -299,9 +299,9 @@ public partial class MainWindow
 
     private string? LimitReached(SpendSnapshot snapshot) =>
         _config.DayLimit is { } day && snapshot.Today >= day
-            ? $"За сегодня израсходовано {Tokens.Format(snapshot.Today)} токенов при лимите {Tokens.Format(day)} в день."
+            ? Tr($"За сегодня израсходовано {Tokens.Format(snapshot.Today)} токенов при лимите {Tokens.Format(day)} в день.", $"Used {Tokens.Format(snapshot.Today)} tokens today. Daily limit: {Tokens.Format(day)}.")
             : _config.MonthLimit is { } month && snapshot.MonthToDate >= month
-                ? $"С начала месяца израсходовано {Tokens.Format(snapshot.MonthToDate)} токенов при лимите {Tokens.Format(month)} в месяц."
+                ? Tr($"С начала месяца израсходовано {Tokens.Format(snapshot.MonthToDate)} токенов при лимите {Tokens.Format(month)} в месяц.", $"Used {Tokens.Format(snapshot.MonthToDate)} tokens this month. Monthly limit: {Tokens.Format(month)}.")
                 : null;
 
     private async Task<bool> CheckLimitsAsync(AgentRunner agent)
@@ -317,7 +317,7 @@ public partial class MainWindow
         var reached = _config.Provider == AgentProvider.Tooken && _usage.Last is { } snapshot ? LimitReached(snapshot) : null;
         var today = DateTime.Now.ToString("yyyy-MM-dd");
         if (reached == null || _state.LimitOverrideDay == today) return true;
-        if (_agent != agent)
+        if (_agent != agent || !ActiveChatWindow.IsVisible)
         {
             await WaitForActiveChatAsync(agent, run.Cancellation.Token);
             return await CheckLimitsAsync(agent);
@@ -330,8 +330,8 @@ public partial class MainWindow
             SetTaskbar(TaskbarItemProgressState.Paused);
             var owner = ActiveChatWindow;
             WindowEffects.Flash(owner);
-            proceed = DarkDialog.Ask(owner, "Лимит расхода исчерпан",
-                reached + "\n\nПродолжить работу агента? До конца дня программа больше не будет об этом спрашивать. Изменить лимиты можно в настройках.", "Продолжить", "Остановить");
+            proceed = DarkDialog.Ask(owner, Tr("Лимит расхода исчерпан", "Usage limit reached"),
+                reached + "\n\nПродолжить работу агента? До конца дня программа больше не будет об этом спрашивать. Изменить лимиты можно в настройках.", Tr("Продолжить", "Continue"), Tr("Остановить", "Stop"));
             SetTaskbar(TaskbarItemProgressState.Indeterminate);
             if (proceed)
             {

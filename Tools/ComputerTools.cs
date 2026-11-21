@@ -3,9 +3,11 @@ using System.Windows.Media.Imaging;
 
 namespace SharpAgent.Tools;
 
-public sealed class ComputerTools
+public sealed class ComputerTools(bool automationOnly = false)
 {
-    public const string Name = "computer", ShotPrefix = "Скриншот сохранён: ";
+    public const string Name = "computer", AppName = "app", ShotPrefix = "Скриншот сохранён: ";
+    static readonly string[] AppActions = ["launch", "windows", "tree", "click", "type", "scroll", "wait", "close"];
+    internal static bool IsControl(string name) => name is Name or AppName;
     const int MaxTreeLines = 180, MaxShotSide = 1280;
     readonly SemaphoreSlim _actions = new(1, 1);
     static readonly AutomationProperty[] Cached =
@@ -31,7 +33,7 @@ public sealed class ComputerTools
     public static IEnumerable<AgentTool> All()
     {
         var tools = new ComputerTools();
-        return [new AgentTool
+        var computer = new AgentTool
         {
             Name = Name,
             Description = "Управление программами на экране через UI Automation: запуск, окна, дерево элементов, нажатия, ввод текста, " +
@@ -56,6 +58,19 @@ public sealed class ComputerTools
                 new Prop("seconds", "integer", "wait: предел ожидания (по умолчанию 10, максимум 60).")),
             Handler = tools.RunAsync,
             Confirmation = tools.Confirm,
+        };
+        var app = new ComputerTools(automationOnly: true);
+        var parameters = (JsonObject)computer.Parameters.DeepClone();
+        var properties = (JsonObject)parameters["properties"]!;
+        properties["action"]!["enum"] = new JsonArray(AppActions.Select(action => (JsonNode?)JsonValue.Create(action)).ToArray());
+        foreach (var key in new[] { "x", "y", "button", "mode" }) properties.Remove(key);
+        properties["text"]!["description"] = "type: новое значение поля через ValuePattern; tree: фильтр элементов; wait: ожидаемое значение поля.";
+        return [computer, new AgentTool
+        {
+            Name = AppName,
+            Description = "Проверка приложения через API UI Automation: запуск, дерево элементов, Invoke/Toggle/Select, замена значения поля, ожидание, прокрутка и закрытие. " +
+                "Не эмулирует мышь или клавиатуру. Для click/type обязательно укажи element из tree. Если приложение не поддерживает нужный API, используй computer.",
+            Parameters = parameters, Handler = app.RunAsync, Confirmation = app.Confirm,
         }];
     }
 
@@ -83,6 +98,7 @@ public sealed class ComputerTools
     async Task<string> RunAsync(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var action = a.Required("action");
+        if (automationOnly && !AppActions.Contains(action)) throw new ToolException("это действие недоступно через API приложения — используй computer.");
         await _actions.WaitAsync(ct);
         // UI Automation, ShowWindow and PrintWindow block on a hung program; Stop must not wait for them, the next action does.
         var work = Task.Run(() => DispatchAsync(action, a, c, ct));
@@ -350,13 +366,16 @@ public sealed class ComputerTools
     static string? Describe(AutomationElement e)
     {
         var info = e.Cached;
-        var name = AgentRunner.Clip(info.Name.ReplaceLineEndings(" ").Trim(), 80);
-        var value = e.Cached.IsPassword ? null : e.GetCachedPropertyValue(ValuePattern.ValueProperty, true) as string;
-        if (name.Length == 0 && info.AutomationId.Length == 0 && string.IsNullOrEmpty(value) && !Interactive.Contains(info.ControlType)) return null;
-        var text = new StringBuilder(info.ControlType.ProgrammaticName["ControlType.".Length..]);
+        var rawName = info.Name ?? "";
+        var name = AgentRunner.Clip(rawName.ReplaceLineEndings(" ").Trim(), 80);
+        var id = info.AutomationId ?? "";
+        var type = info.ControlType ?? ControlType.Custom;
+        var value = info.IsPassword ? null : e.GetCachedPropertyValue(ValuePattern.ValueProperty, true) as string;
+        if (name.Length == 0 && id.Length == 0 && string.IsNullOrEmpty(value) && !Interactive.Contains(type)) return null;
+        var text = new StringBuilder(type.ProgrammaticName["ControlType.".Length..]);
         if (name.Length > 0) text.Append($" \"{name}\"");
-        if (info.AutomationId.Length > 0 && info.AutomationId != info.Name) text.Append(" id=" + info.AutomationId);
-        if (!string.IsNullOrEmpty(value) && value != info.Name) text.Append($" = \"{AgentRunner.Clip(value.ReplaceLineEndings(" "), 80)}\"");
+        if (id.Length > 0 && id != rawName) text.Append(" id=" + id);
+        if (!string.IsNullOrEmpty(value) && value != rawName) text.Append($" = \"{AgentRunner.Clip(value.ReplaceLineEndings(" "), 80)}\"");
         if (e.GetCachedPropertyValue(TogglePattern.ToggleStateProperty, true) is ToggleState state)
             text.Append(state switch { ToggleState.On => " [отмечен]", ToggleState.Off => " [не отмечен]", _ => " [частично]" });
         if (!info.IsEnabled) text.Append(" [недоступен]");
@@ -381,7 +400,7 @@ public sealed class ComputerTools
                     : root.FindFirst(TreeScope.Descendants, new AndCondition(inView, new PropertyCondition(AutomationElement.IsEnabledProperty, true))) ?? found;
         if (!partial) return null;
         var matches = PopupRoots(window).Prepend(Snapshot(window)).SelectMany(root => Flatten(root, offscreen))
-            .Where(e => e.Cached.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).Take(5).ToList();
+            .Where(e => e.Cached.Name?.Contains(query, StringComparison.OrdinalIgnoreCase) == true).Take(5).ToList();
         return matches.Count <= 1 ? matches.FirstOrDefault() : throw new ToolException(
             $"«{query}» есть в названиях нескольких элементов: {string.Join("; ", matches.Select(Describe))} — укажи #номер из tree или точное имя.");
     }
@@ -502,6 +521,7 @@ public sealed class ComputerTools
                 catch (ElementNotAvailableException) { return $"Действие передано, элемент {label} исчез."; }
             }
         }
+        if (automationOnly) throw new ToolException("элемент не поддерживает действие через UI Automation. Для управления мышью используй computer.");
         Activate(window);
         System.Windows.Point point;
         if (element != null)
@@ -551,6 +571,7 @@ public sealed class ComputerTools
     string Type(IntPtr window, AutomationElement? element, string text, string mode)
     {
         if (mode is not ("replace" or "insert")) throw new ToolException("неизвестный режим ввода.");
+        if (automationOnly && element == null) throw new ToolException("для ввода через API укажи element из tree.");
         element ??= Focus(window, null);
         if (element.Current.IsPassword) throw new ToolException("ввод в поле пароля недоступен.");
         var value = element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) ? (ValuePattern)pattern : null;
@@ -558,6 +579,7 @@ public sealed class ComputerTools
         if (mode == "replace" && value != null) value.SetValue(text);
         else
         {
+            if (automationOnly) throw new ToolException("поле не поддерживает замену значения через API. Для ввода клавишами используй computer.");
             if (mode == "replace" && element.Current.ControlType != ControlType.Edit && element.Current.ControlType != ControlType.Document)
                 throw new ToolException("не удалось подтвердить, что это текстовое поле. Для ввода в позицию курсора используй mode=insert.");
             Focus(window, element);
@@ -651,13 +673,13 @@ public sealed class ComputerTools
             try
             {
                 texts = [.. Flatten(Snapshot(other.Handle)).Where(e => e.Cached.ControlType == ControlType.Text || e.Cached.ControlType == ControlType.Button)
-                    .Select(e => e.Cached.Name.Trim()).Where(name => name.Length > 0).Distinct()];
+                    .Select(e => e.Cached.Name?.Trim() ?? "").Where(name => name.Length > 0).Distinct()];
             }
             catch (Exception ex) when (ex is ElementNotAvailableException or ArgumentException) { continue; }
             state += $"\nТакже открыто окно «{other.Title}» ({Id(other.Handle)}): {AgentRunner.Clip(string.Join(" | ", texts), 400)}";
         }
         foreach (var popup in PopupRoots(window))
-            if (string.Join(" | ", Flatten(popup).Select(e => e.Cached.Name.Trim()).Where(name => name.Length > 0).Distinct()) is { Length: > 0 } items)
+            if (string.Join(" | ", Flatten(popup).Select(e => e.Cached.Name?.Trim() ?? "").Where(name => name.Length > 0).Distinct()) is { Length: > 0 } items)
                 state += $"\nОткрыто меню или список: {AgentRunner.Clip(items, 400)}";
         return state;
     }

@@ -14,11 +14,12 @@ public partial class MainWindow
     readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
     AgentProvider _settingsProvider;
     readonly Dictionary<AgentProvider, string> _settingsImageModels = [], _savedImageModels = [];
-    static readonly (string? Value, string Label)[] Themes = [(null, "Тёмная"), ("light", "Светлая"), ("system", "Как в Windows")];
-    static readonly (bool Value, string Label)[] ImageSources = [(false, "Tooken Club"), (true, "Как в чате")];
+    static (string? Value, string Label)[] Themes => [(null, Tr("Тёмная", "Dark")), ("light", Tr("Светлая", "Light")), ("system", Tr("Как в Windows", "Follow Windows"))];
+    static (bool Value, string Label)[] ImageSources => [(false, "Tooken Club"), (true, Tr("Как в чате", "Same as chat"))];
     bool _settingsImagesLikeChat;
     string? _settingsTheme;
     FrameworkElement? _settingsPage;
+    bool _settingsRussian;
     CancellationTokenSource? _signIn;
     DispatcherTimer? _toastTimer;
     Action? _toastAction;
@@ -110,7 +111,7 @@ public partial class MainWindow
         if (WaitForChatFile(ChatFileBusy)) return;
         if (AnyRunning)
         {
-            ShowToast("Остановите агента, чтобы изменить настройки", ToastKind.Warning);
+            ShowToast(Tr("Остановите агента, чтобы изменить настройки", "Stop active tasks before changing settings"), ToastKind.Warning);
             return;
         }
         if (SettingsOpen) return;
@@ -122,7 +123,7 @@ public partial class MainWindow
         try { if (File.Exists(AppPaths.EnvPath)) env = DotEnv.Parse(AppPaths.EnvPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            ShowSettingsError("Не удалось прочитать .env: " + ex.Message);
+            ShowSettingsError(Tr("Не удалось прочитать .env: ", "Could not read .env: ") + ex.Message);
             unreadable = true;
             env = new()
             {
@@ -143,15 +144,18 @@ public partial class MainWindow
         _settingsImagesLikeChat = _config.ImagesLikeChat;
         ShowChoice(ImageSourceButton, ImageSources, _settingsImagesLikeChat);
         SubagentsToggle.IsChecked = _config.UseSubagents;
+        AutoChatTitlesToggle.IsChecked = _config.AutoChatTitles;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
         _settingsTheme = _state.Theme;
         ShowChoice(ThemeButton, Themes, _settingsTheme);
+        _settingsRussian = _config.RussianLanguage;
+        ShowChoice(LanguageButton, Languages, _settingsRussian);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
         LoadNetworkSettings(unreadable ? _config.Network : NetworkSettings.Load(key => env.GetValueOrDefault(key)), Value("AGENT_VPN_PROFILES"));
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
         PluginsText.Text = plugins.Count > 0
-            ? $"Установлены: {string.Join(", ", plugins.Select(p => p.Name))}. Агент сам выбирает подходящий плагин по задаче."
-            : "Плагинов нет. Плагин — это папка с файлом PLUGIN.md внутри папки plugins.";
+            ? Tr($"Установлены: {string.Join(", ", plugins.Select(p => p.Name))}. Агент сам выбирает подходящий плагин по задаче.", $"Installed: {string.Join(", ", plugins.Select(p => p.Name))}. The agent chooses the plugin that fits the task.")
+            : Tr("Плагинов нет. Плагин — это папка с файлом PLUGIN.md внутри папки plugins.", "No plugins installed. A plugin is a folder containing PLUGIN.md inside the plugins folder.");
         MaxTokensBox.Text = Value("TOOKEN_MAX_TOKENS");
         DayLimitBox.Text = _config.DayLimit is { } day ? Tokens.ToMillions(day) : "";
         MonthLimitBox.Text = _config.MonthLimit is { } month ? Tokens.ToMillions(month) : "";
@@ -204,7 +208,7 @@ public partial class MainWindow
     }
 
     void ProviderButton_Click(object sender, RoutedEventArgs e) =>
-        PickChoice(ProviderButton, Enum.GetValues<AgentProvider>().Select(provider => (provider, ProviderName(provider))).ToArray(), _settingsProvider, provider =>
+        PickChoice(ProviderButton, ProvidersByName().Select(provider => (provider, ProviderName(provider))).ToArray(), _settingsProvider, provider =>
         {
             if (provider == _settingsProvider) return;
             KeepProviderInput();
@@ -225,7 +229,7 @@ public partial class MainWindow
         var provider = _settingsProvider;
         bool keyed = provider != AgentProvider.ChatGpt, groq = provider == AgentProvider.Groq;
         ProviderButton.Content = ProviderName(provider);
-        TestKeyButton.Content = keyed ? "Проверить API-ключ" : "Проверить вход";
+        TestKeyButton.Content = keyed ? Tr("Проверить API-ключ", "Check API key") : "Проверить вход";
         KeyPanel.Visibility = VisibleIf(keyed);
         ChatGptPanel.Visibility = VisibleIf(!keyed);
         TookenPanel.Visibility = VisibleIf(provider == AgentProvider.Tooken);
@@ -236,18 +240,27 @@ public partial class MainWindow
             AgentProvider.Gemini => "https://aistudio.google.com/apikey",
             AgentProvider.OpenRouter => "https://openrouter.ai/settings/keys",
             AgentProvider.Mistral => "https://console.mistral.ai/api-keys",
+            AgentProvider.OpenAI => "https://platform.openai.com/api-keys",
+            AgentProvider.Anthropic => "https://platform.claude.com/settings/keys",
             _ => "https://tooken.club/dashboard",
         });
         if (keyed)
         {
             ShowKeyToggle.IsChecked = false;
             KeyTextBox.Text = KeyPasswordBox.Password = _settingsKeys.GetValueOrDefault(provider, "");
-            KeyLabel.Text = "API-ключ " + ProviderName(provider);
+            KeyLabel.Text = provider switch
+            {
+                AgentProvider.OpenAI => Tr("Ключ OpenAI API", "OpenAI API key"),
+                AgentProvider.Anthropic => Tr("Ключ Claude API", "Claude API key"),
+                _ => Tr("API-ключ ", "API key for ") + ProviderName(provider),
+            };
             KeyHint.Text = provider switch
             {
-                AgentProvider.Groq => "Ключ создаётся в консоли Groq и начинается с gsk_.",
-                AgentProvider.Tooken => "Ключ выдаётся в личном кабинете и начинается с tc_live_.",
-                _ => "Создайте API-ключ в кабинете провайдера.",
+                AgentProvider.Groq => Tr("Ключ создаётся в консоли Groq и начинается с gsk_.", "Create a key in the Groq console. It starts with gsk_."),
+                AgentProvider.Tooken => Tr("Ключ выдаётся в личном кабинете и начинается с tc_live_.", "Get a key from your account dashboard. It starts with tc_live_."),
+                AgentProvider.OpenAI => Tr("Создайте ключ на платформе OpenAI. Запросы API оплачиваются отдельно от подписки ChatGPT.",
+                    "Create a key on the OpenAI platform. API requests are billed separately from your ChatGPT subscription."),
+                _ => Tr("Создайте API-ключ в кабинете провайдера.", "Create an API key from the provider’s dashboard."),
             };
             AutomationProperties.SetName(KeyPasswordBox, KeyLabel.Text);
             AutomationProperties.SetName(KeyTextBox, KeyLabel.Text);
@@ -256,9 +269,9 @@ public partial class MainWindow
         VoiceKeyPanel.Visibility = VisibleIf(!groq);
         if (!groq) VoiceKeyBox.Password = _settingsKeys.GetValueOrDefault(AgentProvider.Groq, "");
         VoiceHint.Text = groq
-            ? "Микрофон в поле ввода отправляет запись в Groq по API-ключу выше и вставляет распознанный текст. Запись нигде не сохраняется. "
-            : "Микрофон в поле ввода отправляет запись в Groq и вставляет распознанный текст — при любом провайдере. Запись нигде не сохраняется. " +
-              "Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ";
+            ? Tr("Микрофон в поле ввода отправляет запись в Groq по API-ключу выше и вставляет распознанный текст. Запись нигде не сохраняется. ", "The microphone sends your recording to Groq using the API key above and inserts the transcription. The recording is not saved. ")
+            : Tr("Микрофон в поле ввода отправляет запись в Groq и вставляет распознанный текст — при любом провайдере. Запись нигде не сохраняется. ", "The microphone sends your recording to Groq and inserts the transcription with any chat provider. The recording is not saved. ") +
+              Tr("Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ", "Create a free key in the Groq console. It starts with gsk_. ");
         DefaultModelButton.Content = _settingsModels.GetValueOrDefault(provider) is { Length: > 0 } model ? model : AppConfig.DefaultModelOf(provider);
         if (_state.ModelCatalogs?.GetValueOrDefault(provider) is { Models.Count: > 0 } catalog && catalog.Connection == SettingsCatalogKey())
         {
@@ -280,11 +293,11 @@ public partial class MainWindow
         IEnumerable<string> models = target == AgentProvider.Tooken && _imageModels is { Count: > 0 } known ? known : AppConfig.ImageModelsOf(target);
         ImageModelButton.Content = model;
         ImageModelButton.Tag = models.Contains(model) ? models : models.Prepend(model);
-        ImageModelHint.Text = target != AgentProvider.Tooken ? $"Картинки рисует {ProviderName(target)} по ключу из этого раздела."
-            : _settingsProvider == AgentProvider.Tooken ? "Картинки рисует Tooken Club по его ключу и балансу."
+        ImageModelHint.Text = target != AgentProvider.Tooken ? Tr($"Картинки рисует {ProviderName(target)} по ключу из этого раздела.", $"{ProviderName(target)} generates images using the API key in this section.")
+            : _settingsProvider == AgentProvider.Tooken ? Tr("Картинки рисует Tooken Club по его ключу и балансу.", "Image generation uses the Tooken Club API key and balance.")
             : _settingsImagesLikeChat
-                ? $"{ProviderName(_settingsProvider)} не рисует картинки через API, поэтому их рисует Tooken Club по его ключу и балансу."
-                : "Картинки рисует Tooken Club по его ключу и балансу при любом провайдере чата.";
+                ? Tr($"{ProviderName(_settingsProvider)} не рисует картинки через API, поэтому их рисует Tooken Club по его ключу и балансу.", $"{ProviderName(_settingsProvider)} has no image generation API. Images use the Tooken Club API key and balance.")
+                : Tr("Картинки рисует Tooken Club по его ключу и балансу при любом провайдере чата.", "Image generation uses the Tooken Club API key and balance with any chat provider.");
     }
 
     void ImageSourceButton_Click(object sender, RoutedEventArgs e) => PickChoice(ImageSourceButton, ImageSources, _settingsImagesLikeChat, likeChat =>
@@ -299,22 +312,22 @@ public partial class MainWindow
         bool connected = _chatGpt.Connected, allowed = _chatGpt.PlanAllowed, waiting = _signIn != null;
         ChatGptAccountPanel.Visibility = VisibleIf(connected);
         ChatGptSignInPanel.Visibility = VisibleIf(!allowed);
-        ChatGptEmail.Text = _chatGpt.Label ?? "Аккаунт ChatGPT";
-        ChatGptPlan.Text = allowed ? "Подписка ChatGPT подключена" : "Использование подписки не разрешено";
+        ChatGptEmail.Text = _chatGpt.Label ?? Tr("Аккаунт ChatGPT", "ChatGPT account");
+        ChatGptPlan.Text = allowed ? Tr("Подписка ChatGPT подключена", "ChatGPT subscription connected") : Tr("Использование подписки не разрешено", "Subscription access was not granted");
         ChatGptSignInButton.IsEnabled = !waiting;
-        var action = waiting ? "Ожидаю вход в браузере…" : connected ? "Разрешить использование подписки" : "Продолжить с ChatGPT";
+        var action = waiting ? "Ожидаю вход в браузере…" : connected ? "Разрешить использование подписки" : Tr("Продолжить с ChatGPT", "Continue with ChatGPT");
         ChatGptSignInButton.Content = action;
         AutomationProperties.SetName(ChatGptSignInButton, action);
         ChatGptCancelButton.Visibility = VisibleIf(waiting);
-        ChatGptHint.Text = waiting ? "В браузере открылась страница OpenAI. Войдите и разрешите Sharp Agent использовать подписку — программа ждёт до 10 минут."
-            : allowed ? "Запросы агента расходуют вашу подписку ChatGPT."
-            : connected ? "Разрешите Sharp Agent использовать подписку на сайте OpenAI или выберите другого провайдера."
-            : _chatGpt.Label is { } label ? $"Sharp Agent подключён к {label}: нажмите «Продолжить с ChatGPT», чтобы войти снова."
-            : "Откроется сайт OpenAI. Войдите в ChatGPT и разрешите Sharp Agent использовать подписку.";
+        ChatGptHint.Text = waiting ? Tr("В браузере открылась страница OpenAI. Войдите и разрешите Sharp Agent использовать подписку — программа ждёт до 10 минут.", "The OpenAI page opened in your browser. Sign in and allow Sharp Agent to use your subscription within 10 minutes.")
+            : allowed ? Tr("Запросы агента расходуют вашу подписку ChatGPT.", "Agent requests count toward your ChatGPT subscription.")
+            : connected ? Tr("Разрешите Sharp Agent использовать подписку на сайте OpenAI или выберите другого провайдера.", "Allow Sharp Agent to use your subscription on the OpenAI site or choose another provider.")
+            : _chatGpt.Label is { } label ? Tr($"Sharp Agent подключён к {label}: нажмите «Продолжить с ChatGPT», чтобы войти снова.", $"Sharp Agent is connected to {label}. Choose Continue with ChatGPT to sign in again.")
+            : Tr("Откроется сайт OpenAI. Войдите в ChatGPT и разрешите Sharp Agent использовать подписку.", "The OpenAI site will open. Sign in to ChatGPT and allow Sharp Agent to use your subscription.");
         if (waiting || connected) return;
         foreach (var account in _chatGpt.SavedAccounts)
-            AddSignInLink("Войти как " + (account.Label ?? "аккаунт ChatGPT"), account.ClientId);
-        if (_chatGpt.ClientId != null) AddSignInLink("Войти в другой аккаунт", null);
+            AddSignInLink(Tr("Войти как ", "Sign in as ") + (account.Label ?? Tr("аккаунт ChatGPT", "ChatGPT account")), account.ClientId);
+        if (_chatGpt.ClientId != null) AddSignInLink(Tr("Войти в другой аккаунт", "Sign in to another account"), null);
     }
 
     void AddSignInLink(string text, string? clientId)
@@ -340,14 +353,14 @@ public partial class MainWindow
             else if (_chatGpt.PlanAllowed && _cts == null) SwitchProvider(AgentProvider.ChatGpt);
             bool allowed = _chatGpt.PlanAllowed;
             if (!SettingsOpen)
-                ShowToast(allowed ? "Подписка ChatGPT подключена" + (_chatGpt.Label is { } label ? ": " + label : "")
-                    : "Вход выполнен, но Sharp Agent не получил разрешения использовать подписку ChatGPT", allowed ? ToastKind.Success : ToastKind.Warning);
+                ShowToast(allowed ? Tr("Подписка ChatGPT подключена", "ChatGPT subscription connected") + (_chatGpt.Label is { } label ? ": " + label : "")
+                    : Tr("Вход выполнен, но Sharp Agent не получил разрешения использовать подписку ChatGPT", "Signed in. Sharp Agent still needs permission to use the ChatGPT subscription."), allowed ? ToastKind.Success : ToastKind.Warning);
             else if (_settingsProvider == AgentProvider.ChatGpt && allowed) TestKey_Click(this, new RoutedEventArgs());
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         catch (Exception ex) when (ex is ApiException or IOException or System.Net.Sockets.SocketException or InvalidOperationException)
         {
-            var text = ex is ApiException ? ex.Message : "Не удалось войти в ChatGPT: " + ex.Message + " Попробуйте ещё раз.";
+            var text = ex is ApiException ? ex.Message : Tr("Не удалось войти в ChatGPT: ", "Could not sign in to ChatGPT: ") + ex.Message + Tr(" Попробуйте ещё раз.", " Try again.");
             if (SettingsOpen) SetTestResult(text, false);
             else ShowToast(text, ToastKind.Error);
         }
@@ -362,11 +375,11 @@ public partial class MainWindow
 
     static void OpenSignInPage(string url)
     {
-        if (AppNetwork.CustomRoute) FileActions.RaiseNotify("Для входа откроется внешний браузер с его сетевыми настройками.", false);
+        if (AppNetwork.CustomRoute) FileActions.RaiseNotify(Tr("Для входа откроется внешний браузер с его сетевыми настройками.", "Sign-in opens in an external browser using that browser’s network settings."), false);
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose(); }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
-            throw new ApiException("Не удалось открыть браузер для входа в ChatGPT. Выберите браузер по умолчанию в параметрах Windows и нажмите «Продолжить с ChatGPT» ещё раз.");
+            throw new ApiException(Tr("Не удалось открыть браузер для входа в ChatGPT. Выберите браузер по умолчанию в параметрах Windows и нажмите «Продолжить с ChatGPT» ещё раз.", "Could not open the browser to sign in. Set a default browser in Windows Settings and select Continue with ChatGPT again."));
         }
     }
 
@@ -374,7 +387,7 @@ public partial class MainWindow
 
     async void ChatGptSignOut_Click(object sender, RoutedEventArgs e)
     {
-        if (!DarkDialog.Ask(this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", "Выйти")) return;
+        if (!DarkDialog.Ask(this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", Tr("Выйти", "Sign out"))) return;
         ChatGptSignOutButton.IsEnabled = false;
         bool revoked;
         try { revoked = await _chatGpt.SignOutAsync(); }
@@ -394,8 +407,8 @@ public partial class MainWindow
             ShowProviderSettings();
         }
         if (!revoked)
-            ShowToast("Вход удалён из программы, но OpenAI не подтвердил его отзыв. Отключить Sharp Agent можно в настройках ChatGPT.",
-                ToastKind.Warning, "Открыть", () => FileActions.OpenUrl(ChatGptClient.UsageUrl));
+            ShowToast(Tr("Вход удалён из программы, но OpenAI не подтвердил его отзыв. Отключить Sharp Agent можно в настройках ChatGPT.", "The account was removed from the app. OpenAI did not confirm revocation. You can revoke access in ChatGPT settings."),
+                ToastKind.Warning, Tr("Открыть", "Open"), () => FileActions.OpenUrl(ChatGptClient.UsageUrl));
     }
 
     void CloseSettings()
@@ -437,7 +450,7 @@ public partial class MainWindow
         else KeyPasswordBox.Password = KeyTextBox.Text;
         KeyTextBox.Visibility = VisibleIf(show);
         KeyPasswordBox.Visibility = VisibleIf(!show);
-        AutomationProperties.SetName(ShowKeyToggle, show ? "Скрыть ключ" : "Показать ключ");
+        AutomationProperties.SetName(ShowKeyToggle, show ? "Скрыть ключ" : Tr("Показать ключ", "Show API key"));
     }
 
     async void TestKey_Click(object sender, RoutedEventArgs e)
@@ -448,19 +461,21 @@ public partial class MainWindow
         var connection = ModelCatalogKey(provider, key, baseUrl);
         if (provider == AgentProvider.ChatGpt ? !_chatGpt.PlanAllowed : key.Length == 0)
         {
-            SetTestResult(provider != AgentProvider.ChatGpt ? "Сначала вставьте ключ."
-                : _chatGpt.Connected ? "Нажмите «Разрешить использование подписки» или выберите другого провайдера."
-                : "Сначала войдите: нажмите «Продолжить с ChatGPT».", false);
+            SetTestResult(provider != AgentProvider.ChatGpt ? Tr("Сначала вставьте ключ.", "Enter your key first.")
+                : _chatGpt.Connected ? Tr("Нажмите «Разрешить использование подписки» или выберите другого провайдера.", "Choose Allow subscription access or select another provider.")
+                : Tr("Сначала войдите: нажмите «Продолжить с ChatGPT».", "Sign in first by selecting Continue with ChatGPT."), false);
             return;
         }
         using IChatProvider client = provider switch
         {
             AgentProvider.ChatGpt => new ChatGptClient(_chatGpt),
+            AgentProvider.OpenAI => new OpenAiResponsesClient(key),
+            AgentProvider.Anthropic => new AnthropicClient(key),
             AgentProvider.Tooken => new ChatApiClient(baseUrl, key),
             _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
         };
         TestKeyButton.IsEnabled = false;
-        SetTestResult("Проверяю…", null);
+        SetTestResult(Tr("Проверяю…", "Checking…"), null);
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -484,7 +499,7 @@ public partial class MainWindow
                 DefaultModelButton.Tag = ChatModelChoices(provider);
             }
             int count = models.Count > 0 ? _modelLists[provider].Count : 0;
-            SetTestResult((provider == AgentProvider.ChatGpt ? "Вход выполнен." : "Ключ принят.") +
+            SetTestResult((provider == AgentProvider.ChatGpt ? Tr("Вход выполнен.", "Signed in.") : Tr("Ключ принят.", "Key accepted.")) +
                           (count > 0 ? $" Доступно моделей: {count}. Нажмите на название модели, чтобы открыть список." : ""), true);
             if (provider == AgentProvider.Tooken) ShowImageSettings();
         }
@@ -494,11 +509,11 @@ public partial class MainWindow
             SetTestResult(ex switch
             {
                 ApiException { StatusCode: HttpStatusCode.Unauthorized } => provider == AgentProvider.ChatGpt
-                    ? "Провайдер отклонил авторизацию (HTTP 401). Войдите в ChatGPT заново."
-                    : "Провайдер отклонил авторизацию (HTTP 401). Проверьте API-ключ и выбранного провайдера.",
+                    ? Tr("Провайдер отклонил авторизацию (HTTP 401). Войдите в ChatGPT заново.", "Authentication failed (HTTP 401). Sign in to ChatGPT again.")
+                    : Tr("Провайдер отклонил авторизацию (HTTP 401). Проверьте API-ключ и выбранного провайдера.", "Authentication failed (HTTP 401). Check the API key and selected provider."),
                 ApiException => ex.Message,
-                OperationCanceledException => "Сервер не ответил за 20 секунд. Проверьте адрес API и подключение к интернету.",
-                _ => "Не удалось подключиться: " + ex.Message,
+                OperationCanceledException => Tr("Сервер не ответил за 20 секунд. Проверьте адрес API и подключение к интернету.", "The server did not respond within 20 seconds. Check the API address and your internet connection."),
+                _ => Tr("Не удалось подключиться: ", "Could not connect: ") + ex.Message,
             }, false);
         }
         finally
@@ -539,16 +554,16 @@ public partial class MainWindow
         ClearInvalidFields();
         var maxTokens = MaxTokensBox.Text.Trim();
         if (maxTokens.Length > 0 && (!int.TryParse(maxTokens, out var limit) || limit < 1))
-            Fail("«Токенов в одном ответе» — целое число больше нуля или пустое поле.", MaxTokensBox);
+            Fail(Tr("«Токенов в одном ответе» — целое число больше нуля или пустое поле.", "Enter a positive whole number for Tokens per reply, or leave it blank."), MaxTokensBox);
         var url = BaseUrlBox.Text.Trim() is { Length: > 0 } text ? text : AppConfig.DefaultBaseUrl;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
-            Fail("Адрес API tooken.club должен начинаться с https://" + (_settingsProvider == AgentProvider.Tooken ? "" : " — выберите Tooken Club в разделе «Провайдеры» и исправьте адрес."), BaseUrlBox);
+            Fail(Tr("Адрес API tooken.club должен начинаться с https://", "The tooken.club API address must begin with https://") + (_settingsProvider == AgentProvider.Tooken ? "" : Tr(" — выберите Tooken Club в разделе «Провайдеры» и исправьте адрес.", " Select Tooken Club under Providers to edit the address.")), BaseUrlBox);
         var dayLimit = DayLimitBox.Text.Trim();
         if (dayLimit.Length > 0 && AppConfig.ParseMillions(dayLimit) == null)
-            Fail("«Лимит в день» — число миллионов токенов, например 5 или 0,5. Чтобы снять лимит, оставьте поле пустым.", DayLimitBox);
+            Fail(Tr("«Лимит в день» — число миллионов токенов, например 5 или 0,5. Чтобы снять лимит, оставьте поле пустым.", "Enter the daily limit in millions of tokens, for example 5 or 0.5. Leave it blank for no limit."), DayLimitBox);
         var monthLimit = MonthLimitBox.Text.Trim();
         if (monthLimit.Length > 0 && AppConfig.ParseMillions(monthLimit) == null)
-            Fail("«Лимит в месяц» — число миллионов токенов, например 50. Чтобы снять лимит, оставьте поле пустым.", MonthLimitBox);
+            Fail(Tr("«Лимит в месяц» — число миллионов токенов, например 50. Чтобы снять лимит, оставьте поле пустым.", "Enter the monthly limit in millions of tokens, for example 50. Leave it blank for no limit."), MonthLimitBox);
         var network = ReadNetworkSettings();
         try
         {
@@ -588,6 +603,8 @@ public partial class MainWindow
         {
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
             ["AGENT_COMPUTER_USE"] = ComputerUseToggle.IsChecked == true ? "true" : "false",
+            ["AGENT_AUTO_CHAT_TITLES"] = AutoChatTitlesToggle.IsChecked == true ? "true" : "false",
+            ["AGENT_LANGUAGE"] = _settingsRussian ? "ru" : "en",
             ["TOOKEN_BASE_URL"] = url, ["AGENT_IMAGE_PROVIDER"] = _settingsImagesLikeChat ? "chat" : "tooken",
             ["TOOKEN_MAX_TOKENS"] = maxTokens, ["AGENT_DAY_LIMIT_MLN"] = dayLimit.Replace(',', '.'), ["AGENT_MONTH_LIMIT_MLN"] = monthLimit.Replace(',', '.'),
         };
@@ -602,20 +619,27 @@ public partial class MainWindow
                 values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
         if (SaveEnv(values) is { } error)
         {
-            ShowSettingsError("Не удалось сохранить файл .env: " + error);
+            ShowSettingsError(Tr("Не удалось сохранить файл .env: ", "Could not save .env: ") + error);
             return;
         }
         _state.LimitOverrideDay = null;
         _state.Theme = _settingsTheme;
         _state.Save();
+        bool languageChanged = UiLanguage.Current.Value.IsRussian != _config.RussianLanguage;
         ApplyConfig();
-        CloseSettings();
-        ShowToast(_provider != null ? "Настройки сохранены" : "Сохранено, но " + (_config.Provider switch
+        if (languageChanged)
         {
-            AgentProvider.ChatGpt => "подписка ChatGPT не подключена",
-            AgentProvider.Groq => "API-ключ Groq пуст",
-            _ => "API-ключ пуст",
-        }) + " — агент не сможет отвечать", _provider != null ? ToastKind.Success : ToastKind.Warning);
+            UpdateConfirmToggle();
+            ApplySidebar();
+            RenderCurrentChat();
+        }
+        CloseSettings();
+        ShowToast(_provider != null ? Tr("Настройки сохранены", "Settings saved") : _config.Provider switch
+        {
+            AgentProvider.ChatGpt => Tr("Настройки сохранены. Для ответов агента подключите подписку ChatGPT.", "Settings saved. Connect a ChatGPT subscription to use the agent."),
+            AgentProvider.Groq => Tr("Настройки сохранены. Для ответов агента укажите API-ключ Groq.", "Settings saved. Enter a Groq API key to use the agent."),
+            _ => Tr("Настройки сохранены. Для ответов агента укажите API-ключ.", "Settings saved. Enter an API key to use the agent."),
+        }, _provider != null ? ToastKind.Success : ToastKind.Warning);
     }
 
     void ShowSettingsError(string message)
@@ -632,6 +656,14 @@ public partial class MainWindow
     }
 
     void ThemeButton_Click(object sender, RoutedEventArgs e) => PickChoice(ThemeButton, Themes, _settingsTheme, PreviewTheme);
+
+    static readonly (bool Value, string Label)[] Languages = [(false, "English"), (true, "Русский")];
+
+    void LanguageButton_Click(object sender, RoutedEventArgs e) => PickChoice(LanguageButton, Languages, _settingsRussian, russian =>
+    {
+        _settingsRussian = russian;
+        ShowChoice(LanguageButton, Languages, russian);
+    });
 
     void PreviewTheme(string? theme)
     {
@@ -654,6 +686,6 @@ public partial class MainWindow
             Directory.CreateDirectory(folder);
             FileActions.OpenFolder(folder);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowToast("Не удалось создать папку плагинов: " + ex.Message, ToastKind.Error); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowToast(Tr("Не удалось создать папку плагинов: ", "Could not create the plugins folder: ") + ex.Message, ToastKind.Error); }
     }
 }

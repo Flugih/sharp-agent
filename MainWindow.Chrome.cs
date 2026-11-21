@@ -79,7 +79,7 @@ public partial class MainWindow
         RootBorder.Margin = new(maximized ? 8 : 0);
         RootBorder.BorderThickness = new(maximized ? 0 : 1);
         MaxButton.Content = maximized ? Glyphs.Restore : Glyphs.Maximize;
-        AutomationProperties.SetName(MaxButton, maximized ? "Свернуть в окно" : "Развернуть");
+        AutomationProperties.SetName(MaxButton, maximized ? "Свернуть в окно" : Tr("Развернуть", "Maximize"));
     }
 
     void Window_SizeChanged(object s, SizeChangedEventArgs e)
@@ -100,7 +100,10 @@ public partial class MainWindow
 
     void Composer_SizeChanged(object s, SizeChangedEventArgs e)
     {
-        if (e.WidthChanged) UpdateLayoutWidths();
+        if (!e.WidthChanged) return;
+        UpdateLayoutWidths();
+        double side = Math.Max(0, (ChatScroll.ActualWidth - Composer.ActualWidth) / 2);
+        ComposerBackdrop.Margin = new(-side, 0, -side, -ComposerPanel.Margin.Bottom);
     }
 
     void UpdateLayoutWidths()

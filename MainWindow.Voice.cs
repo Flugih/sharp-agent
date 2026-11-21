@@ -16,7 +16,7 @@ public partial class MainWindow
     {
         if (!_config.HasGroqKey)
         {
-            ShowToast("Для голосового ввода нужен бесплатный ключ Groq", ToastKind.Info, "Указать ключ", ShowVoiceKeySettings);
+            ShowToast(Tr("Для голосового ввода нужен бесплатный ключ Groq", "Voice input requires a free Groq API key"), ToastKind.Info, Tr("Указать ключ", "Enter API key"), ShowVoiceKeySettings);
             return;
         }
         VoiceRecorder recorder;
@@ -64,7 +64,7 @@ public partial class MainWindow
             App.LogError(ex);
             if (session.IsCancellationRequested) return;
             EndVoice(session);
-            ShowToast("Не удалось записать звук: " + ex.Message, ToastKind.Error);
+            ShowToast(Tr("Не удалось записать звук: ", "Could not record audio: ") + ex.Message, ToastKind.Error);
             return;
         }
         if (session.IsCancellationRequested) return;
@@ -72,10 +72,10 @@ public partial class MainWindow
         {
             EndVoice(session);
             if (recorder.Silent) ShowMicrophoneProblem(VoiceRecorder.SilenceProblem());
-            else ShowToast("Запись слишком короткая. Нажмите на микрофон, продиктуйте сообщение и нажмите «Готово».", ToastKind.Warning);
+            else ShowToast(Tr("Запись слишком короткая. Нажмите на микрофон, продиктуйте сообщение и нажмите «Готово».", "The recording is too short. Select the microphone, speak your message, then choose Done."), ToastKind.Warning);
             return;
         }
-        if (recorder.Full) ShowToast($"Запись длится не больше {VoiceRecorder.MaxMinutes} минут — распознаю то, что успело записаться");
+        if (recorder.Full) ShowToast(Tr($"Запись длится не больше {VoiceRecorder.MaxMinutes} минут — распознаю то, что успело записаться", $"Recording is limited to {VoiceRecorder.MaxMinutes} minutes. Transcribing the captured audio."));
         await TranscribeAsync(wav, session);
     }
 
@@ -84,9 +84,10 @@ public partial class MainWindow
         try
         {
             var text = await Groq.TranscribeAsync(_config.GroqApiKey ?? "", wav, session.Token);
+            if (_voice != session) return;
             EndVoice(session);
             if (text.Length > 0) InsertDictation(text);
-            else ShowToast("Речь не распознана. Говорите ближе к микрофону и запишите ещё раз.", ToastKind.Warning);
+            else ShowToast(Tr("Речь не распознана. Говорите ближе к микрофону и запишите ещё раз.", "No speech was detected. Move closer to the microphone and record again."), ToastKind.Warning);
         }
         catch (Exception ex)
         {
@@ -97,10 +98,10 @@ public partial class MainWindow
             ShowToast(ex switch
             {
                 ApiException => ex.Message.Split('\n')[0],
-                HttpRequestException => "Нет связи с Groq. Проверьте подключение к интернету и нажмите «Повторить».",
-                OperationCanceledException => "Groq не ответил вовремя. Нажмите «Повторить».",
-                _ => "Не удалось распознать речь: " + ex.Message,
-            }, ToastKind.Error, key ? "Указать ключ" : "Повторить", key ? ShowVoiceKeySettings : () => RetryVoice(wav));
+                HttpRequestException => Tr("Нет связи с Groq. Проверьте подключение к интернету и нажмите «Повторить».", "Could not reach Groq. Check your internet connection and select Retry."),
+                OperationCanceledException => Tr("Groq не ответил вовремя. Нажмите «Повторить».", "Groq did not respond in time. Select Retry."),
+                _ => Tr("Не удалось распознать речь: ", "Could not transcribe speech: ") + ex.Message,
+            }, ToastKind.Error, key ? Tr("Указать ключ", "Enter API key") : Tr("Повторить", "Retry"), key ? ShowVoiceKeySettings : () => RetryVoice(wav));
         }
     }
 
@@ -132,7 +133,7 @@ public partial class MainWindow
 
     void ShowVoice(bool recording)
     {
-        VoiceTime.Text = recording ? "0:00" : "Распознаю речь…";
+        VoiceTime.Text = recording ? "0:00" : Tr("Распознаю речь…", "Transcribing…");
         if (!recording && VoiceDoneButton.IsKeyboardFocused) VoiceTime.Focus();
         _voiceTimer.IsEnabled = recording;
         VoicePanel.Visibility = Visibility.Visible;
@@ -188,7 +189,7 @@ public partial class MainWindow
     }
 
     void ShowMicrophoneProblem(MicrophoneException problem) => ShowToast(problem.Message, ToastKind.Error,
-        problem.Privacy ? "Открыть параметры" : null, problem.Privacy ? () => FileActions.OpenWindowsSettings("privacy-microphone") : null);
+        problem.Privacy ? Tr("Открыть параметры", "Open settings") : null, problem.Privacy ? () => FileActions.OpenWindowsSettings("privacy-microphone") : null);
 
     void ShowVoiceKeySettings() => OpenSettings(_config.Provider == AgentProvider.Groq ? KeyPasswordBox : VoiceKeyBox);
 }

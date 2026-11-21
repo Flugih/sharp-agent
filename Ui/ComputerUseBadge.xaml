@@ -1,6 +1,7 @@
 <UserControl x:Class="SharpAgent.Ui.ComputerUseBadge"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="clr-namespace:SharpAgent.Ui"
              IsHitTestVisible="False" Focusable="False">
     <Border BorderThickness="4" CornerRadius="25" BorderBrush="{StaticResource ComputerBadgeHalo}">
         <Border Padding="16,9" CornerRadius="21" BorderThickness="1.5" Background="{StaticResource ComputerBadgeBg}">
@@ -13,11 +14,11 @@
             </Border.BorderBrush>
             <StackPanel Orientation="Horizontal" TextElement.Foreground="{StaticResource ComputerBadgeText}">
                 <TextBlock Text="&#xE7F8;" FontFamily="{StaticResource IconFont}" FontSize="17" VerticalAlignment="Center" Margin="0,0,9,0"/>
-                <TextBlock Text="Управление компьютером активно" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
+                <TextBlock Text="{ui:Localized 'Управление компьютером активно', 'Computer control active'}" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"
                            AutomationProperties.LiveSetting="Polite"/>
                 <Border x:Name="StopHint" Visibility="Collapsed" Margin="12,0,0,0" Padding="12,0,0,0" BorderThickness="1,0,0,0"
                         BorderBrush="{StaticResource ComputerBadgeHalo}">
-                    <TextBlock Text="Esc — остановить" FontSize="13" VerticalAlignment="Center"/>
+                    <TextBlock Text="{ui:Localized 'Esc — остановить', 'Esc to stop'}" FontSize="13" VerticalAlignment="Center"/>
                 </Border>
             </StackPanel>
         </Border>

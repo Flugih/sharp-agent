@@ -54,6 +54,8 @@ public static class Theme
     static readonly Dictionary<string, Color> LightColors = new[]
     {
         ("Bg", "#FFFFFF"), ("ChromeBg", "#F3F3F3"), ("Surface", "#F4F4F4"),
+        ("ChatModeTrack", "#F3F3F3"), ("ChatModeSelected", "#FFFFFF"), ("ChatModeShadow", "#E0E0E0"), ("ChatModeText", "#5E5E5E"),
+        ("SearchGlass", "#EBFAFAFA"),
         ("Surface2", "#FFFFFF"), ("Surface3", "#E6E6E6"), ("BlockBg", "#F4F4F4"), ("Raised", "#FFFFFF"), ("RaisedLine", "#D9D9D9"),
         ("Fill", "#EFEFEF"), ("ControlBg", "#E9E9E9"), ("RowHover", "#0B000000"), ("ComposerBg", "#FFFFFF"), ("ComposerLine", "#E0E0E0"),
         ("ComposerStrip", "#F2F2F2"), ("Line", "#E5E5E5"), ("LineStrong", "#D9D9D9"), ("Track", "#D4D4D4"), ("TrackStrong", "#B4B4B4"),
@@ -61,6 +63,7 @@ public static class Theme
         ("TextFaint", "#A0A0A0"), ("UserBubbleText", "#0D0D0D"), ("PrimaryBg", "#181818"), ("PrimaryFg", "#FFFFFF"), ("Danger", "#C42B1C"),
         ("DangerText", "#BC2A1B"), ("DangerSoft", "#FDE7E9"), ("Warning", "#A84300"), ("Success", "#0E7439"), ("DiffAdd", "#E6F4EA"),
         ("DiffAddText", "#17722F"), ("DiffRemove", "#FBE1E3"), ("Shade", "#59000000"), ("HoverLight", "#000000"),
+        ("CodeKeyword", "#70338B"), ("CodeString", "#3C6422"), ("CodeNumber", "#175E8B"), ("CodeName", "#8B4311"),
         ("CaptionHover", "#14000000"), ("CaptionPressed", "#0C000000"),
     }.ToDictionary(pair => pair.Item1, pair => (Color)ColorConverter.ConvertFromString(pair.Item2));
     static Dictionary<string, Color>? _darkColors;
@@ -141,5 +144,5 @@ public static class Glyphs
         Terminal = "", Open = "", OpenWith = "", Reveal = "", Info = "", View = "", Check = "", Cancel = "",
         Warning = "", ChevronRight = "", ChevronDown = "", Tool = "", Lock = "", Globe = "", Refresh = "", Lightning = "",
         Play = "", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
-    public const string Laptop = "\uE7F8";
+    public const string Laptop = "\uE7F8", Wifi = "\uE701";
 }

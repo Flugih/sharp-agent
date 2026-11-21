@@ -2,7 +2,8 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    const string StoppedRequest = "[Программа: прошлое поручение остановлено. Возобновляй его только по явной просьбе пользователя.]";
+    string StoppedRequest => PromptText("[Программа: прошлое поручение остановлено. Возобновляй его только по явной просьбе пользователя.]",
+        "[Application: the previous task was stopped. Resume it only if the user explicitly asks.]");
 
     HashSet<int> StoppedRequests(int currentUser)
     {
@@ -10,9 +11,9 @@ partial class AgentRunner
         bool stopped = false;
         for (int i = currentUser - 1; i >= 0; i--)
         {
-            var message = _history[i];
-            stopped |= MetaOf(message) is { } meta && meta[StopField] != null && Bool(meta[ProgramStopField]) != true;
-            if (Role(message) != "user") continue;
+            var flags = _history.EntryAt(i).Flags;
+            stopped |= flags.HasFlag(ChatJournal.Flags.Stopped);
+            if (!flags.HasFlag(ChatJournal.Flags.User)) continue;
             if (stopped) requests.Add(i);
             stopped = false;
         }
@@ -33,7 +34,7 @@ partial class AgentRunner
         CanContinue && LastUser() is { } user && Attachment.ListFrom(user).Count == 0 && ExtractText(user["content"]) is { } task
             ? LocalCommand(task) : null;
 
-    JsonObject? LastUser() => _history.OfType<JsonObject>().LastOrDefault(m => Role(m) == "user");
+    JsonObject? LastUser() => _history.LastIndex(ChatJournal.Flags.User) is >= 0 and var at ? (JsonObject)_history[at] : null;
 
     Task RunLocalAsync(string command, CancellationToken ct) => Timed(async () =>
     {
@@ -64,19 +65,21 @@ partial class AgentRunner
 
     static string? PluginName(ToolCallEvent call) => Str(ArgsOf(call)?["name"])?.Trim();
 
-    IEnumerable<(ToolCallEvent Call, JsonObject Result)> CurrentActions()
+    IEnumerable<(ToolCallEvent Call, JsonObject Result, int At)> CurrentActions()
     {
         var calls = new Dictionary<string, ToolCallEvent>();
-        foreach (var message in _history.OfType<JsonObject>().Reverse().TakeWhile(m => Role(m) != "user").Reverse())
+        int start = _history.LastIndex(ChatJournal.Flags.User) + 1, at = start;
+        foreach (var message in _history.Range(start, _history.Count - start).OfType<JsonObject>())
         {
             foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? []) calls[call.Id] = call;
-            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match)) yield return (match, message);
+            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match)) yield return (match, message, at);
+            at++;
         }
     }
 
     void RestorePlugins()
     {
-        foreach (var (call, result) in CurrentActions())
+        foreach (var (call, result, _) in CurrentActions())
         {
             if (call.Name != "use_plugin" || PluginName(call) is not { } name || Str(result["content"]) is not { } output ||
                 !output.StartsWith("Плагин ", StringComparison.Ordinal)) continue;
@@ -85,10 +88,12 @@ partial class AgentRunner
         }
     }
 
-    string ResumeContext() =>
+    string ResumeContext() => PromptText(
         "Пользователь возобновил прерванную задачу. Продолжи текущий запрос с сохранённого места. " +
         "Успешные изменения уже внесены. Выполняй оставшиеся действия, а после отменённой команды сначала " +
-        "проверь её результат на диске: она могла успеть внести изменения.\n" +
+        "проверь её результат на диске: она могла успеть внести изменения.\n",
+        "The user resumed an interrupted task. Continue from where it stopped. Successful changes are already in place. " +
+        "Complete the remaining work. If a command was cancelled, check its result on disk first because it may have made changes.\n") +
         string.Join("\n", CurrentActions().Where(entry => entry.Call.Name != "use_plugin").TakeLast(18).Select(entry =>
         {
             var output = Str(entry.Result["content"]) ?? "";
@@ -103,9 +108,9 @@ partial class AgentRunner
         foreach (var restriction in _blockedShells.Values) notes.Add(CommandRestriction.Prefix + restriction.Message);
         if (!_blockedShells.ContainsKey(CommandShell.PowerShell))
             foreach (var (name, instruction) in _activePlugins.TakeLast(harder ? 1 : 3))
-                notes.Add($"Активный плагин «{name}». Инструкция уже загружена. Используй указанный ниже скрипт " +
-                          "через run_plugin, когда действие ещё не выполнено.\n" + Clip(instruction, harder ? 4000 : 8500));
-        return notes.Count > 0 ? "\n\n[Сведения программы о текущем шаге]\n" + string.Join("\n\n", notes) : null;
+                notes.Add(PromptText($"Активный плагин «{name}». Инструкция уже загружена. Используй указанный ниже скрипт через run_plugin, когда действие ещё не выполнено.\n",
+                    $"Active plugin: {name}. Its instructions are loaded. Use the script below through run_plugin if the action is still pending.\n") + Clip(instruction, harder ? 4000 : 8500));
+        return notes.Count > 0 ? PromptText("\n\n[Сведения программы о текущем шаге]\n", "\n\n[Application context for this step]\n") + string.Join("\n\n", notes) : null;
     }
 
     static void AddContext(List<JsonNode> list, string? context, params string[] roles)
@@ -143,18 +148,18 @@ partial class AgentRunner
     static bool VerificationCommand(ToolCallEvent call) =>
         Str(ArgsOf(call)?["command"]) is { } command && Verification().IsMatch(command);
 
-    static JsonNode WithVerificationSummary(JsonNode node)
+    JsonNode WithVerificationSummary(JsonNode node)
     {
         if (MetaOf(node) is not { } meta) return node;
         string? summary = null;
         if (Str(meta["local_command"]) is { } local)
             summary = local.StartsWith("git ", StringComparison.Ordinal)
-                ? $"Пользователю показан локальный вывод команды `{local}`."
-                : $"Локально выполнена команда `{local}`. Сводка вывода:\n" + Clip(ExtractText(node["content"]) ?? "", 1900);
+                ? PromptText($"Пользователю показан локальный вывод команды `{local}`.", $"The user was shown the local output of `{local}`.")
+                : PromptText($"Локально выполнена команда `{local}`. Сводка вывода:\n", $"Command `{local}` ran locally. Output summary:\n") + Clip(ExtractText(node["content"]) ?? "", 1900);
         else if (Bool(meta["verification"]) == true && Bool(meta["command_restricted"]) != true &&
                  Str(node["content"]) is { } content && CommandLog.IdOf(content) != null)
             summary = CommandLog.Brief(content) + (CommandLog.Details(content, 2600) is { Length: > 0 } details ? "\n" + details : "") +
-                      "\nПолный доступный вывод открывается через read_log.";
+                      PromptText("\nПолный доступный вывод открывается через read_log.", "\nUse read_log to access the full available output.");
         if (summary == null) return node;
         var copy = (JsonObject)node.DeepClone();
         copy["content"] = summary;

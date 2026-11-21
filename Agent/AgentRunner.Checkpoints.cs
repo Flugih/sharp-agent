@@ -22,7 +22,7 @@ partial class AgentRunner
     void RestoreCompletedWrites()
     {
         _completedWrites.Clear();
-        foreach (var (call, result) in CurrentActions())
+        foreach (var (call, result, _) in CurrentActions())
             if (MetaOf(result) is { } meta && Str(meta["written_path"]) is { } path && Str(meta["written_hash"]) is { } hash)
                 _completedWrites[WriteKey(call)] = new(call.Id, path, hash,
                     $"Действие уже успешно выполнено до остановки. Файл {path} сохранил записанное содержимое. " +
@@ -82,7 +82,7 @@ partial class AgentRunner
                 if (FileChangeOf(_history[i]) is { } step && step.AfterHash == after && !FileChangeUndone(_history[i]) &&
                     PathHelper.SamePath(step.Path, change.Path))
                 {
-                    FileChangeMeta(_history[i])!["undone"] = true;
+                    FileChangeMeta(_history.Edit(i))!["undone"] = true;
                     after = step.BeforeHash;
                     left--;
                 }

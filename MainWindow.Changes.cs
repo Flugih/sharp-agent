@@ -9,11 +9,11 @@ public partial class MainWindow
         var undoLabel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { new TextBlock { Text = "Отменить" }, GlyphText(Glyphs.Undo, 12, null, new(6, 0, 0, 0)) },
+            Children = { new TextBlock { Text = Tr("Отменить", "Undo") }, GlyphText(Glyphs.Undo, 12, null, new(6, 0, 0, 0)) },
         };
-        var undo = ChangeAction(undoLabel, "Отменить изменения в этой группе");
+        var undo = ChangeAction(undoLabel, Tr("Отменить изменения в этой группе", "Undo changes in this group"));
         ToolTipService.SetShowOnDisabled(undo, true);
-        var review = ChangeAction("Просмотреть изменения", "Открыть список изменений справа");
+        var review = ChangeAction(Tr("Просмотреть изменения", "Review changes"), Tr("Открыть список изменений справа", "Open the changes list in the side panel"));
         review.Margin = new(8, 0, 0, 0);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(8, 0, 0, 0), Children = { undo, review } };
         DockPanel.SetDock(buttons, Dock.Right);
@@ -44,7 +44,7 @@ public partial class MainWindow
                 Content = row, Style = Theme.Style("RowButton"), Height = 32, Padding = new(8, 0, 8, 0), HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 ToolTip = file.Path, ContextMenu = FileActions.BuildMenu(this, file.Path),
             };
-            AutomationProperties.SetName(button, $"Просмотреть {title}");
+            AutomationProperties.SetName(button, Tr($"Просмотреть {title}", $"Review {title}"));
             button.Click += (_, _) => ReviewChanges(files, index);
             (i < shown ? rows : extra).Children.Add(button);
         }
@@ -52,12 +52,12 @@ public partial class MainWindow
         if (files.Length > shown)
         {
             int remaining = files.Length - shown;
-            var expand = $"Показать ещё {remaining} {FileCountWord(remaining)}";
+            var expand = Tr($"Показать ещё {remaining} {FileCountWord(remaining)}", $"Show {remaining} more {FileCountWord(remaining)}");
             var toggle = new Button { Style = Theme.Style("RowButton"), Height = 32, Padding = new(8, 0, 8, 0) };
             void UpdateToggle()
             {
                 bool opened = reveal.IsOpen;
-                var label = opened ? "Свернуть список" : expand;
+                var label = opened ? Tr("Свернуть список", "Collapse list") : expand;
                 var chevron = GlyphText(Glyphs.ChevronDown, 12, null, new(8, 0, 0, 0));
                 chevron.RenderTransformOrigin = new(.5, .5);
                 chevron.RenderTransform = opened ? new RotateTransform(180) : Transform.Identity;
@@ -78,7 +78,7 @@ public partial class MainWindow
             totals.Visibility = VisibleIf(files.All(file => !file.Undone));
             undo.Visibility = VisibleIf(files.Any(file => !file.Undone));
             undo.IsEnabled = files.Where(file => !file.Undone).All(file => file.Change is { Created: true } or { Backup: not null });
-            undo.ToolTip = undo.IsEnabled ? null : "Для части файлов нет резервной копии";
+            undo.ToolTip = undo.IsEnabled ? null : Tr("Для части файлов нет резервной копии", "Some files have no backup");
             for (int i = 0; i < files.Length; i++) rowButtons[i].Opacity = files[i].Undone ? .55 : 1;
         }
         undo.Click += async (_, _) =>
@@ -91,7 +91,7 @@ public partial class MainWindow
         return BlockBox(new StackPanel { Children = { header, rows } }, new(12));
     }
 
-    static string FileCountWord(int count) => count % 100 is >= 11 and <= 14 ? "файлов" : (count % 10) switch
+    static string FileCountWord(int count) => !UiLanguage.Current.Value.IsRussian ? count == 1 ? "file" : "files" : count % 100 is >= 11 and <= 14 ? "файлов" : (count % 10) switch
     {
         1 => "файл",
         2 or 3 or 4 => "файла",
@@ -100,9 +100,9 @@ public partial class MainWindow
 
     static string ChangesHeading(ProducedFile[] files) => files.Count(file => !file.Undone) switch
     {
-        0 => "Изменения отменены",
-        var remaining when remaining < files.Length => $"Осталось {remaining} {FileCountWord(remaining)}",
-        _ => $"Изменено {files.Length} {FileCountWord(files.Length)}",
+        0 => Tr("Изменения отменены", "Changes undone"),
+        var remaining when remaining < files.Length => Tr($"Осталось {remaining} {FileCountWord(remaining)}", $"{remaining} {FileCountWord(remaining)} remaining"),
+        _ => Tr($"Изменено {files.Length} {FileCountWord(files.Length)}", $"{files.Length} {FileCountWord(files.Length)} changed"),
     };
 
     static StackPanel Totals(ProducedFile[] files) => DiffSummary(files.Sum(file => file.Diff?.Added ?? 0L), files.Sum(file => file.Diff?.Removed ?? 0L));
@@ -136,30 +136,7 @@ public partial class MainWindow
         return content;
     }
 
-    void ReviewChanges(ProducedFile[] files, int selected)
-    {
-        var file = files[selected];
-        ShowPreview(file.Path, file.Diff, review: true);
-        PreviewChangePicker.Content = $"{selected + 1}/{files.Length} · {CardTitle(file.Path, keepExtension: true)}";
-        var picker = new ContextMenu { PlacementTarget = PreviewChangePicker, Placement = PlacementMode.Bottom, MaxHeight = 320 };
-        for (int i = 0; i < files.Length; i++)
-        {
-            int index = i;
-            var item = FileActions.Item(CardTitle(files[i].Path, keepExtension: true).Replace("_", "__"), null, () => ReviewChanges(files, index));
-            item.IsChecked = i == selected;
-            item.ToolTip = files[i].Path;
-            picker.Items.Add(item);
-        }
-        PreviewChangePicker.ContextMenu = picker;
-    }
-
-    void PreviewChangePicker_Click(object sender, RoutedEventArgs e)
-    {
-        if (PreviewChangePicker.ContextMenu is not { } menu) return;
-        // The menu chrome adds a 20 px shadow margin on each side.
-        menu.MinWidth = PreviewChangePicker.ActualWidth + 40;
-        menu.IsOpen = true;
-    }
+    void ReviewChanges(ProducedFile[] files, int selected) => ShowPreview(files[selected].Path, changes: files, selected: selected);
 
     void ChangesPill_Click(object sender, RoutedEventArgs e)
     {
@@ -172,12 +149,12 @@ public partial class MainWindow
     {
         if (_cts != null)
         {
-            ShowToast("Дождитесь завершения текущего запроса, чтобы отменить изменения.", ToastKind.Warning);
+            ShowToast(Tr("Дождитесь завершения текущего запроса, чтобы отменить изменения.", "Wait for the current request to finish before undoing changes."), ToastKind.Warning);
             return;
         }
         var pending = files.Where(file => !file.Undone).ToArray();
-        if (pending.Length == 0 || pending.Any(file => file.Change == null) || !DarkDialog.Ask(this, "Отменить изменения?",
-                "Прежние версии файлов будут восстановлены. Новые файлы переместятся в Корзину.", "Отменить изменения", "Оставить", danger: true))
+        if (pending.Length == 0 || pending.Any(file => file.Change == null) || !DarkDialog.Ask(this, Tr("Отменить изменения?", "Undo changes?"),
+                Tr("Прежние версии файлов будут восстановлены. Новые файлы переместятся в Корзину.", "Previous versions will be restored. New files will be moved to the Recycle Bin."), Tr("Отменить изменения", "Undo changes"), Tr("Оставить", "Keep"), danger: true))
             return;
         var restored = new List<(FileChange, int)>();
         int restoredFiles = 0;
@@ -196,18 +173,18 @@ public partial class MainWindow
                 restored.Add((file.Change!, file.Steps));
                 restoredFiles++;
             }
-            ShowToast("Изменения отменены", ToastKind.Success);
+            ShowToast(Tr("Изменения отменены", "Changes undone"), ToastKind.Success);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
         {
-            ShowToast(restoredFiles > 0 ? $"Восстановлено {restoredFiles} {FileCountWord(restoredFiles)}. {ex.Message}" : ex.Message, ToastKind.Warning);
+            ShowToast(restoredFiles > 0 ? Tr($"Восстановлено {restoredFiles} {FileCountWord(restoredFiles)}. {ex.Message}", $"Restored {restoredFiles} {FileCountWord(restoredFiles)}. {ex.Message}") : ex.Message, ToastKind.Warning);
         }
         finally
         {
             if (restored.Count > 0)
             {
                 await _agent.MarkFileChangeUndoneAsync(restored);
-                if (PreviewFileTab.IsChecked == true && _previewPath != null &&
+                if (_previewChanges == null && _previewDiff == null && _previewPath != null &&
                     files.Any(file => file.Undone && PathHelper.SamePath(file.Path, _previewPath))) RenderPreviewBody();
             }
         }

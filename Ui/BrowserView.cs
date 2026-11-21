@@ -53,8 +53,8 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
     }
 
     static string ErrorText(Exception ex) => ex is FileNotFoundException or EntryPointNotFoundException or DllNotFoundException
-        ? "Для браузера требуется установленный Microsoft Edge WebView2 Runtime."
-        : $"Не удалось открыть браузер (0x{ex.HResult:X8}).";
+        ? Tr("Для браузера требуется установленный Microsoft Edge WebView2 Runtime.", "The browser requires Microsoft Edge WebView2 Runtime.")
+        : Tr($"Не удалось открыть браузер (0x{ex.HResult:X8}).", $"Could not open the browser (0x{ex.HResult:X8}).");
 
     [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
     sealed class Callbacks(BrowserView view, BrowserProxy? relay)
@@ -92,7 +92,7 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
                 page.OnHistory(this, out _);
                 page.OnTitle(this, out _);
                 view.Resize();
-                control.SetVisible(1);
+                control.SetVisible(view.IsVisible ? 1 : 0);
                 page.Navigate(view.Address.AbsoluteUri);
             }
             catch (Exception ex) { view.Failed?.Invoke(ErrorText(ex)); }
@@ -143,13 +143,19 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
 
     void AskDownloadPath(IDownloadArgs request)
     {
-        var dialog = new Microsoft.Win32.SaveFileDialog { Title = "Сохранить загрузку", FileName = Path.GetFileName(request.ResultFilePath()) };
+        var dialog = new Microsoft.Win32.SaveFileDialog { Title = Tr("Сохранить загрузку", "Save download"), FileName = Path.GetFileName(request.ResultFilePath()) };
         if (Directory.Exists(downloads)) dialog.InitialDirectory = downloads;
         if (_host != IntPtr.Zero && dialog.ShowDialog(Window.GetWindow(this)) == true) request.SetResultFilePath(dialog.FileName);
         else request.Cancel(1);
     }
 
     static bool WebUri(string text, out Uri? uri) => Uri.TryCreate(text, UriKind.Absolute, out uri) && uri.Scheme is "http" or "https" && uri.UserInfo.Length == 0;
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.Property == IsVisibleProperty) _controller?.SetVisible(IsVisible ? 1 : 0);
+    }
 
     protected override void OnWindowPositionChanged(Rect bounds)
     {

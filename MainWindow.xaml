@@ -22,6 +22,7 @@
 
             <Grid x:Name="WorkArea" Grid.Row="1" Grid.Column="1" ClipToBounds="True" SizeChanged="WorkArea_SizeChanged">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
@@ -30,29 +31,103 @@
                     <ColumnDefinition x:Name="PreviewColumn" Width="0"/>
                 </Grid.ColumnDefinitions>
 
-                <Grid>
-                    <StackPanel x:Name="EmptyChat" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed">
-                        <Path Data="{StaticResource SharpMark}" Width="36" Height="36" Stretch="Uniform" StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{DynamicResource TextMuted}"/>
-                        <TextBlock Text="Новый чат" FontSize="28" LineHeight="36" Foreground="{DynamicResource TextStrong}" Margin="0,16,0,0"/>
-                    </StackPanel>
-                    <ScrollViewer x:Name="ChatScroll" Template="{StaticResource ChatScrollTemplate}" VerticalScrollBarVisibility="Auto" Focusable="False" ScrollChanged="ChatScroll_ScrollChanged" PreviewMouseLeftButtonDown="ChatScroll_PreviewMouseLeftButtonDown">
-                        <StackPanel MaxWidth="736" Margin="24,8,24,24">
+                <Border Panel.ZIndex="5" HorizontalAlignment="Center" CornerRadius="17" Background="{DynamicResource ChatModeTrack}" Margin="0,8,0,8">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.28"/>
+                    </Border.Effect>
+                    <Grid Width="222" Height="34">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.Resources>
+                            <Style x:Key="ChatModeTab" TargetType="ToggleButton" BasedOn="{StaticResource BoxBase}">
+                                <Setter Property="FontSize" Value="14"/>
+                                <Setter Property="FontWeight" Value="Normal"/>
+                                <Setter Property="Cursor" Value="Hand"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ChatModeText}"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                                <Setter Property="FocusVisualStyle" Value="{StaticResource FocusPill}"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Grid Background="Transparent">
+                                                <Border x:Name="Shadow" Background="{DynamicResource ChatModeShadow}" CornerRadius="17" Margin="0,0,-2,0" Visibility="Collapsed"/>
+                                                <Border x:Name="Selected" Background="{DynamicResource ChatModeSelected}" CornerRadius="17" Visibility="Collapsed"/>
+                                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="Grid.Column" Value="1">
+                                                    <Setter TargetName="Shadow" Property="Margin" Value="-2,0,0,0"/>
+                                                </Trigger>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Shadow" Property="Visibility" Value="Visible"/>
+                                                    <Setter TargetName="Selected" Property="Visibility" Value="Visible"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Grid.Resources>
+                        <ToggleButton x:Name="ConversationModeButton" Style="{StaticResource ChatModeTab}" Content="{ui:Localized 'Чат', 'Chat'}" Click="ChatMode_Click"/>
+                        <ToggleButton x:Name="WorkModeButton" Grid.Column="1" Style="{StaticResource ChatModeTab}" Content="{ui:Localized 'Работа', 'Work'}" IsChecked="True" Click="ChatMode_Click"/>
+                    </Grid>
+                </Border>
+                <ToggleButton x:Name="TemporaryChatButton" Panel.ZIndex="5" HorizontalAlignment="Right" VerticalAlignment="Center" Width="34" Height="34" Margin="0,8,16,8" ToolTip="{ui:Localized 'Временный чат', 'Temporary chat'}" AutomationProperties.Name="{ui:Localized 'Временный чат', 'Temporary chat'}" Click="TemporaryChat_Click">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton" BasedOn="{StaticResource IconToggle}">
+                            <Setter Property="Background" Value="{DynamicResource ChatModeTrack}"/>
+                            <Setter Property="Border.CornerRadius" Value="17"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                        </Style>
+                    </ToggleButton.Style>
+                    <Path Width="16" Height="16" Stretch="Uniform" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Data="M 3,8 H 17 M 5,8 L 6.5,3.5 H 13.5 L 15,8 M 8.5,13 H 11.5 M 8.5,13 A 2.75,2.75 0 1 1 3,13 A 2.75,2.75 0 1 1 8.5,13 M 17,13 A 2.75,2.75 0 1 1 11.5,13 A 2.75,2.75 0 1 1 17,13"/>
+                </ToggleButton>
+                <Button x:Name="SaveTemporaryChatButton" Panel.ZIndex="5" HorizontalAlignment="Right" VerticalAlignment="Center" Width="34" Height="34" Margin="0,8,16,8" Cursor="Hand" Visibility="Collapsed" ToolTip="{ui:Localized 'Сохранить временный чат', 'Save temporary chat'}" AutomationProperties.Name="{ui:Localized 'Сохранить временный чат', 'Save temporary chat'}" Click="SaveTemporaryChat_Click">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource IconButton}">
+                            <Setter Property="Background" Value="{DynamicResource ChatModeTrack}"/>
+                            <Setter Property="Border.CornerRadius" Value="17"/>
+                        </Style>
+                    </Button.Style>
+                    <Path Width="16" Height="16" Stretch="Uniform" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" StrokeLineJoin="Round" Data="M 4,2 L 12,2 L 12,14 L 8,11 L 4,14 Z"/>
+                </Button>
+                <Grid Grid.RowSpan="3">
+                    <ScrollViewer x:Name="ChatScroll" Template="{StaticResource ChatScrollTemplate}" VerticalScrollBarVisibility="Auto" Focusable="False" ScrollChanged="ChatScroll_ScrollChanged" SizeChanged="Composer_SizeChanged" PreviewMouseLeftButtonDown="ChatScroll_PreviewMouseLeftButtonDown">
+                        <StackPanel x:Name="ChatContent" MaxWidth="736" Margin="24,58,24,24">
                             <StackPanel x:Name="ChatPages">
                                 <StackPanel x:Name="ChatPanel"/>
                             </StackPanel>
-                            <Button x:Name="ChangesPill" Style="{StaticResource PillButton}" HorizontalAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed" ToolTip="Открыть последние изменения справа" AutomationProperties.Name="Открыть последние изменения справа" Click="ChangesPill_Click"/>
+                            <Button x:Name="ChangesPill" Style="{StaticResource PillButton}" HorizontalAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed" ToolTip="{ui:Localized 'Открыть последние изменения справа', 'Open latest changes in side panel'}" AutomationProperties.Name="{ui:Localized 'Открыть последние изменения справа', 'Open latest changes in side panel'}" Click="ChangesPill_Click"/>
                         </StackPanel>
                     </ScrollViewer>
-                    <DockPanel x:Name="ChatStickyHost" Panel.ZIndex="5" VerticalAlignment="Top" MaxWidth="736" Margin="24,8,24,4" Visibility="Collapsed" SizeChanged="ChatStickyHost_SizeChanged" PreviewMouseWheel="ChatStickyHost_PreviewMouseWheel">
+                    <DockPanel x:Name="ChatStickyHost" Panel.ZIndex="5" VerticalAlignment="Top" MaxWidth="736" Margin="24,58,24,4" Visibility="Collapsed" SizeChanged="ChatStickyHost_SizeChanged" PreviewMouseWheel="ChatStickyHost_PreviewMouseWheel">
                         <ui:Shimmer x:Name="ChatStickyTitle" DockPanel.Dock="Top" Margin="0,0,0,4"/>
                         <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto" Focusable="False">
                             <StackPanel x:Name="ChatStickyPanel"/>
                         </ScrollViewer>
                     </DockPanel>
-                    <Button x:Name="ScrollDownButton" Style="{StaticResource FloatButton}" Content="&#xE74B;" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="К последнему сообщению" Click="ScrollDown_Click"/>
+                    <Button x:Name="ScrollDownButton" Style="{StaticResource FloatButton}" Content="&#xE74B;" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'К последнему сообщению', 'Jump to latest message'}" Click="ScrollDown_Click"/>
                 </Grid>
 
-                <StackPanel Grid.Row="1" MaxWidth="736" Margin="24,0,24,19">
+                <StackPanel x:Name="ComposerPanel" Grid.Row="2" MaxWidth="736" Margin="24,0,24,19" SizeChanged="ComposerPanel_SizeChanged">
+                    <TextBlock x:Name="ComposerIntro" HorizontalAlignment="Center" Foreground="{DynamicResource TextSoft}" FontSize="25" FontWeight="Normal" TextWrapping="Wrap" TextAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Margin" Value="0,0,0,40"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Visibility, ElementName=Banner}" Value="Visible">
+                                        <Setter Property="Margin" Value="0,0,0,16"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                     <Border x:Name="Banner" Style="{StaticResource Card}" Margin="0,0,0,8" Padding="16,12,12,12" Visibility="Collapsed">
                         <DockPanel>
                             <Button x:Name="BannerAction" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Margin="12,0,0,0" Click="BannerAction_Click"/>
@@ -69,11 +144,11 @@
                     <!-- The strip runs under the box's rounded top edge -->
                     <Border Background="{DynamicResource ComposerStrip}" CornerRadius="12,12,0,0" Margin="13,0,13,-18" Padding="6,0,6,18">
                         <DockPanel>
-                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Height="39">
+                            <StackPanel x:Name="WorkContextPanel" DockPanel.Dock="Top" Orientation="Horizontal" Height="39">
                                 <Button x:Name="ModePill" Style="{StaticResource GhostButton}" Foreground="{DynamicResource Text}" Click="ModePill_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock x:Name="ModeIcon" FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xE7F8;" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="ModeText" Text="Весь ПК" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="ModeText" Text="{ui:Localized 'Весь ПК', 'Full computer access'}" Margin="8,0,0,0" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="FolderButton" Style="{StaticResource GhostButton}" Foreground="{DynamicResource TextDim}" Margin="4,0,0,0" Click="FolderButton_Click">
@@ -83,106 +158,102 @@
                                     </StackPanel>
                                     <Button.ContextMenu>
                                         <ContextMenu>
-                                            <MenuItem Header="Выбрать другую папку…" Click="FolderButton_Click"/>
-                                            <MenuItem Header="Открыть в Проводнике" InputGestureText="Ctrl+Shift+O" Click="OpenWorkDir_Click"/>
+                                            <MenuItem Header="{ui:Localized 'Выбрать другую папку…', 'Choose another folder…'}" Click="FolderButton_Click"/>
+                                            <MenuItem Header="{ui:Localized 'Открыть в Проводнике', 'Open in File Explorer'}" InputGestureText="Ctrl+Shift+O" Click="OpenWorkDir_Click"/>
                                         </ContextMenu>
                                     </Button.ContextMenu>
                                 </Button>
                             </StackPanel>
-                            <WrapPanel x:Name="NextActionPanel" Margin="6,0,0,4" Visibility="Collapsed" AutomationProperties.Name="Следующие действия"/>
+                            <WrapPanel x:Name="NextActionPanel" Margin="6,0,0,4" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Следующие действия', 'Next actions'}"/>
                         </DockPanel>
                     </Border>
 
-                    <Border x:Name="Composer" Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="18" MinHeight="98" Padding="8,12,8,8" SizeChanged="Composer_SizeChanged">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
+                    <Grid>
+                        <Border x:Name="ComposerBackdrop" Background="{DynamicResource Bg}" IsHitTestVisible="False"/>
+                        <Border x:Name="Composer" Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="18" MinHeight="98" Padding="8,12,8,8" SizeChanged="Composer_SizeChanged">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
 
-                            <WrapPanel x:Name="AttachPanel" Margin="4,0,4,6" Visibility="Collapsed"/>
+                                <WrapPanel x:Name="AttachPanel" Margin="4,0,4,6" Visibility="Collapsed"/>
 
-                            <Grid Grid.Row="1" Margin="4,0">
-                                <ui:ComposerBox x:Name="InputBox" Style="{StaticResource ComposerInput}" MinHeight="36" MaxHeight="200" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Сообщение агенту" PreviewKeyDown="InputBox_PreviewKeyDown" TextChanged="InputBox_TextChanged" CommandManager.PreviewCanExecute="InputBox_PreviewCanExecute" CommandManager.PreviewExecuted="InputBox_PreviewExecuted"/>
-                                <TextBlock x:Name="InputHint" IsHitTestVisible="False" Foreground="{DynamicResource TextDim}" Margin="5,0,0,0" Text="Работайте в Sharp Agent"/>
-                                <DockPanel x:Name="VoicePanel" MinHeight="36" Visibility="Collapsed">
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Button Style="{StaticResource IconButton}" Content="&#xE711;" Margin="0,0,4,0" ToolTip="Отменить голосовой ввод (Esc)" AutomationProperties.Name="Отменить голосовой ввод" Click="VoiceCancel_Click"/>
-                                        <Button x:Name="VoiceDoneButton" Style="{StaticResource SendButton}" Content="&#xE73E;" ToolTip="Готово: распознать речь и вставить текст в поле" AutomationProperties.Name="Готово, распознать речь" Click="VoiceDone_Click"/>
-                                    </StackPanel>
-                                    <Border x:Name="VoiceMark" Width="14" Height="14"/>
-                                    <TextBlock x:Name="VoiceTime" Foreground="{DynamicResource TextSoft}" VerticalAlignment="Center" Margin="10,0,12,0" AutomationProperties.LiveSetting="Polite" Focusable="True" KeyboardNavigation.IsTabStop="False" FocusVisualStyle="{StaticResource FocusPill}"/>
-                                    <ui:VoiceWave x:Name="VoiceWave" Height="28" Margin="0,0,12,0"/>
-                                </DockPanel>
-                            </Grid>
-
-                            <Grid Grid.Row="2" Margin="0,8,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition/>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Button x:Name="AttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="Прикрепить файлы (Ctrl+O). Правая кнопка — прикрепить папку" AutomationProperties.Name="Прикрепить файлы" Click="Attach_Click">
-                                    <Button.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="Прикрепить файлы…" InputGestureText="Ctrl+O" Click="Attach_Click"/>
-                                            <MenuItem Header="Прикрепить папку…" Click="AttachFolder_Click"/>
-                                        </ContextMenu>
-                                    </Button.ContextMenu>
-                                </Button>
-                                <ToggleButton x:Name="ConfirmToggle" Grid.Column="1" Style="{StaticResource BoxBase}" Height="32" Padding="8,0" Margin="4,0,0,0" IsChecked="True" Checked="ConfirmToggle_Checked" Unchecked="ConfirmToggle_Unchecked" AutomationProperties.Name="Подтверждения опасных действий">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock x:Name="ConfirmIcon" FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xEA18;" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="ConfirmLabel" Text="Подтверждения" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </ToggleButton>
-                                <Button x:Name="ModelButton" Grid.Column="2" Style="{StaticResource GhostButton}" HorizontalAlignment="Right" HorizontalContentAlignment="Stretch" Margin="4,0" AutomationProperties.Name="Модель и усилие" Click="ModelButton_Click">
-                                    <DockPanel>
-                                        <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource IconFont}" Text="&#xE70D;" FontSize="12" Margin="6,1,0,0" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
-                                        <TextBlock x:Name="ModelEffortText" DockPanel.Dock="Right" Foreground="{DynamicResource TextDim}" Margin="6,0,0,0" MaxWidth="114" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Visibility="Collapsed"/>
-                                        <TextBlock x:Name="ModelNameText" Foreground="{DynamicResource Text}" MaxWidth="240" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                <Grid Grid.Row="1" Margin="4,0">
+                                    <ui:ComposerBox x:Name="InputBox" Style="{StaticResource ComposerInput}" MinHeight="36" MaxHeight="200" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="{ui:Localized 'Сообщение агенту', 'Message the agent'}" PreviewKeyDown="InputBox_PreviewKeyDown" TextChanged="InputBox_TextChanged" CommandManager.PreviewCanExecute="InputBox_PreviewCanExecute" CommandManager.PreviewExecuted="InputBox_PreviewExecuted"/>
+                                    <TextBlock x:Name="InputHint" IsHitTestVisible="False" Foreground="{DynamicResource TextDim}" Margin="5,0,0,0" Text="{ui:Localized 'Работайте в Sharp Agent', 'Work with Sharp Agent'}"/>
+                                    <DockPanel x:Name="VoicePanel" MinHeight="36" Visibility="Collapsed">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" Margin="0,0,4,0" ToolTip="{ui:Localized 'Отменить голосовой ввод (Esc)', 'Cancel voice input (Esc)'}" AutomationProperties.Name="{ui:Localized 'Отменить голосовой ввод', 'Cancel voice input'}" Click="VoiceCancel_Click"/>
+                                            <Button x:Name="VoiceDoneButton" Style="{StaticResource SendButton}" Content="&#xE73E;" ToolTip="{ui:Localized 'Готово: распознать речь и вставить текст в поле', 'Transcribe and insert'}" AutomationProperties.Name="{ui:Localized 'Готово, распознать речь', 'Finish recording and transcribe'}" Click="VoiceDone_Click"/>
+                                        </StackPanel>
+                                        <Border x:Name="VoiceMark" Width="14" Height="14"/>
+                                        <TextBlock x:Name="VoiceTime" Foreground="{DynamicResource TextSoft}" VerticalAlignment="Center" Margin="10,0,12,0" AutomationProperties.LiveSetting="Polite" Focusable="True" KeyboardNavigation.IsTabStop="False" FocusVisualStyle="{StaticResource FocusPill}"/>
+                                        <ui:VoiceWave x:Name="VoiceWave" Height="28" Margin="0,0,12,0"/>
                                     </DockPanel>
-                                </Button>
-                                <Button x:Name="MicButton" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE720;" Margin="0,0,4,0" ToolTip="Голосовой ввод: текст появится в поле, но не отправится сам" AutomationProperties.Name="Голосовой ввод" Click="Mic_Click"/>
-                                <Grid Grid.Column="4">
-                                    <Button x:Name="SendButton" Style="{StaticResource SendButton}" Content="&#xE74A;" ToolTip="Отправить (Enter). Новая строка — Shift+Enter" AutomationProperties.Name="Отправить" IsEnabled="False" Click="Send_Click"/>
-                                    <Button x:Name="StopButton" Style="{StaticResource SendButton}" ToolTip="Остановить агента (Esc)" AutomationProperties.Name="Остановить агента" Click="Stop_Click" Visibility="Collapsed">
-                                        <Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                </Grid>
+
+                                <Grid Grid.Row="2" Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="AttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="{ui:Localized 'Прикрепить файлы (Ctrl+O). Правая кнопка — прикрепить папку', 'Attach files (Ctrl+O). Right-click to attach a folder'}" AutomationProperties.Name="{ui:Localized 'Прикрепить файлы', 'Attach files'}" Click="Attach_Click">
+                                        <Button.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="{ui:Localized 'Прикрепить файлы…', 'Attach files…'}" InputGestureText="Ctrl+O" Click="Attach_Click"/>
+                                                <MenuItem Header="{ui:Localized 'Прикрепить папку…', 'Attach a folder…'}" Click="AttachFolder_Click"/>
+                                            </ContextMenu>
+                                        </Button.ContextMenu>
                                     </Button>
+                                    <ToggleButton x:Name="ConfirmToggle" Grid.Column="1" Style="{StaticResource BoxBase}" Height="32" Padding="8,0" Margin="4,0,0,0" IsChecked="True" Checked="ConfirmToggle_Checked" Unchecked="ConfirmToggle_Unchecked" AutomationProperties.Name="{ui:Localized 'Подтверждения опасных действий', 'Confirm risky actions'}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock x:Name="ConfirmIcon" FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xEA18;" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="ConfirmLabel" Text="{ui:Localized 'Подтверждения', 'Confirmations'}" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </ToggleButton>
+                                    <Button x:Name="ModelButton" Grid.Column="2" Style="{StaticResource GhostButton}" HorizontalAlignment="Right" HorizontalContentAlignment="Stretch" Margin="4,0" AutomationProperties.Name="{ui:Localized 'Модель и усилие', 'Model and reasoning effort'}" Click="ModelButton_Click">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" FontFamily="{StaticResource IconFont}" Text="&#xE70D;" FontSize="12" Margin="6,1,0,0" Foreground="{DynamicResource TextDim}" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="ModelEffortText" DockPanel.Dock="Right" Foreground="{DynamicResource TextDim}" Margin="6,0,0,0" MaxWidth="114" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                            <TextBlock x:Name="ModelNameText" Foreground="{DynamicResource Text}" MaxWidth="240" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                        </DockPanel>
+                                    </Button>
+                                    <Button x:Name="MicButton" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE720;" Margin="0,0,4,0" ToolTip="{ui:Localized 'Голосовой ввод: текст появится в поле, но не отправится сам', 'Dictate a draft without sending it'}" AutomationProperties.Name="{ui:Localized 'Голосовой ввод', 'Voice input'}" Click="Mic_Click"/>
+                                    <Grid Grid.Column="4">
+                                        <Button x:Name="SendButton" Style="{StaticResource SendButton}" Content="&#xE74A;" ToolTip="{ui:Localized 'Отправить (Enter). Новая строка — Shift+Enter', 'Send (Enter). New line: Shift+Enter'}" AutomationProperties.Name="{ui:Localized 'Отправить', 'Send'}" IsEnabled="False" Click="Send_Click"/>
+                                        <Button x:Name="StopButton" Style="{StaticResource SendButton}" ToolTip="{ui:Localized 'Остановить агента (Esc)', 'Stop agent (Esc)'}" AutomationProperties.Name="{ui:Localized 'Остановить агента', 'Stop agent'}" Click="Stop_Click" Visibility="Collapsed">
+                                            <Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                        </Button>
+                                    </Grid>
                                 </Grid>
                             </Grid>
-                        </Grid>
-                    </Border>
+                        </Border>
+                    </Grid>
                 </StackPanel>
 
-                <DockPanel x:Name="RightPane" Grid.RowSpan="2" Grid.Column="1" Visibility="Collapsed">
+                <DockPanel x:Name="RightPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed">
                     <Border x:Name="PreviewPane" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Height="44" Margin="16,0,8,0">
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" ToolTip="Закрыть (Esc)" AutomationProperties.Name="Закрыть просмотр" Click="PreviewClose_Click"/>
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8E5;" ToolTip="Открыть в программе" AutomationProperties.Name="Открыть в программе" Click="PreviewOpen_Click"/>
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE838;" ToolTip="Показать в папке" AutomationProperties.Name="Показать в папке" Click="PreviewReveal_Click"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" ToolTip="{ui:Localized 'Закрыть (Esc)', 'Close (Esc)'}" AutomationProperties.Name="{ui:Localized 'Закрыть просмотр', 'Close preview'}" Click="PreviewClose_Click"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE8E5;" ToolTip="{ui:Localized 'Открыть в программе', 'Open in default app'}" AutomationProperties.Name="{ui:Localized 'Открыть в программе', 'Open in default app'}" Click="PreviewOpen_Click"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE838;" ToolTip="{ui:Localized 'Показать в папке', 'Show in folder'}" AutomationProperties.Name="{ui:Localized 'Показать в папке', 'Show in folder'}" Click="PreviewReveal_Click"/>
                             <StackPanel VerticalAlignment="Center" Margin="0,0,8,0">
                                 <TextBlock x:Name="PreviewTitle" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock x:Name="PreviewPath" FontSize="12" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </DockPanel>
-                        <DockPanel DockPanel.Dock="Top" Margin="16,0,16,0">
-                            <StackPanel x:Name="PreviewTabs" DockPanel.Dock="Left" Orientation="Horizontal" Margin="0,0,8,8">
-                                <RadioButton x:Name="PreviewDiffTab" Style="{StaticResource TabToggle}" Content="Изменения" GroupName="PreviewTabs" Checked="PreviewTab_Checked"/>
-                                <RadioButton x:Name="PreviewFileTab" Style="{StaticResource TabToggle}" Content="Файл" GroupName="PreviewTabs" Margin="4,0,0,0" Checked="PreviewTab_Checked"/>
-                            </StackPanel>
-                            <Button x:Name="PreviewChangePicker" Style="{StaticResource DropdownButton}" HorizontalAlignment="Left" Margin="0,0,0,8" Visibility="Collapsed" Click="PreviewChangePicker_Click" AutomationProperties.Name="Выбрать файл из списка изменений"/>
-                        </DockPanel>
                         <ContentControl x:Name="PreviewBody" Focusable="False" Margin="8,0,0,0" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
                     </DockPanel>
                     </Border>
                 </DockPanel>
-                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="Изменить ширину панели" AutomationProperties.Name="Изменить ширину панели" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
-                <Border x:Name="BrowserPane" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed"
+                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
+                <Border x:Name="BrowserPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed"
                         Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
                     <Border.Resources>
                         <!-- A tab's close button shows on the current tab and on hover -->
@@ -192,8 +263,8 @@
                             <Setter Property="FontSize" Value="10"/>
                             <Setter Property="Margin" Value="4,0,0,0"/>
                             <Setter Property="Content" Value="{x:Static ui:Glyphs.Cancel}"/>
-                            <Setter Property="ToolTip" Value="Закрыть вкладку"/>
-                            <Setter Property="AutomationProperties.Name" Value="Закрыть вкладку"/>
+                            <Setter Property="ToolTip" Value="{ui:Localized 'Закрыть вкладку', 'Close tab'}"/>
+                            <Setter Property="AutomationProperties.Name" Value="{ui:Localized 'Закрыть вкладку', 'Close tab'}"/>
                             <Setter Property="Visibility" Value="Hidden"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=RadioButton}}" Value="True">
@@ -208,25 +279,25 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
                         <DockPanel Height="44" Margin="8,0">
-                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="BrowserClose_Click" ToolTip="Закрыть браузер" AutomationProperties.Name="Закрыть браузер"/>
-                            <Button x:Name="BrowserExpand" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.FullScreen}" Click="BrowserExpand_Click" ToolTip="{Binding (AutomationProperties.Name), RelativeSource={RelativeSource Self}}" AutomationProperties.Name="Развернуть браузер"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="BrowserClose_Click" ToolTip="{ui:Localized 'Закрыть браузер', 'Close browser'}" AutomationProperties.Name="{ui:Localized 'Закрыть браузер', 'Close browser'}"/>
+                            <Button x:Name="BrowserExpand" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.FullScreen}" Click="BrowserExpand_Click" ToolTip="{Binding (AutomationProperties.Name), RelativeSource={RelativeSource Self}}" AutomationProperties.Name="{ui:Localized 'Развернуть браузер', 'Expand browser'}"/>
                             <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="0,0,8,0">
                                 <StackPanel Orientation="Horizontal">
                                     <StackPanel x:Name="BrowserTabs" Orientation="Horizontal" VerticalAlignment="Center"/>
-                                    <Button Style="{StaticResource IconButton}" Content="&#xE710;" Margin="2,0,0,0" Click="BrowserNew_Click" ToolTip="Новая вкладка" AutomationProperties.Name="Новая вкладка"/>
+                                    <Button Style="{StaticResource IconButton}" Content="&#xE710;" Margin="2,0,0,0" Click="BrowserNew_Click" ToolTip="{ui:Localized 'Новая вкладка', 'New tab'}" AutomationProperties.Name="{ui:Localized 'Новая вкладка', 'New tab'}"/>
                                 </StackPanel>
                             </ScrollViewer>
                         </DockPanel>
                         <DockPanel x:Name="BrowserToolbar" Grid.Row="1" Margin="8,0,8,8">
                             <StackPanel x:Name="BrowserNavigation" Orientation="Horizontal" DockPanel.Dock="Left">
-                                <Button x:Name="BrowserBack" Style="{StaticResource IconButton}" Content="&#xE72B;" Click="BrowserBack_Click" AutomationProperties.Name="Назад"/>
-                                <Button x:Name="BrowserForward" Style="{StaticResource IconButton}" Content="&#xE72A;" Click="BrowserForward_Click" AutomationProperties.Name="Вперёд"/>
-                                <Button Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Refresh}" Click="BrowserReload_Click" AutomationProperties.Name="Обновить страницу"/>
+                                <Button x:Name="BrowserBack" Style="{StaticResource IconButton}" Content="&#xE72B;" Click="BrowserBack_Click" AutomationProperties.Name="{ui:Localized 'Назад', 'Back'}"/>
+                                <Button x:Name="BrowserForward" Style="{StaticResource IconButton}" Content="&#xE72A;" Click="BrowserForward_Click" AutomationProperties.Name="{ui:Localized 'Вперёд', 'Forward'}"/>
+                                <Button Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Refresh}" Click="BrowserReload_Click" AutomationProperties.Name="{ui:Localized 'Обновить страницу', 'Reload page'}"/>
                             </StackPanel>
-                            <Button x:Name="BrowserNetworkButton" DockPanel.Dock="Left" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Globe}" Margin="0,0,8,0" Click="BrowserNetwork_Click" AutomationProperties.Name="Настройки сети"/>
+                            <Button x:Name="BrowserNetworkButton" DockPanel.Dock="Left" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Globe}" Margin="0,0,8,0" Click="BrowserNetwork_Click" AutomationProperties.Name="{ui:Localized 'Настройки сети', 'Network settings'}"/>
                             <Grid>
-                                <TextBox x:Name="BrowserAddress" Style="{StaticResource FieldTextBox}" KeyDown="BrowserAddress_KeyDown" AutomationProperties.Name="Адрес или поисковый запрос"/>
-                                <TextBlock Text="Поиск или адрес сайта" IsHitTestVisible="False" VerticalAlignment="Center" Margin="13,0" Foreground="{DynamicResource TextDim}">
+                                <TextBox x:Name="BrowserAddress" Style="{StaticResource FieldTextBox}" KeyDown="BrowserAddress_KeyDown" AutomationProperties.Name="{ui:Localized 'Адрес или поисковый запрос', 'Address or search query'}"/>
+                                <TextBlock Text="{ui:Localized 'Поиск или адрес сайта', 'Search or enter an address'}" IsHitTestVisible="False" VerticalAlignment="Center" Margin="13,0" Foreground="{DynamicResource TextDim}">
                                     <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers>
                                         <DataTrigger Binding="{Binding Text, ElementName=BrowserAddress}" Value=""><Setter Property="Visibility" Value="Visible"/></DataTrigger>
                                     </Style.Triggers></Style></TextBlock.Style>
@@ -238,6 +309,7 @@
                                 <DataTrigger Binding="{Binding Visibility, ElementName=SidebarShade}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
                                 <DataTrigger Binding="{Binding Visibility, ElementName=PictureOverlay}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
                                 <DataTrigger Binding="{Binding Visibility, ElementName=FlyoutLayer}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
+                                <DataTrigger Binding="{Binding Visibility, ElementName=SearchLayer}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
                                 <DataTrigger Binding="{Binding Visibility, ElementName=DropOverlay}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
                                 <DataTrigger Binding="{Binding Visibility, ElementName=DialogDim}" Value="Visible"><Setter Property="Visibility" Value="Hidden"/></DataTrigger>
                             </Style.Triggers></Style></Grid.Style>
@@ -245,20 +317,20 @@
                         <StackPanel x:Name="BrowserErrorView" Grid.Row="2" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="360" Margin="16" Visibility="Collapsed">
                             <TextBlock Text="{x:Static ui:Glyphs.Globe}" FontFamily="{StaticResource IconFont}" FontSize="28" HorizontalAlignment="Center" Foreground="{DynamicResource TextMuted}"/>
                             <TextBlock x:Name="BrowserError" FontWeight="SemiBold" TextWrapping="Wrap" TextAlignment="Center" Margin="0,12,0,16"/>
-                            <Button Content="Обновить страницу" HorizontalAlignment="Center" Click="BrowserReload_Click" AutomationProperties.Name="Обновить страницу"/>
+                            <Button Content="{ui:Localized 'Обновить страницу', 'Reload page'}" HorizontalAlignment="Center" Click="BrowserReload_Click" AutomationProperties.Name="{ui:Localized 'Обновить страницу', 'Reload page'}"/>
                         </StackPanel>
                     </Grid>
                 </Border>
-                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="Панель субагентов">
+                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="{ui:Localized 'Панель субагентов', 'Subagents panel'}">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Height="44" Margin="16,0,8,0">
-                            <Button x:Name="SubagentsCloseButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="SubagentsClose_Click" ToolTip="Закрыть панель субагентов" AutomationProperties.Name="Закрыть панель субагентов"/>
-                            <Button x:Name="SubagentsExpandButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.FullScreen}" Click="SubagentsExpand_Click" AutomationProperties.Name="Развернуть на всё рабочее пространство"/>
+                            <Button x:Name="SubagentsCloseButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="SubagentsClose_Click" ToolTip="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}" AutomationProperties.Name="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}"/>
+                            <Button x:Name="SubagentsExpandButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.FullScreen}" Click="SubagentsExpand_Click" AutomationProperties.Name="{ui:Localized 'Развернуть на всё рабочее пространство', 'Expand to workspace'}"/>
                             <TextBlock Text="{x:Static ui:Glyphs.Plugin}" FontFamily="{StaticResource IconFont}" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="Субагенты" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <TextBlock Text="{ui:Localized 'Субагенты', 'Subagents'}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         </DockPanel>
                         <DockPanel x:Name="SubagentHeader" DockPanel.Dock="Top" Margin="8,0,16,8" Visibility="Collapsed">
-                            <Button x:Name="SubagentBackButton" Style="{StaticResource IconButton}" Content="&#xE72B;" Margin="0,0,8,0" Visibility="Collapsed" Click="SubagentBack_Click" ToolTip="К списку субагентов" AutomationProperties.Name="К списку субагентов"/>
+                            <Button x:Name="SubagentBackButton" Style="{StaticResource IconButton}" Content="&#xE72B;" Margin="0,0,8,0" Visibility="Collapsed" Click="SubagentBack_Click" ToolTip="{ui:Localized 'К списку субагентов', 'Back to subagents'}" AutomationProperties.Name="{ui:Localized 'К списку субагентов', 'Back to subagents'}"/>
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock x:Name="SubagentTitleText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock x:Name="SubagentModelText" Foreground="{DynamicResource TextMuted}" FontSize="12" TextTrimming="CharacterEllipsis"/>
@@ -268,7 +340,7 @@
                             <StackPanel MaxWidth="736" Margin="4,0,4,16">
                                 <StackPanel x:Name="SubagentList"/>
                                 <StackPanel x:Name="SubagentDetail" Margin="12,8,12,0" Visibility="Collapsed">
-                                    <TextBlock Text="Активность" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,8"/>
+                                    <TextBlock Text="{ui:Localized 'Активность', 'Activity'}" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,8"/>
                                     <ContentControl x:Name="SubagentActivity" HorizontalContentAlignment="Stretch" Focusable="False"/>
                                 </StackPanel>
                             </StackPanel>
@@ -284,10 +356,10 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal">
                     <Button x:Name="SidebarToggle" Style="{StaticResource IconButton}" Content="&#xE90C;" Width="28" Height="28" Margin="11,0,10,0" Visibility="{Binding Visibility, ElementName=WorkArea}" Click="SidebarToggle_Click"/>
-                    <TextBlock Text="Настройки" Style="{StaticResource TitleText}" Visibility="{Binding Visibility, ElementName=SettingsPage}"/>
+                    <TextBlock Text="{ui:Localized 'Настройки', 'Settings'}" Style="{StaticResource TitleText}" Visibility="{Binding Visibility, ElementName=SettingsPage}"/>
                     <StackPanel Orientation="Horizontal" Visibility="{Binding Visibility, ElementName=WorkArea}">
-                        <TextBlock x:Name="ChatTitleText" Text="Новый чат" Style="{StaticResource TitleText}" TextTrimming="CharacterEllipsis"/>
-                        <Button x:Name="ChatMenuButton" Style="{StaticResource IconButton}" Content="&#xE70D;" Width="28" Height="28" FontSize="12" Margin="2,0,0,0" Visibility="Collapsed" ToolTip="Действия с чатом" AutomationProperties.Name="Действия с чатом" Click="ChatMenu_Click"/>
+                        <TextBlock x:Name="ChatTitleText" Text="{ui:Localized 'Новый чат', 'New chat'}" Style="{StaticResource TitleText}" TextTrimming="CharacterEllipsis"/>
+                        <Button x:Name="ChatMenuButton" Style="{StaticResource IconButton}" Content="&#xE70D;" Width="28" Height="28" FontSize="12" Margin="2,0,0,0" Visibility="Collapsed" ToolTip="{ui:Localized 'Действия с чатом', 'Chat actions'}" AutomationProperties.Name="{ui:Localized 'Действия с чатом', 'Chat actions'}" Click="ChatMenu_Click"/>
                         <Button x:Name="GitBranchButton" Style="{StaticResource PillButton}" Height="24" Margin="6,0,0,0" Padding="8,0" Visibility="Collapsed" Click="GitBranch_Click">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Path Width="12" Height="12" Stretch="Uniform" Stroke="{DynamicResource TextDim}" StrokeThickness="1.2" Data="M 3,4 A 1.5,1.5 0 1 1 3,1 A 1.5,1.5 0 1 1 3,4 M 3,12 A 1.5,1.5 0 1 1 3,9 A 1.5,1.5 0 1 1 3,12 M 10,4 A 1.5,1.5 0 1 1 10,1 A 1.5,1.5 0 1 1 10,4 M 3,4 V 9 M 10,4 C 10,8 3,5 3,9"/>
@@ -299,11 +371,11 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Grid Visibility="{Binding Visibility, ElementName=WorkArea}">
-                        <Button x:Name="SubagentsOpenButton" Style="{StaticResource GhostButton}" Margin="0,0,8,0" Content="Субагенты" Visibility="Collapsed" Click="SubagentsOpen_Click" AutomationProperties.Name="Открыть панель субагентов"/>
+                        <Button x:Name="SubagentsOpenButton" Style="{StaticResource GhostButton}" Margin="0,0,8,0" Content="{ui:Localized 'Субагенты', 'Subagents'}" Visibility="Collapsed" Click="SubagentsOpen_Click" AutomationProperties.Name="{ui:Localized 'Открыть панель субагентов', 'Open subagents panel'}"/>
                     </Grid>
-                    <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" AutomationProperties.Name="Свернуть" Click="Minimize_Click"/>
-                    <Button x:Name="MaxButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" AutomationProperties.Name="Развернуть" Click="Maximize_Click"/>
-                    <Button Style="{StaticResource CaptionCloseButton}" Content="&#xE8BB;" AutomationProperties.Name="Закрыть" Click="Close_Click"/>
+                    <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" AutomationProperties.Name="{ui:Localized 'Свернуть', 'Minimize'}" Click="Minimize_Click"/>
+                    <Button x:Name="MaxButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" AutomationProperties.Name="{ui:Localized 'Развернуть', 'Maximize'}" Click="Maximize_Click"/>
+                    <Button Style="{StaticResource CaptionCloseButton}" Content="&#xE8BB;" AutomationProperties.Name="{ui:Localized 'Закрыть окно', 'Close window'}" Click="Close_Click"/>
                 </StackPanel>
             </Grid>
 
@@ -331,67 +403,71 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <StackPanel Margin="8">
-                        <Button x:Name="NewChatButton" Style="{StaticResource SidebarItem}" ToolTip="Новый чат (Ctrl+N)" AutomationProperties.Name="Новый чат" Click="NewChat_Click">
+                    <DockPanel Margin="8">
+                        <Button x:Name="SearchButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="&#xE721;" Cursor="Hand" VerticalAlignment="Center" ToolTip="{ui:Localized 'Поиск (Ctrl+K)', 'Search (Ctrl+K)'}" AutomationProperties.Name="{ui:Localized 'Поиск', 'Search'}" Click="Search_Click"/>
+                        <Button x:Name="NewChatButton" Style="{StaticResource SidebarItem}" AutomationProperties.Name="{ui:Localized 'Новый чат', 'New chat'}" Click="NewChat_Click" Cursor="Hand">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xE70F;"/>
-                                <TextBlock x:Name="NewChatLabel" Style="{StaticResource SidebarLabel}" Text="Новый чат" Foreground="{DynamicResource Text}"/>
+                                <TextBlock x:Name="NewChatLabel" Style="{StaticResource SidebarLabel}" Text="{ui:Localized 'Новый чат', 'New chat'}" Foreground="{DynamicResource Text}"/>
                             </StackPanel>
                         </Button>
-                        <Button x:Name="ChatsButton" Style="{StaticResource SidebarItem}" ToolTip="Все чаты (Ctrl+H)" AutomationProperties.Name="Все чаты" Click="SidebarToggle_Click">
-                            <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xE8F2;"/>
-                        </Button>
-                        <Border Height="1" Margin="0,0,0,8" Background="{DynamicResource Line}" Visibility="{Binding Visibility, ElementName=ChatsButton}"/>
-                    </StackPanel>
+                    </DockPanel>
 
                     <ScrollViewer x:Name="ChatListScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,4,0" Focusable="False" ScrollChanged="ChatListScroll_ScrollChanged">
-                        <StackPanel x:Name="ChatList" Margin="8,0,4,8" KeyboardNavigation.DirectionalNavigation="Contained" AutomationProperties.Name="Чаты" PreviewKeyDown="ChatList_PreviewKeyDown"/>
+                        <StackPanel x:Name="ChatList" Margin="8,0,4,8" KeyboardNavigation.DirectionalNavigation="Contained" AutomationProperties.Name="{ui:Localized 'Чаты', 'Chats'}" PreviewKeyDown="ChatList_PreviewKeyDown"/>
                     </ScrollViewer>
 
                     <StackPanel Grid.Row="2" Margin="8,0,8,8">
                         <Button x:Name="TrashButton" Style="{StaticResource SidebarItem}" Click="Trash_Click">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xE74D;"/>
-                                <TextBlock x:Name="TrashLabel" Style="{StaticResource SidebarLabel}" Text="Корзина"/>
+                                <TextBlock x:Name="TrashLabel" Style="{StaticResource SidebarLabel}" Text="{ui:Localized 'Корзина', 'Trash'}"/>
                                 <TextBlock x:Name="TrashCount" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource TextMuted}"/>
                             </StackPanel>
                         </Button>
-                        <Button x:Name="BalanceButton" Style="{StaticResource SidebarItem}" ToolTip="Баланс и расход (Ctrl+B)" Click="Balance_Click">
+                        <Button x:Name="BalanceButton" Style="{StaticResource SidebarItem}" ToolTip="{ui:Localized 'Баланс и расход (Ctrl+B)', 'Balance and usage (Ctrl+B)'}" Click="Balance_Click">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xEC4A;"/>
-                                <TextBlock x:Name="BalanceText" Style="{StaticResource SidebarLabel}" Text="Баланс и расход"/>
+                                <TextBlock x:Name="BalanceText" Style="{StaticResource SidebarLabel}" Text="{ui:Localized 'Баланс и расход', 'Balance and usage'}"/>
                             </StackPanel>
                         </Button>
-                        <Button x:Name="SettingsButton" Style="{StaticResource SidebarItem}" ToolTip="Настройки (Ctrl+,)" AutomationProperties.Name="Настройки" Click="OpenSettings_Click">
+                        <Button x:Name="SettingsButton" Style="{StaticResource SidebarItem}" ToolTip="{ui:Localized 'Настройки (Ctrl+,)', 'Settings (Ctrl+,)'}" AutomationProperties.Name="{ui:Localized 'Настройки', 'Settings'}" Click="OpenSettings_Click">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xE713;"/>
-                                <TextBlock x:Name="SettingsLabel" Style="{StaticResource SidebarLabel}" Text="Настройки"/>
+                                <TextBlock x:Name="SettingsLabel" Style="{StaticResource SidebarLabel}" Text="{ui:Localized 'Настройки', 'Settings'}"/>
                             </StackPanel>
                         </Button>
-                        <Button x:Name="MoreButton" Style="{StaticResource SidebarItem}" ToolTip="Другие команды (F10)" AutomationProperties.Name="Другие команды" Click="More_Click">
+                        <Button x:Name="MoreButton" Style="{StaticResource SidebarItem}" ToolTip="{ui:Localized 'Другие команды (F10)', 'More actions (F10)'}" AutomationProperties.Name="{ui:Localized 'Другие команды', 'More actions'}" Click="More_Click">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Style="{StaticResource SidebarIcon}" Text="&#xE712;"/>
-                                <TextBlock x:Name="MoreLabel" Style="{StaticResource SidebarLabel}" Text="Ещё"/>
+                                <TextBlock x:Name="MoreLabel" Style="{StaticResource SidebarLabel}" Text="{ui:Localized 'Ещё', 'More'}"/>
                             </StackPanel>
                             <Button.ContextMenu>
                                 <ContextMenu x:Name="MoreMenu">
-                                    <MenuItem Header="Браузер" Click="BrowserOpen_Click">
+                                    <MenuItem Header="{ui:Localized 'Браузер', 'Browser'}" Click="BrowserOpen_Click">
                                         <MenuItem.Icon><TextBlock FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xE774;"/></MenuItem.Icon>
                                     </MenuItem>
-                                    <MenuItem Header="Компактный режим" Click="CompactMode_Click">
+                                    <MenuItem Header="{ui:Localized 'Компактный режим', 'Compact mode'}" Click="CompactMode_Click">
                                         <MenuItem.Icon><TextBlock FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xE73F;"/></MenuItem.Icon>
                                     </MenuItem>
-                                    <MenuItem Header="Сочетания клавиш" InputGestureText="F1" Click="Shortcuts_Click">
+                                    <MenuItem Header="{ui:Localized 'Сочетания клавиш', 'Keyboard shortcuts'}" InputGestureText="F1" Click="Shortcuts_Click">
                                         <MenuItem.Icon><TextBlock FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xE765;"/></MenuItem.Icon>
                                     </MenuItem>
-                                    <MenuItem Header="О программе" Click="About_Click">
+                                    <MenuItem Header="{ui:Localized 'О программе', 'About'}" Click="About_Click">
                                         <MenuItem.Icon><TextBlock FontFamily="{StaticResource IconFont}" FontSize="16" Text="&#xE946;"/></MenuItem.Icon>
                                     </MenuItem>
                                 </ContextMenu>
                             </Button.ContextMenu>
                         </Button>
                     </StackPanel>
-                    <Thumb x:Name="SidebarResize" Grid.RowSpan="3" HorizontalAlignment="Right" Width="7" Cursor="SizeWE" Focusable="True" Visibility="Collapsed" FocusVisualStyle="{StaticResource FocusInner}" ToolTip="Потяните край или нажмите ← / →, чтобы изменить ширину" AutomationProperties.Name="Изменить ширину списка чатов" DragStarted="SidebarResize_DragStarted" DragDelta="SidebarResize_DragDelta" DragCompleted="SidebarResize_DragCompleted" PreviewKeyDown="SidebarResize_PreviewKeyDown">
+                    <Thumb x:Name="SidebarResize" Grid.RowSpan="3" HorizontalAlignment="Right" Width="7" Cursor="SizeWE" Focusable="True" Visibility="Collapsed" FocusVisualStyle="{StaticResource FocusInner}" ToolTip="{ui:Localized 'Потяните край или нажмите ← / →, чтобы изменить ширину', 'Drag the edge or press ← / → to resize'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину списка чатов', 'Resize chat list'}" DragStarted="SidebarResize_DragStarted" DragDelta="SidebarResize_DragDelta" DragCompleted="SidebarResize_DragCompleted" PreviewKeyDown="SidebarResize_PreviewKeyDown">
                         <Thumb.Template>
                             <ControlTemplate TargetType="Thumb">
                                 <Border Background="Transparent">
@@ -416,7 +492,7 @@
                 <Rectangle Margin="16" RadiusX="16" RadiusY="16" Stroke="{DynamicResource TrackStrong}" StrokeThickness="2" StrokeDashArray="5 4"/>
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                     <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE723;" FontSize="28" HorizontalAlignment="Center"/>
-                    <TextBlock Text="Отпустите, чтобы прикрепить" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,8"/>
+                    <TextBlock Text="{ui:Localized 'Отпустите, чтобы прикрепить', 'Drop to attach'}" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,8"/>
                     <TextBlock x:Name="DropHint" Foreground="{DynamicResource TextMuted}" TextAlignment="Center" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="460"/>
                 </StackPanel>
             </Grid>
@@ -477,39 +553,39 @@
                 </Grid.Resources>
 
                 <Border Grid.RowSpan="2" Background="{DynamicResource ChromeBg}" Padding="8,12">
-                    <StackPanel x:Name="SettingsNav" AutomationProperties.Name="Разделы настроек">
+                    <StackPanel x:Name="SettingsNav" AutomationProperties.Name="{ui:Localized 'Разделы настроек', 'Settings sections'}">
                         <DockPanel Margin="0,0,0,12">
-                            <Button Style="{StaticResource IconButton}" Content="&#xE72B;" ToolTip="Вернуться к чату без сохранения (Esc)" AutomationProperties.Name="Закрыть настройки" Click="SettingsCancel_Click"/>
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Настройки" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            <Button Style="{StaticResource IconButton}" Content="&#xE72B;" ToolTip="{ui:Localized 'Вернуться к чату без сохранения (Esc)', 'Return to chat without saving (Esc)'}" AutomationProperties.Name="{ui:Localized 'Закрыть настройки', 'Close settings'}" Click="SettingsCancel_Click"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Настройки', 'Settings'}" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         </DockPanel>
-                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsGeneral" Click="SettingsNav_Click" AutomationProperties.Name="Общие">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsGeneral" Click="SettingsNav_Click" AutomationProperties.Name="{ui:Localized 'Общие', 'General'}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE713;" FontSize="16" VerticalAlignment="Center"/>
-                                <TextBlock Text="Общие" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{ui:Localized 'Общие', 'General'}" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsProviders" Click="SettingsNav_Click" AutomationProperties.Name="Провайдеры">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsProviders" Click="SettingsNav_Click" AutomationProperties.Name="{ui:Localized 'Провайдеры', 'Providers'}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE753;" FontSize="16" VerticalAlignment="Center"/>
-                                <TextBlock Text="Провайдеры" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{ui:Localized 'Провайдеры', 'Providers'}" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsAgent" Click="SettingsNav_Click" AutomationProperties.Name="Агент">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsAgent" Click="SettingsNav_Click" AutomationProperties.Name="{ui:Localized 'Агент', 'Agent'}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE99A;" FontSize="16" VerticalAlignment="Center"/>
-                                <TextBlock Text="Агент" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{ui:Localized 'Агент', 'Agent'}" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsNetwork" Click="SettingsNav_Click" AutomationProperties.Name="Сеть">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsNetwork" Click="SettingsNav_Click" AutomationProperties.Name="{ui:Localized 'Сеть', 'Network'}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE774;" FontSize="16" VerticalAlignment="Center"/>
-                                <TextBlock Text="Сеть" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{ui:Localized 'Сеть', 'Network'}" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsLimits" Click="SettingsNav_Click" AutomationProperties.Name="Лимиты">
+                        <Button Style="{StaticResource SettingsNavItem}" CommandParameter="SettingsLimits" Click="SettingsNav_Click" AutomationProperties.Name="{ui:Localized 'Лимиты', 'Limits'}">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xEC4A;" FontSize="16" VerticalAlignment="Center"/>
-                                <TextBlock Text="Лимиты" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="{ui:Localized 'Лимиты', 'Limits'}" Margin="12,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
                     </StackPanel>
@@ -518,27 +594,36 @@
                 <ScrollViewer x:Name="SettingsScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="32,28,32,24" Focusable="False">
                     <Grid x:Name="SettingsFields" MaxWidth="724" TextBoxBase.TextChanged="SettingsFields_TextChanged">
                         <StackPanel x:Name="SettingsGeneral">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Оформление" Margin="0,0,0,16"/>
-                            <Border Style="{StaticResource SettingsCard}">
-                                <Border Style="{StaticResource SettingsRow}">
-                                    <DockPanel>
-                                        <Button x:Name="ThemeButton" Style="{StaticResource RowDropdown}" Click="ThemeButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Тема: {0}'}"/>
-                                        <TextBlock Text="Тема" VerticalAlignment="Center"/>
-                                    </DockPanel>
-                                </Border>
-                            </Border>
-                        </StackPanel>
-                        <StackPanel x:Name="SettingsProviders" Visibility="Collapsed">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Провайдеры" Margin="0,0,0,16"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Оформление', 'Appearance'}" Margin="0,0,0,16"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="ProviderButton" Style="{StaticResource RowDropdown}" Click="ProviderButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Провайдер: {0}'}"/>
+                                            <Button x:Name="ThemeButton" Style="{StaticResource RowDropdown}" Click="ThemeButton_Click" AutomationProperties.Name="{ui:Localized 'Тема', 'Theme'}"/>
+                                            <TextBlock Text="{ui:Localized 'Тема', 'Theme'}" VerticalAlignment="Center"/>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <Button x:Name="LanguageButton" Style="{StaticResource RowDropdown}" Click="LanguageButton_Click"
+                                                    AutomationProperties.Name="{ui:Localized 'Язык системы', 'System language'}"/>
+                                            <TextBlock Text="{ui:Localized 'Язык системы', 'System language'}" VerticalAlignment="Center"/>
+                                        </DockPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                        <StackPanel x:Name="SettingsProviders" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Провайдеры', 'Providers'}" Margin="0,0,0,16"/>
+                            <Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <Button x:Name="ProviderButton" Style="{StaticResource RowDropdown}" Click="ProviderButton_Click" AutomationProperties.Name="{ui:Localized 'Провайдер', 'Provider'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Провайдер"/>
+                                                <TextBlock Text="{ui:Localized 'Провайдер', 'Provider'}"/>
                                                 <TextBlock x:Name="ProviderKeysHint" Style="{StaticResource RowHint}">
-                                                    <Hyperlink x:Name="ProviderKeysLink" RequestNavigate="KeyLink_RequestNavigate">Открыть страницу ключей</Hyperlink>
+                                                    <Hyperlink x:Name="ProviderKeysLink" RequestNavigate="KeyLink_RequestNavigate"><Run Text="{ui:Localized 'Открыть страницу ключей', 'Open API keys page'}"/></Hyperlink>
                                                 </TextBlock>
                                             </StackPanel>
                                         </DockPanel>
@@ -546,12 +631,12 @@
 
                                     <Border x:Name="KeyPanel" Style="{StaticResource SettingsRow}">
                                         <StackPanel>
-                                            <TextBlock x:Name="KeyLabel" Text="API-ключ"/>
+                                            <TextBlock x:Name="KeyLabel" Text="{ui:Localized 'API-ключ', 'API key'}"/>
                                             <DockPanel Margin="0,8,0,0">
-                                                <ToggleButton x:Name="ShowKeyToggle" DockPanel.Dock="Right" Style="{StaticResource IconToggle}" Content="&#xE890;" Margin="8,0,0,0" ToolTip="Показать или скрыть ключ" AutomationProperties.Name="Показать ключ" Checked="ShowKey_Changed" Unchecked="ShowKey_Changed"/>
+                                                <ToggleButton x:Name="ShowKeyToggle" DockPanel.Dock="Right" Style="{StaticResource IconToggle}" Content="&#xE890;" Margin="8,0,0,0" ToolTip="{ui:Localized 'Показать или скрыть ключ', 'Show or hide API key'}" AutomationProperties.Name="{ui:Localized 'Показать ключ', 'Show API key'}" Checked="ShowKey_Changed" Unchecked="ShowKey_Changed"/>
                                                 <Grid>
-                                                    <PasswordBox x:Name="KeyPasswordBox" PasswordChanged="ConnectionFieldChanged" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="API-ключ"/>
-                                                    <TextBox x:Name="KeyTextBox" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" Visibility="Collapsed" AutomationProperties.Name="API-ключ"/>
+                                                    <PasswordBox x:Name="KeyPasswordBox" PasswordChanged="ConnectionFieldChanged" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="{ui:Localized 'API-ключ', 'API key'}"/>
+                                                    <TextBox x:Name="KeyTextBox" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'API-ключ', 'API key'}"/>
                                                 </Grid>
                                             </DockPanel>
                                             <TextBlock x:Name="KeyHint" Style="{StaticResource FieldHint}" Margin="0,8,0,0"/>
@@ -560,17 +645,17 @@
 
                                     <Border x:Name="ChatGptPanel" Style="{StaticResource SettingsRow}" Visibility="Collapsed">
                                         <StackPanel>
-                                            <TextBlock Text="Аккаунт ChatGPT"/>
+                                            <TextBlock Text="{ui:Localized 'Аккаунт ChatGPT', 'ChatGPT account'}"/>
                                             <DockPanel x:Name="ChatGptAccountPanel" Margin="0,8,0,0" Visibility="Collapsed">
-                                                <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="Выйти" Margin="12,0,0,0" AutomationProperties.Name="Выйти из ChatGPT" Click="ChatGptSignOut_Click"/>
+                                                <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="{ui:Localized 'Выйти', 'Sign out'}" Margin="12,0,0,0" AutomationProperties.Name="{ui:Localized 'Выйти из ChatGPT', 'Sign out of ChatGPT'}" Click="ChatGptSignOut_Click"/>
                                                 <StackPanel VerticalAlignment="Center">
                                                     <TextBlock x:Name="ChatGptEmail" TextTrimming="CharacterEllipsis"/>
                                                     <TextBlock x:Name="ChatGptPlan" Style="{StaticResource RowHint}"/>
                                                 </StackPanel>
                                             </DockPanel>
                                             <StackPanel x:Name="ChatGptSignInPanel" Orientation="Horizontal" Margin="0,12,0,0">
-                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="Продолжить с ChatGPT" AutomationProperties.Name="Продолжить с ChatGPT" Click="ChatGptSignIn_Click"/>
-                                                <Button x:Name="ChatGptCancelButton" Content="Отменить вход" Margin="8,0,0,0" Visibility="Collapsed" AutomationProperties.Name="Отменить вход" Click="ChatGptCancel_Click"/>
+                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" AutomationProperties.Name="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" Click="ChatGptSignIn_Click"/>
+                                                <Button x:Name="ChatGptCancelButton" Content="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Margin="8,0,0,0" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Click="ChatGptCancel_Click"/>
                                             </StackPanel>
                                             <TextBlock x:Name="ChatGptHint" Style="{StaticResource FieldHint}" Margin="0,8,0,0"/>
                                         </StackPanel>
@@ -578,26 +663,26 @@
 
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="DefaultModelButton" Style="{StaticResource RowDropdown}" Click="DefaultModelButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель: {0}'}"/>
+                                            <Button x:Name="DefaultModelButton" Style="{StaticResource RowDropdown}" Click="DefaultModelButton_Click" AutomationProperties.Name="{ui:Localized 'Модель', 'Model'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Модель"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="Своя для каждого провайдера; у текущего — та же, что выбрана в поле ввода."/>
+                                                <TextBlock Text="{ui:Localized 'Модель', 'Model'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Своя для каждого провайдера; у текущего — та же, что выбрана в поле ввода.', 'Each provider has its own model. The active provider uses the model selected in the composer.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
 
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="ImageSourceButton" Style="{StaticResource RowDropdown}" Click="ImageSourceButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Провайдер изображений: {0}'}"/>
-                                            <TextBlock Text="Провайдер изображений" VerticalAlignment="Center"/>
+                                            <Button x:Name="ImageSourceButton" Style="{StaticResource RowDropdown}" Click="ImageSourceButton_Click" AutomationProperties.Name="{ui:Localized 'Провайдер изображений', 'Image provider'}"/>
+                                            <TextBlock Text="{ui:Localized 'Провайдер изображений', 'Image provider'}" VerticalAlignment="Center"/>
                                         </DockPanel>
                                     </Border>
 
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="ImageModelButton" Style="{StaticResource RowDropdown}" Click="ImageModelButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Модель для изображений: {0}'}"/>
+                                            <Button x:Name="ImageModelButton" Style="{StaticResource RowDropdown}" Click="ImageModelButton_Click" AutomationProperties.Name="{ui:Localized 'Модель для изображений', 'Image model'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Модель для изображений"/>
+                                                <TextBlock Text="{ui:Localized 'Модель для изображений', 'Image model'}"/>
                                                 <TextBlock x:Name="ImageModelHint" Style="{StaticResource RowHint}"/>
                                             </StackPanel>
                                         </DockPanel>
@@ -605,15 +690,15 @@
 
                                     <Border x:Name="TookenPanel" Style="{StaticResource SettingsRow}">
                                         <StackPanel>
-                                            <TextBlock Text="Адрес API"/>
-                                            <TextBox x:Name="BaseUrlBox" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" Margin="0,8,0,0" AutomationProperties.Name="Адрес API"/>
-                                            <TextBlock Style="{StaticResource FieldHint}" Margin="0,8,0,0" Text="Обычно менять не нужно."/>
+                                            <TextBlock Text="{ui:Localized 'Адрес API', 'API address'}"/>
+                                            <TextBox x:Name="BaseUrlBox" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" Margin="0,8,0,0" AutomationProperties.Name="{ui:Localized 'Адрес API', 'API address'}"/>
+                                            <TextBlock Style="{StaticResource FieldHint}" Margin="0,8,0,0" Text="{ui:Localized 'Обычно менять не нужно.', 'Usually you can leave this unchanged.'}"/>
                                         </StackPanel>
                                     </Border>
 
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="TestKeyButton" Content="Проверить API-ключ" VerticalAlignment="Top" Click="TestKey_Click" ToolTip="Запросить список моделей у выбранного провайдера" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}}"/>
+                                            <Button x:Name="TestKeyButton" Content="{ui:Localized 'Проверить API-ключ', 'Check API key'}" VerticalAlignment="Top" Click="TestKey_Click" ToolTip="{ui:Localized 'Запросить список моделей у выбранного провайдера', 'Request the model list from the selected provider'}" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}}"/>
                                             <TextBlock x:Name="TestKeyIcon" FontFamily="{StaticResource IconFont}" Margin="12,7,0,0"/>
                                             <TextBlock x:Name="TestKeyResult" FontSize="13" VerticalAlignment="Center" Margin="8,0,0,0"/>
                                         </DockPanel>
@@ -621,149 +706,158 @@
                                 </StackPanel>
                             </Border>
 
-                            <TextBlock Style="{StaticResource SectionTitle}" Text="Голосовой ввод"/>
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="{ui:Localized 'Голосовой ввод', 'Voice input'}"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <Border Style="{StaticResource SettingsRow}">
                                     <StackPanel>
                                         <StackPanel x:Name="VoiceKeyPanel" Margin="0,0,0,8">
-                                            <TextBlock Text="API-ключ Groq"/>
-                                            <PasswordBox x:Name="VoiceKeyBox" Style="{StaticResource FieldPasswordBox}" Margin="0,8,0,0" AutomationProperties.Name="API-ключ Groq для голосового ввода"/>
+                                            <TextBlock Text="{ui:Localized 'API-ключ Groq', 'Groq API key'}"/>
+                                            <PasswordBox x:Name="VoiceKeyBox" Style="{StaticResource FieldPasswordBox}" Margin="0,8,0,0" AutomationProperties.Name="{ui:Localized 'API-ключ Groq для голосового ввода', 'Groq API key for voice input'}"/>
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource FieldHint}" Margin="0">
-                                            <Run x:Name="VoiceHint"/><Hyperlink Click="GroqKeysLink_Click">Открыть страницу ключей</Hyperlink>
+                                            <Run x:Name="VoiceHint"/><Hyperlink Click="GroqKeysLink_Click"><Run Text="{ui:Localized 'Открыть страницу ключей', 'Open API keys page'}"/></Hyperlink>
                                         </TextBlock>
                                     </StackPanel>
                                 </Border>
                             </Border>
                         </StackPanel>
                         <StackPanel x:Name="SettingsNetwork" Visibility="Collapsed">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Сеть" Margin="0,0,0,16"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Сеть', 'Network'}" Margin="0,0,0,16"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="NetworkModeButton" Style="{StaticResource RowDropdown}" Click="NetworkModeButton_Click" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}, StringFormat='Подключение приложения: {0}'}"/>
+                                            <Button x:Name="NetworkModeButton" Style="{StaticResource RowDropdown}" Click="NetworkModeButton_Click" AutomationProperties.Name="{ui:Localized 'Подключение приложения', 'App connection'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Подключение приложения"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="Маршрут используют запросы Sharp Agent и команды с поддержкой переменных прокси. Внешний браузер использует свои сетевые настройки."/>
+                                                <TextBlock Text="{ui:Localized 'Подключение приложения', 'App connection'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Маршрут используют запросы Sharp Agent и команды с поддержкой переменных прокси. Внешний браузер использует свои сетевые настройки.', 'Sharp Agent and commands that support proxy variables use this route. External browsers use their own network settings.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
                                     <StackPanel x:Name="NetworkProxyFields" Visibility="Collapsed">
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <Button x:Name="NetworkProxyType" Style="{StaticResource RowDropdown}" Click="NetworkProxyType_Click" AutomationProperties.Name="Тип прокси"/>
-                                                <TextBlock Text="Тип прокси" VerticalAlignment="Center"/>
+                                                <Button x:Name="NetworkProxyType" Style="{StaticResource RowDropdown}" Click="NetworkProxyType_Click" AutomationProperties.Name="{ui:Localized 'Тип прокси', 'Proxy type'}"/>
+                                                <TextBlock Text="{ui:Localized 'Тип прокси', 'Proxy type'}" VerticalAlignment="Center"/>
                                             </DockPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <TextBox x:Name="NetworkHost" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="Адрес прокси"/>
-                                                <TextBlock Text="Адрес сервера" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="NetworkHost" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="{ui:Localized 'Адрес прокси', 'Proxy address'}"/>
+                                                <TextBlock Text="{ui:Localized 'Адрес сервера', 'Server address'}" VerticalAlignment="Center"/>
                                             </DockPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <TextBox x:Name="NetworkPort" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="Порт прокси"/>
-                                                <TextBlock Text="Порт" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="NetworkPort" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="{ui:Localized 'Порт прокси', 'Proxy port'}"/>
+                                                <TextBlock Text="{ui:Localized 'Порт', 'Port'}" VerticalAlignment="Center"/>
                                             </DockPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <TextBox x:Name="NetworkUser" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="Логин прокси"/>
+                                                <TextBox x:Name="NetworkUser" Style="{StaticResource RowField}" TextChanged="ConnectionFieldChanged" AutomationProperties.Name="{ui:Localized 'Логин прокси', 'Proxy username'}"/>
                                                 <StackPanel Style="{StaticResource RowText}">
-                                                    <TextBlock Text="Логин"/>
-                                                    <TextBlock Style="{StaticResource RowHint}" Text="Логин и пароль нужны, только если прокси требует авторизацию."/>
+                                                    <TextBlock Text="{ui:Localized 'Логин', 'Username'}"/>
+                                                    <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Логин и пароль нужны, только если прокси требует авторизацию.', 'A username and password are needed only for proxies that require authentication.'}"/>
                                                 </StackPanel>
                                             </DockPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <PasswordBox x:Name="NetworkPassword" DockPanel.Dock="Right" Width="200" Style="{StaticResource FieldPasswordBox}" PasswordChanged="ConnectionFieldChanged" AutomationProperties.Name="Пароль прокси"/>
-                                                <TextBlock Text="Пароль" VerticalAlignment="Center"/>
+                                                <PasswordBox x:Name="NetworkPassword" DockPanel.Dock="Right" Width="200" Style="{StaticResource FieldPasswordBox}" PasswordChanged="ConnectionFieldChanged" AutomationProperties.Name="{ui:Localized 'Пароль прокси', 'Proxy password'}"/>
+                                                <TextBlock Text="{ui:Localized 'Пароль', 'Password'}" VerticalAlignment="Center"/>
                                             </DockPanel>
                                         </Border>
                                     </StackPanel>
                                     <StackPanel x:Name="NetworkVpnFields" Visibility="Collapsed">
                                         <Border Style="{StaticResource SettingsRow}">
                                             <StackPanel>
-                                                <TextBlock Text="Ссылка подписки"/>
+                                                <TextBlock Text="{ui:Localized 'Ссылка подписки', 'Subscription URL'}"/>
                                                 <DockPanel Margin="0,8,0,0">
-                                                    <Button x:Name="NetworkImportButton" DockPanel.Dock="Right" Content="Загрузить серверы" Margin="8,0,0,0" Click="NetworkImport_Click"/>
-                                                    <PasswordBox x:Name="NetworkSubscription" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="Ссылка подписки VPN" PasswordChanged="NetworkSubscription_Changed"/>
+                                                    <Button x:Name="NetworkImportButton" DockPanel.Dock="Right" Content="{ui:Localized 'Загрузить серверы', 'Load servers'}" Margin="8,0,0,0" Click="NetworkImport_Click"/>
+                                                    <PasswordBox x:Name="NetworkSubscription" Style="{StaticResource FieldPasswordBox}" AutomationProperties.Name="{ui:Localized 'Ссылка подписки VPN', 'VPN subscription URL'}" PasswordChanged="NetworkSubscription_Changed"/>
                                                 </DockPanel>
                                                 <TextBlock x:Name="NetworkImportStatus" Style="{StaticResource RowStatus}" AutomationProperties.LiveSetting="Polite"/>
                                             </StackPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <DockPanel>
-                                                <Button x:Name="NetworkVpnServer" Style="{StaticResource RowDropdown}" Click="NetworkVpnServer_Click" AutomationProperties.Name="Выбрать сервер VPN"/>
-                                                <TextBlock Text="Сервер VPN" VerticalAlignment="Center"/>
+                                                <Button x:Name="NetworkVpnServer" Style="{StaticResource RowDropdown}" Click="NetworkVpnServer_Click" AutomationProperties.Name="{ui:Localized 'Выбрать сервер VPN', 'Choose a VPN server'}"/>
+                                                <TextBlock Text="{ui:Localized 'Сервер VPN', 'VPN server'}" VerticalAlignment="Center"/>
                                             </DockPanel>
                                         </Border>
                                         <Border Style="{StaticResource SettingsRow}">
                                             <StackPanel>
                                                 <StackPanel x:Name="NetworkEnginePicker">
-                                                    <TextBlock Text="Путь к sing-box.exe"/>
+                                                    <TextBlock Text="{ui:Localized 'Путь к sing-box.exe', 'Path to sing-box.exe'}"/>
                                                     <DockPanel Margin="0,8,0,0">
-                                                        <Button DockPanel.Dock="Right" Margin="8,0,0,0" Content="Выбрать…" Click="NetworkBrowse_Click"/>
-                                                        <TextBox x:Name="NetworkEngine" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="Путь к sing-box.exe"/>
+                                                        <Button DockPanel.Dock="Right" Margin="8,0,0,0" Content="{ui:Localized 'Выбрать…', 'Browse…'}" Click="NetworkBrowse_Click"/>
+                                                        <TextBox x:Name="NetworkEngine" TextChanged="ConnectionFieldChanged" Style="{StaticResource FieldTextBox}" AutomationProperties.Name="{ui:Localized 'Путь к sing-box.exe', 'Path to sing-box.exe'}"/>
                                                     </DockPanel>
                                                     <TextBlock Style="{StaticResource FieldHint}" Margin="0,8,0,0">
-                                                        <Run Text="Подходит распакованная Windows-версия 1.12 или новее. "/><Hyperlink Click="NetworkDownload_Click">Скачать sing-box</Hyperlink>
+                                                        <Run Text="{ui:Localized 'Подходит распакованная Windows-версия 1.12 или новее. ', 'Use an extracted Windows build of version 1.12 or later. '}"/><Hyperlink Click="NetworkDownload_Click"><Run Text="{ui:Localized 'Скачать sing-box', 'Download sing-box'}"/></Hyperlink>
                                                     </TextBlock>
                                                 </StackPanel>
-                                                <TextBlock x:Name="NetworkEngineFound" Foreground="{DynamicResource Success}" Text="sing-box.exe найден" Visibility="Collapsed"/>
+                                                <TextBlock x:Name="NetworkEngineFound" Foreground="{DynamicResource Success}" Text="{ui:Localized 'sing-box.exe найден', 'sing-box.exe found'}" Visibility="Collapsed"/>
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <Button x:Name="NetworkTestButton" Content="Проверить сетевой маршрут" VerticalAlignment="Top" Click="NetworkTest_Click" ToolTip="Проверить доступность API по выбранному маршруту запросом без ключа"/>
+                                            <Button x:Name="NetworkTestButton" Content="{ui:Localized 'Проверить сетевой маршрут', 'Check network route'}" VerticalAlignment="Top" Click="NetworkTest_Click" ToolTip="{ui:Localized 'Проверить доступность API по выбранному маршруту запросом без ключа', 'Check whether the API is reachable over this route without an API key'}"/>
                                             <TextBlock x:Name="NetworkTestStatus" FontSize="13" VerticalAlignment="Center" Margin="12,0,0,0" AutomationProperties.LiveSetting="Polite"/>
                                         </DockPanel>
                                     </Border>
                                 </StackPanel>
                             </Border>
-                            <TextBlock Style="{StaticResource FieldHint}" Text="Настройки применяются после сохранения."/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="{ui:Localized 'Настройки применяются после сохранения.', 'Settings take effect after saving.'}"/>
                         </StackPanel>
                         <StackPanel x:Name="SettingsAgent" Visibility="Collapsed">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Агент" Margin="0,0,0,16"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Агент', 'Agent'}" Margin="0,0,0,16"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <ToggleButton x:Name="SubagentsToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="Использовать субагентов"/>
+                                            <ToggleButton x:Name="AutoChatTitlesToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Использовать субагентов"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="Сколько поручений и шагов нужно на задачу, агент решает сам."/>
+                                                <TextBlock Text="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Если выключено, новый чат получает название из первого сообщения.', 'When off, new chats use their first message as the title.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <ToggleButton x:Name="ComputerUseToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" ToolTip="Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам" AutomationProperties.Name="Управление компьютером"/>
+                                            <ToggleButton x:Name="SubagentsToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Использовать субагентов', 'Use subagents'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Управление компьютером"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно."/>
+                                                <TextBlock Text="{ui:Localized 'Использовать субагентов', 'Use subagents'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'В быстром режиме агент поручает больше независимых проверок. В обычном режиме бюджет субагентов меньше.', 'Fast mode delegates more independent checks. Standard mode uses a smaller subagent budget.'}"/>
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <ToggleButton x:Name="ComputerUseToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" ToolTip="{ui:Localized 'Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам', 'The agent launches apps, clicks controls, types, and checks results using the UI tree and screenshots'}" AutomationProperties.Name="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
+                                            <StackPanel Style="{StaticResource RowText}">
+                                                <TextBlock Text="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно.', 'The agent uses screenshots only when the UI tree is insufficient, since screenshots use many tokens. Unavailable in sandbox mode.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <StackPanel>
-                                            <TextBlock Text="Плагины"/>
+                                            <TextBlock Text="{ui:Localized 'Плагины', 'Plugins'}"/>
                                             <TextBlock x:Name="PluginsText" Style="{StaticResource RowHint}"/>
                                             <TextBlock Style="{StaticResource RowHint}">
-                                                <Hyperlink Click="OpenPlugins_Click">Открыть папку плагинов</Hyperlink>
+                                                <Hyperlink Click="OpenPlugins_Click"><Run Text="{ui:Localized 'Открыть папку плагинов', 'Open plugins folder'}"/></Hyperlink>
                                             </TextBlock>
                                         </StackPanel>
                                     </Border>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <TextBox x:Name="MaxTokensBox" Style="{StaticResource RowField}" AutomationProperties.Name="Токенов в одном ответе"/>
+                                            <TextBox x:Name="MaxTokensBox" Style="{StaticResource RowField}" AutomationProperties.Name="{ui:Localized 'Токенов в одном ответе', 'Tokens per response'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="Токенов в одном ответе, не больше"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="Пустое поле оставляет предел модели. Настройка действует для всех провайдеров, включая ChatGPT."/>
+                                                <TextBlock Text="{ui:Localized 'Токенов в одном ответе, не больше', 'Maximum tokens per response'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Пустое поле оставляет предел модели. Настройка действует для всех провайдеров, включая ChatGPT.', 'Leave blank to use the model limit. Applies to all providers, including ChatGPT.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
@@ -771,24 +865,24 @@
                             </Border>
                         </StackPanel>
                         <StackPanel x:Name="SettingsLimits" Visibility="Collapsed">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="Лимиты расхода" Margin="0,0,0,16"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Лимиты расхода', 'Usage limits'}" Margin="0,0,0,16"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <TextBox x:Name="DayLimitBox" Style="{StaticResource RowField}" AutomationProperties.Name="Лимит в день, миллионов токенов"/>
-                                            <TextBlock Text="В день, млн токенов" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="DayLimitBox" Style="{StaticResource RowField}" AutomationProperties.Name="{ui:Localized 'Лимит в день, миллионов токенов', 'Daily limit, millions of tokens'}"/>
+                                            <TextBlock Text="{ui:Localized 'В день, млн токенов', 'Per day, million tokens'}" VerticalAlignment="Center"/>
                                         </DockPanel>
                                     </Border>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <TextBox x:Name="MonthLimitBox" Style="{StaticResource RowField}" AutomationProperties.Name="Лимит в месяц, миллионов токенов"/>
-                                            <TextBlock Text="В месяц, млн токенов" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="MonthLimitBox" Style="{StaticResource RowField}" AutomationProperties.Name="{ui:Localized 'Лимит в месяц, миллионов токенов', 'Monthly limit, millions of tokens'}"/>
+                                            <TextBlock Text="{ui:Localized 'В месяц, млн токенов', 'Per month, million tokens'}" VerticalAlignment="Center"/>
                                         </DockPanel>
                                     </Border>
                                 </StackPanel>
                             </Border>
-                            <TextBlock Style="{StaticResource FieldHint}" Text="Когда лимит исчерпан, агент останавливается и спрашивает, продолжать ли. Считаются токены баланса tooken.club по всему ключу, поэтому лимиты действуют только для Tooken Club. Пустое поле — без лимита."/>
+                            <TextBlock Style="{StaticResource FieldHint}" Text="{ui:Localized 'Когда лимит исчерпан, агент останавливается и спрашивает, продолжать ли. Считаются токены баланса tooken.club по всему ключу, поэтому лимиты действуют только для Tooken Club. Пустое поле — без лимита.', 'The agent asks before continuing once a limit is reached. Limits apply only to Tooken Club and count all token usage for the key. Leave blank for no limit.'}"/>
                         </StackPanel>
                     </Grid>
                 </ScrollViewer>
@@ -797,8 +891,8 @@
                     <StackPanel MaxWidth="724">
                         <TextBlock x:Name="SettingsError" Foreground="{DynamicResource DangerText}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12" Visibility="Collapsed"/>
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="Отмена" Click="SettingsCancel_Click" AutomationProperties.Name="Отмена"/>
-                            <Button Style="{StaticResource PrimaryButton}" Content="Сохранить" Margin="8,0,0,0" Click="SettingsSave_Click" AutomationProperties.Name="Сохранить настройки"/>
+                            <Button Content="{ui:Localized 'Отмена', 'Cancel'}" Click="SettingsCancel_Click" AutomationProperties.Name="{ui:Localized 'Отмена', 'Cancel'}"/>
+                            <Button Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Сохранить', 'Save'}" Margin="8,0,0,0" Click="SettingsSave_Click" AutomationProperties.Name="{ui:Localized 'Сохранить настройки', 'Save settings'}"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>
@@ -806,14 +900,14 @@
 
             <Grid x:Name="PictureOverlay" Grid.Row="1" Grid.ColumnSpan="2" Visibility="Collapsed" Background="{DynamicResource Scrim}" MouseLeftButtonUp="PictureOverlay_MouseLeftButtonUp">
                 <Image x:Name="PictureImage" Margin="48,20,48,64" StretchDirection="DownOnly" RenderOptions.BitmapScalingMode="HighQuality"/>
-                <Button Style="{StaticResource FloatButton}" Width="36" Height="36" FontSize="12" Content="&#xE8BB;" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0" ToolTip="Закрыть (Esc)" AutomationProperties.Name="Закрыть изображение" Click="PictureClose_Click"/>
+                <Button Style="{StaticResource FloatButton}" Width="36" Height="36" FontSize="12" Content="&#xE8BB;" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0" ToolTip="{ui:Localized 'Закрыть (Esc)', 'Close (Esc)'}" AutomationProperties.Name="{ui:Localized 'Закрыть изображение', 'Close image'}" Click="PictureClose_Click"/>
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="24,0,24,14" Orientation="Horizontal">
                     <!-- The scrim is dark in both themes, so the name sits on a raised chip to stay readable -->
                     <Border Background="{DynamicResource Raised}" BorderBrush="{DynamicResource Track}" BorderThickness="1" CornerRadius="18" Height="36" Padding="14,0" Margin="0,0,8,0">
                         <TextBlock x:Name="PictureName" FontSize="13" Foreground="{DynamicResource TextSoft}" VerticalAlignment="Center" MaxWidth="420" TextTrimming="CharacterEllipsis"/>
                     </Border>
-                    <Button Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE8E5;" ToolTip="Открыть в программе" AutomationProperties.Name="Открыть в программе" Click="PictureOpen_Click"/>
-                    <Button Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE838;" Margin="8,0,0,0" ToolTip="Показать в папке" AutomationProperties.Name="Показать в папке" Click="PictureReveal_Click"/>
+                    <Button Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE8E5;" ToolTip="{ui:Localized 'Открыть в программе', 'Open in default app'}" AutomationProperties.Name="{ui:Localized 'Открыть в программе', 'Open in default app'}" Click="PictureOpen_Click"/>
+                    <Button Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE838;" Margin="8,0,0,0" ToolTip="{ui:Localized 'Показать в папке', 'Show in folder'}" AutomationProperties.Name="{ui:Localized 'Показать в папке', 'Show in folder'}" Click="PictureReveal_Click"/>
                 </StackPanel>
             </Grid>
 
@@ -862,7 +956,85 @@
                 </ContentControl>
             </Grid>
 
-            <Border x:Name="DialogDim" Grid.RowSpan="2" Grid.ColumnSpan="2" Visibility="Collapsed" Background="{DynamicResource Backdrop}"/>
+            <Grid x:Name="SearchLayer" Grid.RowSpan="2" Grid.ColumnSpan="2" Panel.ZIndex="30" Visibility="Collapsed" KeyboardNavigation.TabNavigation="Cycle" PreviewKeyDown="Search_PreviewKeyDown">
+                <Image x:Name="SearchBlur" Stretch="Fill" IsHitTestVisible="False">
+                    <Image.Effect><BlurEffect Radius="12" RenderingBias="Performance"/></Image.Effect>
+                </Image>
+                <Border Background="#45000000" MouseLeftButtonDown="SearchBackdrop_Click"/>
+                <Grid Margin="24">
+                    <Border MaxWidth="760" Height="500" MaxHeight="{Binding ActualHeight, RelativeSource={RelativeSource AncestorType=Grid}}" VerticalAlignment="Center" Background="{DynamicResource SearchGlass}" BorderBrush="{DynamicResource LineStrong}" BorderThickness="1" CornerRadius="18">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="54"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="18,0,12,0">
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" AutomationProperties.Name="{ui:Localized 'Закрыть поиск', 'Close search'}" Click="SearchClose_Click"/>
+                                    <TextBlock DockPanel.Dock="Left" FontFamily="{StaticResource IconFont}" Text="&#xE721;" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{DynamicResource TextMuted}"/>
+                                    <Grid>
+                                        <TextBox x:Name="SearchBox" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Text}" BorderThickness="0" Padding="0" VerticalContentAlignment="Center" FontSize="15" TextChanged="SearchBox_TextChanged" AutomationProperties.Name="{ui:Localized 'Поиск в Sharp Agent', 'Search Sharp Agent'}"/>
+                                        <TextBlock x:Name="SearchHint" Text="{ui:Localized 'Поиск в Sharp Agent', 'Search Sharp Agent'}" Foreground="{DynamicResource TextMuted}" IsHitTestVisible="False" VerticalAlignment="Center" FontSize="15"/>
+                                    </Grid>
+                                </DockPanel>
+                            </Border>
+                            <Grid Grid.Row="1" Margin="6,8,6,4">
+                                <ListBox x:Name="SearchResults" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" MouseLeftButtonUp="SearchResults_MouseLeftButtonUp" AutomationProperties.Name="{ui:Localized 'Результаты поиска', 'Search results'}">
+                                    <ListBox.GroupStyle>
+                                        <GroupStyle>
+                                            <GroupStyle.HeaderTemplate><DataTemplate><TextBlock Text="{Binding Name}" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="10,8,10,5"/></DataTemplate></GroupStyle.HeaderTemplate>
+                                        </GroupStyle>
+                                    </ListBox.GroupStyle>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                            <Setter Property="Padding" Value="10,8"/>
+                                            <Setter Property="Margin" Value="0,1"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource TextSoft}"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="ListBoxItem">
+                                                        <Border x:Name="Row" CornerRadius="9" Background="Transparent" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource RowHover}"/></Trigger>
+                                                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Fill}"/></Trigger>
+                                                            <DataTrigger Binding="{Binding Path}" Value="new"><Setter TargetName="Row" Property="Background" Value="Transparent"/></DataTrigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <DockPanel>
+                                                <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource IconFont}" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding Detail}" MaxWidth="180" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Text="{Binding Snippet}" TextTrimming="CharacterEllipsis" FontSize="12" Foreground="{DynamicResource TextMuted}">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Snippet}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DockPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock x:Name="SearchStatus" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" TextAlignment="Center" Margin="20"/>
+                            </Grid>
+                            <DockPanel Grid.Row="2" Margin="10,4,10,10">
+                                <TextBlock x:Name="SearchLimitHint" DockPanel.Dock="Bottom" Text="{ui:Localized 'Показана часть результатов. Уточните запрос.', 'Some results were omitted. Refine your search.'}" Visibility="Collapsed" FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="8,8,8,0"/>
+                                <WrapPanel x:Name="SearchFilters"/>
+                            </DockPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+            <Border x:Name="DialogDim" Grid.RowSpan="2" Grid.ColumnSpan="2" Panel.ZIndex="40" Visibility="Collapsed" Background="{DynamicResource Backdrop}"/>
         </Grid>
     </Border>
 </Window>

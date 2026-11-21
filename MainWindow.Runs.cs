@@ -5,11 +5,12 @@ public partial class MainWindow
     sealed class ChatRun(AgentRunner agent, Action prepare)
     {
         public readonly CancellationTokenSource Cancellation = new();
-        public readonly JsonNode[] History = [.. agent.History];
+        public readonly ChatHistory.View History = agent.HistoryView;
         public readonly List<Action> Events = [];
         public readonly Action Prepare = prepare;
         public Action? Progress;
-        public Task? Task;
+        public StringBuilder? Delta;
+        public bool DeltaUsesTools;
         public TaskCompletionSource? Activated;
         public FrameworkElement? Question, QuestionFocus;
         public bool LimitDeclined, ComputerUsing;
@@ -23,11 +24,14 @@ public partial class MainWindow
     CancellationTokenSource? _cts => CurrentRun?.Cancellation;
     bool AnyRunning => _runs.Count > 0;
 
-    AgentRunner CreateAgent()
+    AgentRunner CreateAgent(bool temporary = false)
     {
         var agent = new AgentRunner(new ToolRegistry(_toolContext), new ChatStore(AppPaths.HistoryFolder, AppPaths.LogsFolder))
         {
             Api = _provider, Provider = _config.Provider, MaxTokens = _config.MaxTokens,
+            AutoChatTitles = _config.AutoChatTitles,
+            IsTemporary = temporary,
+            RussianLanguage = _config.RussianLanguage,
             FastMode = _state.FastMode, UseSubagents = _config.UseSubagents, ReasoningEffort = _agent?.ReasoningEffort,
             ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
             SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
@@ -42,14 +46,14 @@ public partial class MainWindow
         agent.CanSpendAsync = () => CheckLimitsAsync(agent);
         agent.AssistantText += (text, elapsed, sentAt) =>
         {
-            var actions = elapsed != null ? AgentRunner.NextActionsOf(agent.History.LastOrDefault()) : [];
+            var actions = elapsed != null && agent.History.Count > 0 ? AgentRunner.NextActionsOf(agent.History[^1]) : [];
             Publish(agent, () => OnAssistantText(text, elapsed, sentAt, actions));
         };
-        agent.AssistantDelta += (text, usesTools) => Publish(agent, () => OnAssistantDelta(text, usesTools));
+        agent.AssistantDelta += (text, usesTools) => PublishDelta(agent, text, usesTools);
         agent.ProgressReported += progress => Publish(agent, () => OnModelProgress(progress), progress: true);
         agent.ToolCallStarted += call => Publish(agent, () => OnToolCallStarted(call));
         agent.ToolCallFinished += result => Publish(agent, () => OnToolCallFinished(result));
-        agent.CompactionStarted += () => Publish(agent, () => SetProgressHint("Сжатие контекста…"));
+        agent.CompactionStarted += () => Publish(agent, ShowCompacting);
         agent.ThinkingStarted += () => Publish(agent, ShowThinking);
         agent.SubagentChanged += update => Publish(agent, () => OnSubagentChanged(update));
         agent.ComputerUseStarted += () =>
@@ -57,7 +61,6 @@ public partial class MainWindow
             if (!_runs.TryGetValue(agent, out var run) || run.ComputerUsing) return;
             run.ComputerUsing = true;
             UpdateComputerUseOverlay();
-            if (_agent == agent) ShowComputerUseStatus();
         };
         agent.UsageReported += (model, usage) =>
         {
@@ -68,7 +71,7 @@ public partial class MainWindow
         agent.Warning += text => Publish(agent, () => AddNotice(text, true));
         agent.Stopped += text => Publish(agent, () => AddNotice(text, true, false));
         agent.Notice += text => Publish(agent, () => AddNotice(text));
-        agent.Retrying += (attempt, total) => Publish(agent, () => SetProgressHint($"Сервер не ответил, попытка {attempt} из {total}…"));
+        agent.Retrying += (attempt, total) => Publish(agent, () => ShowReconnect(attempt, total));
         agent.ChatTitleChanged += () => SyncChat(agent, touched: false);
         agent.ChatCreated += () =>
         {
@@ -103,12 +106,19 @@ public partial class MainWindow
 
     void SelectChat(AgentRunner agent)
     {
-        var previous = _agent.ChatPath ?? "";
-        if (InputBox.Text.Length > 0 || _pendingAttachments.Count > 0)
-            _chatDrafts[previous] = (InputBox.Text, _pendingAttachments.ToArray());
-        else _chatDrafts.Remove(previous);
+        bool leavingTemporary = _agent.IsTemporary && _agent != agent;
+        var abandoned = leavingTemporary ? CurrentRun : null;
+        if (!_agent.IsTemporary)
+        {
+            var previous = _agent.ChatPath ?? "";
+            if (InputBox.Text.Length > 0 || _pendingAttachments.Count > 0)
+                _chatDrafts[previous] = (InputBox.Text, _pendingAttachments.ToArray());
+            else _chatDrafts.Remove(previous);
+        }
         _agent = agent;
-        var draft = _chatDrafts.GetValueOrDefault(agent.ChatPath ?? "");
+        abandoned?.Cancellation.Cancel();
+        if (leavingTemporary && VoiceShown) CancelVoice();
+        var draft = agent.IsTemporary ? default : _chatDrafts.GetValueOrDefault(agent.ChatPath ?? "");
         InputBox.Text = draft.Text ?? "";
         InputBox.CaretIndex = InputBox.Text.Length;
         _pendingAttachments.Clear();
@@ -118,9 +128,38 @@ public partial class MainWindow
         RenderCurrentChat();
     }
 
+    void PublishDelta(AgentRunner agent, string? text, bool usesTools)
+    {
+        if (!_runs.TryGetValue(agent, out var run)) return;
+        if (text == null)
+        {
+            Publish(agent, () => OnAssistantDelta(null, false));
+            return;
+        }
+        else
+        {
+            if (run.Progress is { } latest) run.Events.Add(latest);
+            run.Progress = null;
+            (run.Delta ??= new()).Append(text);
+            run.DeltaUsesTools |= usesTools;
+        }
+        if (_agent == agent) OnAssistantDelta(text, usesTools);
+    }
+
+    void FlushDelta(ChatRun run)
+    {
+        if (run.Delta is not { } delta) return;
+        var text = delta.ToString();
+        bool usesTools = run.DeltaUsesTools;
+        run.Events.Add(() => OnAssistantDelta(text, usesTools));
+        run.Delta = null;
+        run.DeltaUsesTools = false;
+    }
+
     void Publish(AgentRunner agent, Action action, bool progress = false)
     {
         if (!_runs.TryGetValue(agent, out var run)) return;
+        FlushDelta(run);
         if (progress) run.Progress = action;
         else
         {
@@ -141,11 +180,12 @@ public partial class MainWindow
             StartProgress();
             foreach (var action in run.Events) action();
             run.Progress?.Invoke();
+            if (run.Delta is { } delta) OnAssistantDelta(delta.ToString(), run.DeltaUsesTools);
             _draftTimer?.Stop();
             if (_draftText.Length > 0) RenderDraft();
         }
         finally { _suppressAnimation = false; }
-        if (run.ComputerUsing) ShowComputerUseStatus();
+        UpdateWorkStatus();
         run.Activated?.TrySetResult();
         run.Activated = null;
     }
@@ -155,7 +195,7 @@ public partial class MainWindow
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            if (_agent == agent)
+            if (_agent == agent && ActiveChatWindow.IsVisible)
             {
                 if (_chatOperation is not { IsCompleted: false } operation) return;
                 await operation.WaitAsync(ct);

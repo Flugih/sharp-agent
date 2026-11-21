@@ -1,22 +1,49 @@
 namespace SharpAgent.Api;
 
-public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
+public sealed class ChatGptClient(ChatGptAuth auth) : OpenAiResponsesClient(auth);
+
+public class OpenAiResponsesClient : IChatProvider
 {
     public const string UsageUrl = "https://chatgpt.com/settings/usage", BaseUrl = "https://api.openai.com/v1";
     internal const string LimitCode = "subscription_sharing_usage_limit_exceeded", InvalidUserCode = "subscription_sharing_invalid_user";
     const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible";
+    static readonly string[] Gpt6Efforts = ["low", "medium", "high", "xhigh", "max"];
     readonly HashSet<string> _noSummaries = new(StringComparer.OrdinalIgnoreCase), _noStreaming = new(StringComparer.OrdinalIgnoreCase);
-    readonly HttpClient _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.ParseAdd(ChatGptAuth.UserAgent));
+    readonly ChatGptAuth? _auth;
+    readonly string? _apiKey;
+    readonly string _baseUrl;
+    readonly HttpClient _http;
+
+    protected OpenAiResponsesClient(ChatGptAuth auth)
+    {
+        _auth = auth;
+        _baseUrl = BaseUrl;
+        _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.ParseAdd(ChatGptAuth.UserAgent));
+    }
+
+    internal OpenAiResponsesClient(string apiKey, string baseUrl = BaseUrl)
+    {
+        _apiKey = apiKey;
+        _baseUrl = baseUrl;
+        _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, headers: headers => headers.UserAgent.Add(new("SharpAgent", "1.0")));
+    }
 
     public event Action? LimitsChanged;
     public string? LimitMessage { get; private set; }
 
     public async Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct)
     {
-        using var response = await SendAsync(() => new(HttpMethod.Get, BaseUrl + "/models"), ct);
+        using var response = await SendAsync(() => new(HttpMethod.Get, _baseUrl + "/models"), ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode) throw Explain(response, text);
-        var root = ParseObject(text) ?? throw new ApiException("ChatGPT вернул не JSON: " + ApiException.Truncate(text, 200));
+        var root = ParseObject(text) ?? throw new ApiException(_auth != null ? "ChatGPT вернул не JSON: " + ApiException.Truncate(text, 200)
+            : "OpenAI API вернул ответ в неизвестном формате.");
+        if (_auth == null)
+        {
+            if (root["data"] is not JsonArray data) throw new ApiException("OpenAI API не вернул список моделей.");
+            return data.OfType<JsonObject>().Select(item => Str(item["id"])).OfType<string>().Where(IsApiChatModel)
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(ApiModelInfo).ToList();
+        }
         List<ModelInfo> models = [];
         foreach (var item in (root["models"] as JsonArray)?.OfType<JsonObject>() ?? [])
             if (Str(item["visibility"]) == "list" && Str(item["slug"]) is { Length: > 0 } slug)
@@ -27,12 +54,19 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         return models;
     }
 
+    static bool IsApiChatModel(string id) => Regex.IsMatch(id, @"^(?:gpt-(?:4o|4\.1|5(?:\.\d+)?|6(?:\.\d+)?)|o[134])(?:-|$)") &&
+        !Regex.IsMatch(id, @"-(?:audio|realtime|transcribe|tts|image|search|cyber|bio|chat|preview)(?:-|$)");
+
+    static bool IsGpt6ReasoningModel(string id) => Regex.IsMatch(id, @"^gpt-6(?:\.\d+)?-(?:astra|sol|terra|luna)(?:-|$)");
+
+    static ModelInfo ApiModelInfo(string id) => new(id, null, null, true, false, IsGpt6ReasoningModel(id) ? Gpt6Efforts : []);
+
     public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
-        bool summary = !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
+        bool summary = (_auth != null || IsGpt6ReasoningModel(model)) && !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
         var body = Request(model, messages, tools, maxTokens, effort, summary);
-        if (!callTools) body["tool_choice"] = "none";
+        if (!callTools && (_auth != null || tools is { Count: > 0 })) body["tool_choice"] = "none";
         void Reset()
         {
             reportText(null, false);
@@ -58,7 +92,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             }
             else
             {
-                if (ex.Code is LimitCode or IneligibleCode) SetLimit(ex.Message.Split('\n')[0]);
+                if (_auth != null && ex.Code is (LimitCode or IneligibleCode)) SetLimit(ex.Message.Split('\n')[0]);
                 else if (ex.Code == "content_filter") Reset();
                 else return false;
                 return null;
@@ -75,7 +109,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         (ex.Parameter == "reasoning.summary" || !hasEffort && ex.Parameter == "reasoning" ||
          ex.Message.Contains("reasoning.summary", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("reasoning summar", StringComparison.OrdinalIgnoreCase));
 
-    static JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort, bool summary)
+    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort, bool summary)
     {
         JsonArray functions =
         [
@@ -85,7 +119,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
                 ["strict"] = false, ["parameters"] = function["parameters"]?.DeepClone(),
             }) ?? [],
         ];
-        JsonArray input = functions.Count > 0
+        JsonArray input = _auth != null && functions.Count > 0
             ?
             [
                 new JsonObject
@@ -97,6 +131,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             : [];
         foreach (var message in messages.OfType<JsonObject>()) AddInput(input, message);
         var body = new JsonObject { ["model"] = model, ["input"] = input, ["store"] = false };
+        if (_auth == null && functions.Count > 0) body["tools"] = functions;
         if (maxTokens is > 0) body["max_output_tokens"] = Math.Max(16, maxTokens.Value);
         var reasoning = new JsonObject();
         if (effort != null) reasoning["effort"] = effort;
@@ -105,7 +140,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         return body;
     }
 
-    static void AddInput(JsonArray input, JsonObject message)
+    void AddInput(JsonArray input, JsonObject message)
     {
         var text = Text(message["content"]);
         switch (Str(message["role"]))
@@ -117,16 +152,20 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
                 input.Add(new JsonObject { ["type"] = "message", ["role"] = "user", ["content"] = UserContent(message["content"]) });
                 break;
             case "assistant":
+                if (_auth == null && message["reasoning_details"] is JsonArray reasoning)
+                    foreach (var item in reasoning) input.Add(item?.DeepClone());
                 if (Str(message["commentary"]) is { Length: > 0 } commentary) input.Add(Message("assistant", "output_text", commentary, "commentary"));
                 if (!string.IsNullOrEmpty(text)) input.Add(Message("assistant", "output_text", text, Str(message["phase"])));
                 foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>() ?? [])
                 {
                     var function = call["function"] as JsonObject;
-                    input.Add(new JsonObject
+                    var functionCall = new JsonObject
                     {
-                        ["type"] = "function_call", ["name"] = Str(function?["name"]) ?? "", ["namespace"] = Namespace,
+                        ["type"] = "function_call", ["name"] = Str(function?["name"]) ?? "",
                         ["arguments"] = Str(function?["arguments"]) ?? "{}", ["call_id"] = Str(call["id"]) ?? "",
-                    });
+                    };
+                    if (_auth != null) functionCall["namespace"] = Namespace;
+                    input.Add(functionCall);
                 }
                 break;
             case "tool":
@@ -167,7 +206,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     async Task<ChatResult> SendCompletionAsync(string body, bool streaming, Action<string?, bool> reportText, Action<ModelProgress> reportProgress,
         CancellationToken ct, Action reportActivity)
     {
-        using var response = await SendAsync(() => new(HttpMethod.Post, BaseUrl + "/responses")
+        using var response = await SendAsync(() => new(HttpMethod.Post, _baseUrl + "/responses")
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
             Headers = { Accept = { new(streaming ? "text/event-stream" : "application/json") } },
@@ -176,7 +215,7 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         var requestId = RequestId(response);
         if (!streaming || response.Content.Headers.ContentType?.MediaType == "application/json")
             return FinishResponse([], ParseObject(await response.Content.ReadAsStringAsync(ct))
-                ?? throw new ApiException("ChatGPT вернул ответ в неизвестном формате. Нажмите «Повторить»."), requestId);
+                ?? throw new ApiException($"{ServiceName} вернул ответ в неизвестном формате. Нажмите «Повторить»."), requestId);
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct));
         List<JsonObject> items = [];
         var summaries = new SortedDictionary<(long Output, long Part), string>();
@@ -237,10 +276,10 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
                     throw Failed(data["error"] as JsonObject ?? data, requestId);
             }
         }
-        throw new ApiException("Связь с ChatGPT оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
+        throw new ApiException($"Связь с {ServiceName} оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
     }
 
-    static ChatResult FinishResponse(List<JsonObject> items, JsonObject? answer, string? requestId, IEnumerable<string>? summaries = null,
+    ChatResult FinishResponse(List<JsonObject> items, JsonObject? answer, string? requestId, IEnumerable<string>? summaries = null,
         bool incomplete = false)
     {
         var status = Str(answer?["status"]);
@@ -278,6 +317,12 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
         var content = string.Join("\n\n", texts);
         var message = new JsonObject { ["role"] = "assistant", ["content"] = content.Length > 0 ? content : null };
         if (calls.Count > 0) message["tool_calls"] = calls;
+        if (_auth == null && calls.Count > 0)
+        {
+            JsonArray reasoning = [.. items.Where(item => Str(item["type"]) == "reasoning" && Str(item["encrypted_content"]) != null)
+                .Select(item => item.DeepClone())];
+            if (reasoning.Count > 0) message["reasoning_details"] = reasoning;
+        }
         var finalSummaries = items.Where(item => Str(item["type"]) == "reasoning")
             .SelectMany(item => (item["summary"] as JsonArray)?.OfType<JsonObject>() ?? []).Select(part => Str(part["text"])).OfType<string>();
         var finish = incomplete || status == "incomplete" || reason != null ? "length" : calls.Count > 0 ? "tool_calls" : "stop";
@@ -293,18 +338,24 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
 
     async Task<HttpResponseMessage> SendAsync(Func<HttpRequestMessage> build, CancellationToken ct)
     {
-        if (auth.Connected && !auth.PlanAllowed)
+        if (_auth == null)
+        {
+            using var request = build();
+            request.Headers.Authorization = new("Bearer", _apiKey);
+            return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        if (_auth.Connected && !_auth.PlanAllowed)
             throw new ApiException("Sharp Agent не получил разрешения использовать подписку ChatGPT. Откройте настройки и нажмите «Разрешить использование подписки».",
                 HttpStatusCode.Forbidden);
         for (bool recovered = false; ; recovered = true)
         {
-            var token = await auth.AccessAsync(ct);
-            var request = build();
+            var token = await _auth.AccessAsync(ct);
+            using var request = build();
             request.Headers.Authorization = new("Bearer", token);
             var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (response.StatusCode != HttpStatusCode.Unauthorized || recovered) return response;
             response.Dispose();
-            await auth.RecoverAsync(token, ct);
+            await _auth.RecoverAsync(token, ct);
         }
     }
 
@@ -318,8 +369,16 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
     static string? RequestId(HttpResponseMessage response) =>
         ApiException.Header(response, "x-request-id") ?? ApiException.Header(response, "openai-request-id");
 
-    static ApiException Explain(HttpResponseMessage response, string text)
+    string ServiceName => _auth != null ? "ChatGPT" : "OpenAI API";
+
+    ApiException Explain(HttpResponseMessage response, string text)
     {
+        if (_auth == null)
+        {
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+                return new ApiException("OpenAI API не принял ключ. Проверьте его в настройках.", response.StatusCode);
+            return ApiException.FromResponse(response.StatusCode, RedactKey(text), RequestId(response), response.Headers.RetryAfter?.Delta);
+        }
         var root = ParseObject(text);
         var error = root?["error"] as JsonObject;
         var detail = root?["detail"];
@@ -327,8 +386,16 @@ public sealed class ChatGptClient(ChatGptAuth auth) : IChatProvider
             RequestId(response), response.Headers.RetryAfter?.Delta);
     }
 
-    static ApiException Failed(JsonObject? error, string? requestId) =>
-        Failure(null, Str(error?["code"]) ?? Str(error?["type"]), Str(error?["param"]), Str(error?["message"]), requestId, null);
+    ApiException Failed(JsonObject? error, string? requestId)
+    {
+        var code = Str(error?["code"]) ?? Str(error?["type"]);
+        if (_auth != null) return Failure(null, code, Str(error?["param"]), Str(error?["message"]), requestId, null);
+        var message = RedactKey(Str(error?["message"]) ?? "");
+        return new ApiException("OpenAI API вернул ошибку" + Detail(message) + ApiException.Tail(null, code, requestId),
+            retryable: code is "server_error" or "rate_limit_exceeded", code: code) { Parameter = Str(error?["param"]) };
+    }
+
+    string RedactKey(string text) => _apiKey is { Length: > 0 } key ? text.Replace(key, "***", StringComparison.Ordinal) : text;
 
     static ApiException Failure(HttpStatusCode? status, string? code, string? param, string? message, string? requestId, TimeSpan? wait)
     {

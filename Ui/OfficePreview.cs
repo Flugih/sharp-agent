@@ -23,14 +23,14 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
         try
         {
-            var processPath = Environment.ProcessPath ?? throw new IOException("Не удалось запустить предпросмотр.");
+            var processPath = Environment.ProcessPath ?? throw new IOException(Tr("Не удалось запустить предпросмотр.", "Could not start the preview."));
             var start = new ProcessStartInfo(processPath) { CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
             if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
                 start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, typeof(OfficePreview).Assembly.GetName().Name + ".dll"));
             start.ArgumentList.Add("--office-preview");
             start.ArgumentList.Add(Path.GetFullPath(source));
             start.ArgumentList.Add(directory);
-            using var child = Process.Start(start) ?? throw new IOException("Не удалось запустить предпросмотр.");
+            using var child = Process.Start(start) ?? throw new IOException(Tr("Не удалось запустить предпросмотр.", "Could not start the preview."));
             void Kill() { try { child.Kill(); } catch { } }
             using var stop = ct.Register(Kill);
             try { await child.WaitForExitAsync(timeout.Token); }
@@ -38,17 +38,17 @@ internal sealed class OfficePreview(string directory, IReadOnlyList<OfficePages>
             {
                 Kill();
                 if (ct.IsCancellationRequested) throw;
-                throw new IOException("Предпросмотр занял слишком много времени. Откройте файл во внешней программе.");
+                throw new IOException(Tr("Предпросмотр занял слишком много времени. Откройте файл во внешней программе.", "The preview timed out. Open the file in an external app."));
             }
             if (child.ExitCode != 0) throw new IOException(child.ExitCode switch
             {
-                2 => "Для предпросмотра установите соответствующее приложение Microsoft Office или откройте файл во внешней программе.",
-                3 => "Для этого формата визуальный предпросмотр недоступен. Откройте файл во внешней программе.",
+                2 => Tr("Для предпросмотра установите соответствующее приложение Microsoft Office или откройте файл во внешней программе.", "Install the corresponding Microsoft Office app or open the file in an external app."),
+                3 => Tr("Для этого формата визуальный предпросмотр недоступен. Откройте файл во внешней программе.", "Preview is unavailable for this format. Open the file in an external app."),
                 4 => "Windows не разрешила запустить Office для предпросмотра. Откройте файл во внешней программе.",
-                _ => "Не удалось отобразить документ. Откройте его во внешней программе.",
+                _ => Tr("Не удалось отобразить документ. Откройте его во внешней программе.", "Could not display the document. Open it in an external app."),
             });
             var pages = JsonSerializer.Deserialize<OfficePages[]>(await File.ReadAllTextAsync(Path.Combine(directory, "pages.json"), ct)) ?? [];
-            if (pages.Length == 0) throw new IOException("В документе нет страниц для показа.");
+            if (pages.Length == 0) throw new IOException(Tr("В документе нет страниц для показа.", "This document has no pages to display."));
             return new OfficePreview(directory,
                 pages.Select(group => group with { Files = [.. group.Files.Select(file => Path.Combine(directory, Path.GetFileName(file)))] }).ToArray());
         }

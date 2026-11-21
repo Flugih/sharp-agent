@@ -5,7 +5,7 @@ public partial class MainWindow
     sealed class BrowserTab
     {
         public readonly RadioButton Select = new() { Style = Theme.Style("TabToggle"), GroupName = "BrowserTabs", MaxWidth = 165, Padding = new(10, 0, 4, 0), Margin = new(0, 0, 2, 0) };
-        public readonly TextBlock Title = new() { Text = "Новая вкладка", TextTrimming = TextTrimming.CharacterEllipsis };
+        public readonly TextBlock Title = new() { Text = Tr("Новая вкладка", "New tab"), TextTrimming = TextTrimming.CharacterEllipsis };
         public BrowserView? Page;
         public Uri? Url;
         public string? Error;
@@ -58,7 +58,13 @@ public partial class MainWindow
         ExpandBrowser(false);
     }
 
-    void BrowserClose_Click(object sender, RoutedEventArgs e) { HideBrowser(); InputBox.Focus(); }
+    void CloseBrowser()
+    {
+        HideBrowser();
+        foreach (var tab in _tabs) ReleaseBrowserPage(tab);
+    }
+
+    void BrowserClose_Click(object sender, RoutedEventArgs e) { CloseBrowser(); InputBox.Focus(); }
     void BrowserNew_Click(object sender, RoutedEventArgs e) => AddBrowserTab(null);
     void BrowserNetwork_Click(object sender, RoutedEventArgs e) => OpenSettings(NetworkTestButton);
     void BrowserExpand_Click(object sender, RoutedEventArgs e) => ExpandBrowser(!_browserExpanded);
@@ -73,7 +79,7 @@ public partial class MainWindow
     void UpdateBrowserExpand()
     {
         BrowserExpand.Content = _browserExpanded ? Glyphs.BackToWindow : Glyphs.FullScreen;
-        AutomationProperties.SetName(BrowserExpand, _browserExpanded ? "Вернуть браузер в боковую панель" : "Развернуть браузер");
+        AutomationProperties.SetName(BrowserExpand, _browserExpanded ? Tr("Вернуть браузер в боковую панель", "Dock browser in side panel") : Tr("Развернуть браузер", "Expand browser"));
     }
 
     void AddBrowserTab(Uri? url)
@@ -123,8 +129,8 @@ public partial class MainWindow
         BrowserNavigation.Visibility = VisibleIf(!empty);
         BrowserNetworkButton.ToolTip = _config.Network.Mode switch
         {
-            NetworkMode.Vpn => "Сеть: VPN", NetworkMode.Proxy => "Сеть: " + _config.Network.Scheme.ToUpperInvariant(),
-            NetworkMode.Direct => "Сеть: напрямую", _ => "Сеть: системные настройки",
+            NetworkMode.Vpn => Tr("Сеть: VPN", "Network: VPN"), NetworkMode.Proxy => Tr("Сеть: ", "Network: ") + _config.Network.Scheme.ToUpperInvariant(),
+            NetworkMode.Direct => Tr("Сеть: напрямую", "Network: direct"), _ => Tr("Сеть: системные настройки", "Network: system settings"),
         };
         BrowserPages.IsHitTestVisible = !empty;
         BrowserBack.IsEnabled = tab.Page?.CanBack == true;
@@ -147,7 +153,7 @@ public partial class MainWindow
             uri = new Uri("https://www.google.com/search?q=" + Uri.EscapeDataString(text));
         if (uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0)
         {
-            ShowToast("Введите адрес сайта с http или https либо поисковый запрос.", ToastKind.Warning);
+            ShowToast(Tr("Введите адрес сайта с http или https либо поисковый запрос.", "Enter an HTTP or HTTPS address or a search query."), ToastKind.Warning);
             return;
         }
         OpenBrowserPage(_browserTab, uri);
@@ -183,7 +189,7 @@ public partial class MainWindow
             });
             BrowserPages.Children.Add(page);
         }
-        catch (System.Net.Sockets.SocketException) { tab.Error = "Не удалось создать локальное подключение к прокси."; }
+        catch (System.Net.Sockets.SocketException) { tab.Error = Tr("Не удалось создать локальное подключение к прокси.", "Could not connect to the local proxy."); }
     }
 
     void BrowserBack_Click(object sender, RoutedEventArgs e) => _browserTab?.Page?.Back();

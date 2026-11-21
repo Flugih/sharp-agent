@@ -17,7 +17,7 @@ public partial class MainWindow
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
         _dropHideTimer?.Stop();
-        if (SettingsOpen)
+        if (SettingsOpen || IsShown(SearchLayer))
         {
             e.Effects = DragDropEffects.None;
             return;
@@ -32,8 +32,8 @@ public partial class MainWindow
         e.Effects = DragDropEffects.Copy;
         if (IsShown(DropOverlay)) return;
         DropHint.Text = _config.Sandbox
-            ? "Включена песочница: файлы будут скопированы в папку программы, чтобы агент мог с ними работать."
-            : "Агент получит пути к файлам и папкам и сможет с ними работать. Изображения модель увидит сама.";
+            ? Tr("Включена песочница: файлы будут скопированы в папку программы, чтобы агент мог с ними работать.", "Sandbox is enabled. Files will be copied into the app folder so the agent can access them.")
+            : Tr("Агент получит пути к файлам и папкам и сможет с ними работать. Изображения модель увидит сама.", "The agent receives file and folder paths. The model can view attached images.");
         DropOverlay.Visibility = Visibility.Visible;
     }
 
@@ -50,7 +50,7 @@ public partial class MainWindow
         HideDropOverlay();
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
-        if (!accepted || SettingsOpen || _waitingToClose || WaitForChatFile(_chatOperation != null)) return;
+        if (!accepted || SettingsOpen || IsShown(SearchLayer) || WaitForChatFile(_chatOperation != null)) return;
         var paths = e.Data.GetData(DataFormats.FileDrop) as string[] ?? SaveVirtualFiles(e.Data);
         if (paths.Length == 0) return;
         _ = AddAttachmentsAsync(paths);
@@ -68,12 +68,12 @@ public partial class MainWindow
                 File.WriteAllBytes(path, file.Data);
                 return path;
             }).ToArray();
-            if (paths.Length == 0) ShowToast("Эти файлы не удалось получить. Сохраните их в папку и перетащите оттуда.", ToastKind.Warning);
+            if (paths.Length == 0) ShowToast(Tr("Эти файлы не удалось получить. Сохраните их в папку и перетащите оттуда.", "Could not access these files. Save them to a folder and drag them from there."), ToastKind.Warning);
             return paths;
         }
         catch (Exception ex)
         {
-            ShowToast("Не удалось получить перетащенные файлы: " + ex.Message, ToastKind.Error);
+            ShowToast(Tr("Не удалось получить перетащенные файлы: ", "Could not access dropped files: ") + ex.Message, ToastKind.Error);
             return [];
         }
     }
@@ -96,7 +96,7 @@ public partial class MainWindow
     void Attach_Click(object sender, RoutedEventArgs e)
     {
         if (SettingsOpen) return;
-        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Прикрепить файлы", Multiselect = true, CheckFileExists = true };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = Tr("Прикрепить файлы", "Attach files"), Multiselect = true, CheckFileExists = true };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
         if (dialog.ShowDialog(this) == true) _ = AddAttachmentsAsync(dialog.FileNames);
         InputBox.Focus();
@@ -105,7 +105,7 @@ public partial class MainWindow
     void AttachFolder_Click(object sender, RoutedEventArgs e)
     {
         if (SettingsOpen) return;
-        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Прикрепить папку", Multiselect = true };
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = Tr("Прикрепить папку", "Attach folder"), Multiselect = true };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
         if (dialog.ShowDialog(this) == true) _ = AddAttachmentsAsync(dialog.FolderNames);
         InputBox.Focus();
@@ -128,7 +128,7 @@ public partial class MainWindow
 
     bool TryAttachFromClipboard()
     {
-        if (ClipboardHasAttachment() && (_waitingToClose || WaitForChatFile(_chatOperation != null))) return true;
+        if (ClipboardHasAttachment() && (WaitForChatFile(_chatOperation != null))) return true;
         try
         {
             string[] files = Clipboard.ContainsFileDropList() ? [.. Clipboard.GetFileDropList().Cast<string>()]
@@ -138,7 +138,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            ShowToast("Не удалось взять данные из буфера обмена: " + ex.Message, ToastKind.Error);
+            ShowToast(Tr("Не удалось взять данные из буфера обмена: ", "Could not read the clipboard: ") + ex.Message, ToastKind.Error);
         }
         return true;
     }
@@ -162,7 +162,7 @@ public partial class MainWindow
 
     async Task AddAttachmentsAsync(IEnumerable<string> paths)
     {
-        if (_waitingToClose || WaitForChatFile(_chatOperation != null)) return;
+        if (WaitForChatFile(_chatOperation != null)) return;
         _attachmentImports++;
         UpdateSendButton();
         try { await ImportAttachmentsAsync(paths); }
@@ -180,7 +180,7 @@ public partial class MainWindow
         {
             if (_pendingAttachments.Count >= MaxAttachments)
             {
-                problems.Add($"к одному сообщению можно приложить не больше {MaxAttachments} файлов");
+                problems.Add(Tr($"к одному сообщению можно приложить не больше {MaxAttachments} файлов", $"you can attach up to {MaxAttachments} files per message"));
                 break;
             }
             var name = ChatLinks.DisplayName(raw);
@@ -189,7 +189,7 @@ public partial class MainWindow
                 var path = Path.GetFullPath(raw);
                 if (File.Exists(path) && _toolContext.IsSecret(path))
                 {
-                    problems.Add("секретные файлы программы (.env с ключами, вход в ChatGPT) прикрепить нельзя");
+                    problems.Add(Tr("секретные файлы программы (.env с ключами, вход в ChatGPT) прикрепить нельзя", "private settings and ChatGPT sign-in files cannot be attached"));
                     continue;
                 }
                 if (_config.Sandbox && !PathHelper.IsInside(path, AppPaths.AppFolder))
@@ -199,7 +199,7 @@ public partial class MainWindow
                     if (_pendingAttachments.Count >= MaxAttachments)
                     {
                         File.Delete(copy);
-                        problems.Add($"к одному сообщению можно приложить не больше {MaxAttachments} файлов");
+                        problems.Add(Tr($"к одному сообщению можно приложить не больше {MaxAttachments} файлов", $"you can attach up to {MaxAttachments} files per message"));
                         break;
                     }
                     path = copy;
@@ -213,7 +213,7 @@ public partial class MainWindow
             }
         }
         RenderPendingAttachments();
-        if (problems.Count > 0) ShowToast("Не всё удалось прикрепить: " + string.Join("; ", problems) + ".", ToastKind.Warning);
+        if (problems.Count > 0) ShowToast(Tr("Не всё удалось прикрепить: ", "Some attachments could not be added: ") + string.Join("; ", problems) + ".", ToastKind.Warning);
     }
 
     static async Task<string?> CopyIntoSandboxAsync(string source, List<string> problems)
@@ -221,7 +221,7 @@ public partial class MainWindow
         var name = ChatLinks.DisplayName(source);
         if (Directory.Exists(source))
         {
-            problems.Add($"папку «{name}» в песочнице прикрепить нельзя — агент работает только внутри папки программы");
+            problems.Add(Tr($"папку «{name}» в песочнице прикрепить нельзя — агент работает только внутри папки программы", $"“{name}” is outside the sandbox and cannot be attached"));
             return null;
         }
         try
@@ -254,10 +254,10 @@ public partial class MainWindow
                 RenderPendingAttachments();
                 InputBox.Focus();
             }
-            var chip = _links.FileChip(attachment.Path, attachment.Name, FileActions.Item("Убрать из сообщения", Glyphs.Cancel, Remove));
+            var chip = _links.FileChip(attachment.Path, attachment.Name, FileActions.Item(Tr("Убрать из сообщения", "Remove from message"), Glyphs.Cancel, Remove));
             chip.ToolTip = $"{attachment.Path}\n{attachment.Describe()}\nЩелчок — открыть, правая кнопка — другие действия";
             if (attachment.Kind == AttachmentKind.Image) _ = LoadThumbnailAsync(chip, attachment.Path);
-            var remove = Theme.IconButton(Glyphs.Cancel, "Убрать вложение " + attachment.Name, 24, 10);
+            var remove = Theme.IconButton(Glyphs.Cancel, Tr("Убрать вложение ", "Remove attachment ") + attachment.Name, 24, 10);
             remove.Margin = new Thickness(0, 0, 1, 0);
             remove.VerticalAlignment = VerticalAlignment.Center;
             remove.Click += (_, _) => Remove();
@@ -268,7 +268,7 @@ public partial class MainWindow
             }.Paint(Border.BackgroundProperty, "Surface3"));
         }
         AttachPanel.Visibility = VisibleIf(_pendingAttachments.Count > 0);
-        if (_cts == null && _pendingAttachments.Count > 0) _compactChat?.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");
+        if (_cts == null && _pendingAttachments.Count > 0) _compactChat?.SetStatus(Tr($"Вложений к сообщению: {_pendingAttachments.Count}", $"Attachments: {_pendingAttachments.Count}"));
         UpdateSendButton();
     }
 

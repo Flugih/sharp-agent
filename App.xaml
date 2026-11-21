@@ -12,6 +12,11 @@
         <SolidColorBrush x:Key="ComputerBadgeText" Color="#F1F6FF"/>
         <SolidColorBrush x:Key="ChromeBg" Color="#202020"/>
         <SolidColorBrush x:Key="Surface" Color="#222222"/>
+        <SolidColorBrush x:Key="ChatModeTrack" Color="#1B1B1B"/>
+        <SolidColorBrush x:Key="ChatModeSelected" Color="#212121"/>
+        <SolidColorBrush x:Key="ChatModeShadow" Color="#101010"/>
+        <SolidColorBrush x:Key="ChatModeText" Color="#BDBDBD"/>
+        <SolidColorBrush x:Key="SearchGlass" Color="#E61B1B1B"/>
         <SolidColorBrush x:Key="Surface2" Color="#292929"/>
         <SolidColorBrush x:Key="Surface3" Color="#3B3B3B"/>
         <SolidColorBrush x:Key="BlockBg" Color="#292929"/>
@@ -46,6 +51,18 @@
         <SolidColorBrush x:Key="Warning" Color="#EC8145"/>
         <SolidColorBrush x:Key="Success" Color="#3FC877"/>
         <SolidColorBrush x:Key="DiffAdd" Color="#1F2F23"/>
+        <SolidColorBrush x:Key="CodeKeyword" Color="#E5A4FB"/>
+        <SolidColorBrush x:Key="CodeString" Color="#B6DB83"/>
+        <SolidColorBrush x:Key="CodeNumber" Color="#85CEFF"/>
+        <SolidColorBrush x:Key="CodeName" Color="#F5BE84"/>
+        <DrawingBrush x:Key="DiffGap" TileMode="Tile" Viewport="0,0,6,6" ViewportUnits="Absolute"
+                      Viewbox="0,0,6,6" ViewboxUnits="Absolute">
+            <DrawingBrush.Drawing>
+                <GeometryDrawing Geometry="M-1,7 L7,-1">
+                    <GeometryDrawing.Pen><Pen Brush="{DynamicResource Line}" Thickness="1"/></GeometryDrawing.Pen>
+                </GeometryDrawing>
+            </DrawingBrush.Drawing>
+        </DrawingBrush>
         <SolidColorBrush x:Key="DiffAddText" Color="#81D07E"/>
         <SolidColorBrush x:Key="DiffRemove" Color="#3A1F22"/>
         <SolidColorBrush x:Key="Backdrop" Color="#33000000"/>
@@ -519,18 +536,18 @@
         </Style>
 
         <ContextMenu x:Key="EditMenu">
-            <MenuItem Header="Вырезать" Command="ApplicationCommands.Cut" InputGestureText="Ctrl+X" Style="{StaticResource CommandItem}"/>
-            <MenuItem Header="Копировать" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" Style="{StaticResource CommandItem}"/>
-            <MenuItem Header="Вставить" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Вырезать', 'Cut'}" Command="ApplicationCommands.Cut" InputGestureText="Ctrl+X" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Копировать', 'Copy'}" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Вставить', 'Paste'}" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" Style="{StaticResource CommandItem}"/>
             <Separator/>
-            <MenuItem Header="Выделить всё" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Выделить всё', 'Select all'}" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" Style="{StaticResource CommandItem}"/>
         </ContextMenu>
         <ContextMenu x:Key="ReadOnlyTextMenu">
-            <MenuItem Header="Копировать" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" Style="{StaticResource CommandItem}"/>
-            <MenuItem Header="Выделить всё" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Копировать', 'Copy'}" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Выделить всё', 'Select all'}" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" Style="{StaticResource CommandItem}"/>
         </ContextMenu>
         <ContextMenu x:Key="PasteOnlyMenu">
-            <MenuItem Header="Вставить" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" Style="{StaticResource CommandItem}"/>
+            <MenuItem Header="{ui:Localized 'Вставить', 'Paste'}" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" Style="{StaticResource CommandItem}"/>
         </ContextMenu>
 
         <Style x:Key="ComposerInput" TargetType="ui:ComposerBox">
@@ -588,7 +605,7 @@
             <Grid Background="{TemplateBinding Background}">
                 <ScrollContentPresenter x:Name="PART_ScrollContentPresenter" Content="{TemplateBinding Content}"
                                         ContentTemplate="{TemplateBinding ContentTemplate}"/>
-                <ScrollBar x:Name="PART_VerticalScrollBar" HorizontalAlignment="Right" Orientation="Vertical"
+                <ScrollBar x:Name="PART_VerticalScrollBar" HorizontalAlignment="Right" Orientation="Vertical" Margin="{TemplateBinding Padding}"
                            Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}"
                            Value="{TemplateBinding VerticalOffset}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"/>
             </Grid>

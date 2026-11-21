@@ -88,10 +88,10 @@ public partial class App
         e.Handled = true;
         bool logged = LogError(e.Exception);
         MessageBox.Show(
-            "В программе произошла ошибка. Переписка сохранена, работу можно продолжить.\n\n" + e.Exception.Message +
-            (logged ? $"\n\nПодробности записаны в файл:\n{AppPaths.ErrorLogPath}" : ""),
+            Tr("В программе произошла ошибка. Переписка сохранена, работу можно продолжить.\n\n", "An application error occurred. Your chat was saved and you can continue.\n\n") + e.Exception.Message +
+            (logged ? Tr("\n\nПодробности записаны в файл:\n", "\n\nDetails were saved to:\n") + AppPaths.ErrorLogPath : ""),
             "Sharp Agent", MessageBoxButton.OK, MessageBoxImage.Warning);
-        if (MainWindow is not MainWindow window || !window.ActiveChatWindow.IsVisible) Shutdown();
+        if (MainWindow is not SharpAgent.MainWindow) Shutdown();
     }
 
     public static bool LogError(Exception exception)

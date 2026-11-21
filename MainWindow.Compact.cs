@@ -11,8 +11,16 @@ public partial class MainWindow
     internal void ActivateChatWindow()
     {
         var window = ActiveChatWindow;
+        if (!window.IsVisible) window.Show();
         if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
         window.Activate();
+        if (CurrentRun is { Activated: { } ready } run)
+        {
+            run.Activated = null;
+            ready.TrySetResult();
+            RenderChatList();
+        }
+        PlaceQuestion();
         if (window.Topmost) return;
         window.Topmost = true;
         window.Topmost = false;
@@ -22,7 +30,7 @@ public partial class MainWindow
     {
         if (VoiceShown || !MicButton.IsEnabled)
         {
-            ShowToast("Завершите голосовой ввод перед переключением окна.", ToastKind.Warning);
+            ShowToast(Tr("Завершите голосовой ввод перед переключением окна.", "Finish voice input before switching windows."), ToastKind.Warning);
             return;
         }
         MoreMenu.IsOpen = false;
@@ -44,9 +52,7 @@ public partial class MainWindow
             compact.QuestionSlot.Content = null;
             _compactChat = null;
             if (Dispatcher.HasShutdownStarted) return;
-            Show();
             ActivateChatWindow();
-            PlaceQuestion();
             if (CurrentRun?.Question == null) InputBox.Focus();
         };
         SyncCompactChat();
@@ -55,21 +61,15 @@ public partial class MainWindow
         if (_lastErrorCard?.Tag is string error) compact.ShowError(error);
         if (_cts != null)
         {
-            compact.SetStatus(CurrentRun switch
-            {
-                { Question: not null } => "Жду ответа",
-                { ComputerUsing: true } => ComputerUseStatus,
-                _ => "Думаю…",
-            });
+            UpdateWorkStatus();
             if (!_draftIsProgress) compact.ShowDraft(_draftText.ToString());
         }
-        else if (_pendingAttachments.Count > 0) compact.SetStatus($"Вложений к сообщению: {_pendingAttachments.Count}");
+        else if (_pendingAttachments.Count > 0) compact.SetStatus(Tr($"Вложений к сообщению: {_pendingAttachments.Count}", $"Attachments: {_pendingAttachments.Count}"));
         compact.Show();
         // Only Computer Use needs this: its screenshots must show the desktop behind the window.
         if (_toolContext is { ComputerUse: true, SandboxRoot: null }) WindowEffects.ExcludeFromCapture(new WindowInteropHelper(compact).Handle);
         Hide();
         ActivateChatWindow();
-        PlaceQuestion();
         if (CurrentRun?.Question == null) compact.FocusInput();
     }
 
@@ -106,6 +106,7 @@ public partial class MainWindow
         var run = CurrentRun;
         host.Content = run?.Question;
         host.Visibility = VisibleIf(run?.Question != null);
+        UpdateWorkStatus();
         UpdateChangesPill();
         if (run?.QuestionFocus is { } focus)
             _ = Dispatcher.InvokeAsync(() => { if (CurrentRun?.QuestionFocus == focus) focus.Focus(); }, DispatcherPriority.Input);

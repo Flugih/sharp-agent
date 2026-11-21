@@ -28,7 +28,7 @@ public partial class MainWindow
         {
             _subagentRows.Add(update.Id, row = new SubagentRow(update));
             SubagentList.Children.Add(SubagentListRow(row));
-            SubagentsOpenButton.Content = $"Субагенты · {_subagentRows.Count}";
+            SubagentsOpenButton.Content = Tr($"Субагенты · {_subagentRows.Count}", $"Subagents · {_subagentRows.Count}");
             SubagentsOpenButton.Visibility = Visibility.Visible;
             UpdateLayoutWidths();
         }
@@ -74,7 +74,7 @@ public partial class MainWindow
         {
             foreach (var pending in row.Tools.Values)
             {
-                pending.Text = "Остановлено · " + pending.Text;
+                pending.Text = Tr("Остановлено · ", "Stopped · ") + pending.Text;
                 pending.IsActive = false;
                 pending.Base = "Warning";
             }
@@ -84,9 +84,9 @@ public partial class MainWindow
         {
             row.Activity.Children.Add(new TextBlock
             {
-                Text = update.Failed ? "Ошибка" : "Результат", Margin = new(0, 8, 0, 12),
+                Text = update.Failed ? Tr("Ошибка", "Error") : "Результат", Margin = new(0, 8, 0, 12),
             }.Paint(ForegroundProperty, "TextMuted"));
-            row.Activity.Children.Add(ChatText(result, update.Failed ? "Warning" : "Text", "Результат субагента"));
+            row.Activity.Children.Add(ChatText(result, update.Failed ? "Warning" : "Text", Tr("Результат субагента", "Subagent result")));
         }
         if (ReferenceEquals(_selectedSubagent, row)) UpdateSubagentHeader(row);
     }
@@ -101,7 +101,7 @@ public partial class MainWindow
             Content = new DockPanel { Children = { arrow, new StackPanel { Margin = new(0, 0, 10, 0), Children = { title, row.Status } } } },
             Style = Theme.Style("RowButton"), HorizontalContentAlignment = HorizontalAlignment.Stretch, ToolTip = row.State.Title.Length > 30 ? row.State.Title : null,
         };
-        AutomationProperties.SetName(button, "Открыть активность субагента " + row.State.Title);
+        AutomationProperties.SetName(button, Tr("Открыть активность субагента ", "Open activity for subagent ") + row.State.Title);
         button.Click += (_, _) => ShowSubagentPage(row);
         return button;
     }
@@ -129,7 +129,7 @@ public partial class MainWindow
         SubagentTitleText.Text = state.Title;
         var model = state.Model == null ? "" : _modelNames.GetValueOrDefault(state.Provider)?.GetValueOrDefault(state.Model) ?? state.Model;
         SubagentModelText.Text = state.Effort is { } key && EffortNames.TryGetValue(key, out var effort) && model.Length > 0
-            ? model + " · " + effort.Label : model;
+            ? model + " · " + Tr(effort.Russian, effort.English) : model;
         SubagentTitleText.ToolTip = row.Status.Text;
     }
 
@@ -174,7 +174,7 @@ public partial class MainWindow
     void UpdateSubagentsLayout()
     {
         SubagentsExpandButton.Content = _subagentsExpanded ? Glyphs.BackToWindow : Glyphs.FullScreen;
-        AutomationProperties.SetName(SubagentsExpandButton, _subagentsExpanded ? "Свернуть в боковую панель" : "Развернуть на всё рабочее пространство");
+        AutomationProperties.SetName(SubagentsExpandButton, _subagentsExpanded ? "Свернуть в боковую панель" : Tr("Развернуть на всё рабочее пространство", "Expand to workspace"));
         KeyboardNavigation.SetTabNavigation(SubagentsWorkspace, _subagentsExpanded ? KeyboardNavigationMode.Cycle : KeyboardNavigationMode.Continue);
     }
 

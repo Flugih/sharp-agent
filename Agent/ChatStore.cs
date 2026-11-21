@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 public sealed record ChatSummary(string Path, string Title, DateTime Updated);
 
-public sealed record ChatFile(List<JsonNode> Messages, string? Title);
+internal sealed record ChatFile(ChatHistory Messages, string? Title, string? Model, bool WorkMode);
 
 public sealed class ChatStore(string folder, string logsFolder)
 {
@@ -11,37 +11,52 @@ public sealed class ChatStore(string folder, string logsFolder)
     public string Folder => folder;
     string TrashFolder => Path.Combine(folder, "trash");
 
-    public string NewPath() => Path.Combine(folder, $"chat_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.json");
+    public string NewPath() => Path.Combine(folder, $"chat_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jsonl");
 
-    public ChatFile Load(string path)
+    internal ChatFile Load(string path)
     {
-        var root = ReadRoot(path);
-        if (root["messages"] is not JsonArray array) return new([], Str(root["title"]));
-        var messages = array.Where(message => message is JsonObject).Cast<JsonNode>().ToList();
-        array.Clear();
-        return new(messages, Str(root["title"]));
+        var index = ChatJournal.IsJournal(path) ? ChatJournal.ReadIndex(path) : Migrate(path);
+        return new(new(path, index), index.Header.Title, index.Header.Model, index.Header.WorkMode);
     }
 
-    public void Save(string path, IEnumerable<JsonNode> messages, string? model, string? title) => Write(path, writer =>
+    static ChatJournal.Index Migrate(string path)
     {
-        writer.WriteStartObject();
-        writer.WriteString("app", "SharpAgent");
-        writer.WriteString("format", "openai-chat-messages");
-        writer.WriteString("updated", DateTime.Now.ToString(TimeFormat, CultureInfo.InvariantCulture));
-        writer.WriteString("title", title);
-        writer.WriteString("model", model);
-        writer.WriteStartArray("messages");
-        foreach (var message in messages)
+        var root = ReadRoot(path);
+        var messages = LegacyMessages(root).ToList();
+        AgentRunner.RepairHistory(messages);
+        var header = new ChatJournal.Header(Str(root["title"]), FallbackTitle(messages), Str(root["model"]),
+            Bool(root["work_mode"]) != false, File.GetLastWriteTime(path));
+        return ChatJournal.Write(path, null, header, messages.Select((message, i) => new ChatJournal.Change(i, message)), messages.Count, migrate: true);
+    }
+
+    static IEnumerable<JsonNode> LegacyMessages(JsonObject root) => (root["messages"] as JsonArray)?.OfType<JsonObject>() ?? [];
+
+    internal IEnumerable<(int Position, JsonNode Message)> ReadMessages(string path, bool textOnly = false)
+    {
+        if (!ChatJournal.IsJournal(path))
         {
-            message.WriteTo(writer, Pretty);
-            if (writer.BytesPending >= 64 * 1024) writer.Flush();
+            int position = 0;
+            foreach (var message in LegacyMessages(ReadRoot(path))) yield return (position++, message);
+            yield break;
         }
-        writer.WriteEndArray();
-        writer.WriteEndObject();
-    });
+        var index = ChatJournal.ReadIndex(path);
+        using var file = ChatJournal.Open(path);
+        for (int i = 0; i < index.Entries.Length; i++)
+        {
+            var entry = index.Entries[i];
+            if (!textOnly || (entry.Flags & (ChatJournal.Flags.User | ChatJournal.Flags.Assistant)) != 0)
+                yield return (i, ChatJournal.Read(file, entry));
+        }
+    }
 
     public void Rename(string path, string? title)
     {
+        if (ChatJournal.IsJournal(path))
+        {
+            var index = ChatJournal.ReadIndex(path);
+            ChatJournal.Write(path, index, index.Header with { Title = title }, [], index.Entries.Length);
+            return;
+        }
         var root = ReadRoot(path);
         root["title"] = title;
         Write(path, writer => root.WriteTo(writer, Pretty), File.GetLastWriteTimeUtc(path));
@@ -58,7 +73,8 @@ public sealed class ChatStore(string folder, string logsFolder)
         DateTime? updated = null;
         try
         {
-            if (DateTime.TryParseExact(Str(ReadRoot(path)["updated"]), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+            if (ChatJournal.IsJournal(path)) updated = ChatJournal.ReadIndex(path).Header.Updated;
+            else if (DateTime.TryParseExact(Str(ReadRoot(path)["updated"]), TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
                 updated = time;
         }
         catch { }
@@ -75,17 +91,19 @@ public sealed class ChatStore(string folder, string logsFolder)
             try { File.Delete(artifact); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         File.Delete(path);
+        File.Delete(ChatJournal.IndexPath(path));
+        File.Delete(ChatJournal.LegacyPath(path));
     }
 
-    public int TrashCount() => Directory.Exists(TrashFolder) ? Directory.EnumerateFiles(TrashFolder, "chat_*.json").Count() : 0;
+    public int TrashCount() => ChatFiles(TrashFolder).Count();
 
     internal FileInfo[] ListChatFiles() => ChatFiles(folder)
         .OrderByDescending(file => file.LastWriteTimeUtc).ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 
     public List<ChatSummary> ListTrash() => Summaries(ChatFiles(TrashFolder));
 
-    static IEnumerable<FileInfo> ChatFiles(string directory) =>
-        Directory.Exists(directory) ? new DirectoryInfo(directory).EnumerateFiles("chat_*.json") : [];
+    static IEnumerable<FileInfo> ChatFiles(string directory) => Directory.Exists(directory)
+        ? new DirectoryInfo(directory).EnumerateFiles("chat_*.json*").Where(file => file.Extension is ".json" or ".jsonl") : [];
 
     internal static List<ChatSummary> Summaries(IEnumerable<FileInfo> files)
     {
@@ -100,10 +118,18 @@ public sealed class ChatStore(string folder, string logsFolder)
     }
 
     public static string TitleOf(IEnumerable<JsonNode> messages, string? title) =>
-        !string.IsNullOrWhiteSpace(title) ? title.Trim() : AgentRunner.TitleOf(messages) ?? "Без названия";
+        !string.IsNullOrWhiteSpace(title) ? title.Trim() : FallbackTitle(messages) ?? "Без названия";
+
+    internal static string? FallbackTitle(IEnumerable<JsonNode> messages) =>
+        AgentRunner.TitleOf(messages) is { } title ? AgentRunner.Clip(title, 400) : null;
 
     static ChatSummary? Summarize(FileInfo file)
     {
+        if (ChatJournal.IsJournal(file.FullName))
+        {
+            var header = ChatJournal.ReadIndex(file.FullName).Header;
+            return new(file.FullName, header.Title ?? header.FirstTitle ?? "Без названия", file.LastWriteTime);
+        }
         using var stream = File.Open(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         var prefix = new byte[Math.Min(8192, stream.Length)];
         int filled = 0;
@@ -164,7 +190,7 @@ public sealed class ChatStore(string folder, string logsFolder)
     {
         try
         {
-            return Load(path).Messages
+            return ReadMessages(path).Select(item => item.Message)
                 .Where(message => JsonUtil.Str(message["role"]) == "tool")
                 .SelectMany(message => new[]
                 {
@@ -179,29 +205,56 @@ public sealed class ChatStore(string folder, string logsFolder)
     static string MoveTo(string path, string directory, DateTime? touched)
     {
         Directory.CreateDirectory(directory);
-        var target = Move(path, Unique(directory, Path.GetFileNameWithoutExtension(path), ".json"));
+        var target = Move(path, Unique(directory, Path.GetFileNameWithoutExtension(path), Path.GetExtension(path)));
         if (touched is { } time) File.SetLastWriteTime(target, time);
         return target;
     }
 
     static string Move(string path, string target)
     {
-        File.Move(path, target);
+        var legacy = ChatJournal.LegacyPath(path);
+        var targetLegacy = ChatJournal.LegacyPath(target);
+        bool hasLegacy = File.Exists(legacy);
+        if (hasLegacy) File.Move(legacy, targetLegacy);
+        try { File.Move(path, target); }
+        catch
+        {
+            if (hasLegacy) File.Move(targetLegacy, legacy);
+            throw;
+        }
+        try
+        {
+            if (File.Exists(ChatJournal.IndexPath(path))) File.Move(ChatJournal.IndexPath(path), ChatJournal.IndexPath(target), overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         return target;
     }
 
     static string Unique(string directory, string stem, string tail)
     {
         var path = Path.Combine(directory, stem + tail);
-        for (int n = 2; File.Exists(path); n++) path = Path.Combine(directory, $"{stem}_{n}{tail}");
+        for (int n = 2; File.Exists(path) || File.Exists(ChatJournal.LegacyPath(path)); n++) path = Path.Combine(directory, $"{stem}_{n}{tail}");
         return path;
     }
 
     static JsonObject ReadRoot(string path)
     {
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-        return JsonNode.Parse(reader.ReadToEnd()) as JsonObject ?? throw new JsonException("В файле нет переписки.");
+        Span<byte> prefix = stackalloc byte[4];
+        int length = stream.ReadAtLeast(prefix, prefix.Length, false);
+        var bytes = prefix[..length];
+        if (bytes.StartsWith(Encoding.UTF8.Preamble)) stream.Position = Encoding.UTF8.Preamble.Length;
+        else
+        {
+            stream.Position = 0;
+            if (bytes.StartsWith(Encoding.Unicode.Preamble) || bytes.StartsWith(Encoding.BigEndianUnicode.Preamble) ||
+                bytes.StartsWith(new byte[] { 0, 0, 0xfe, 0xff }))
+            {
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                return JsonNode.Parse(reader.ReadToEnd()) as JsonObject ?? throw new JsonException("В файле нет переписки.");
+            }
+        }
+        return JsonNode.Parse(stream) as JsonObject ?? throw new JsonException("В файле нет переписки.");
     }
 
     static void Write(string path, Action<Utf8JsonWriter> write, DateTime? modifiedUtc = null)

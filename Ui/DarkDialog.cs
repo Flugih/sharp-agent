@@ -57,14 +57,15 @@ public sealed class DarkDialog : Window
     }
 
     public static bool Ask(Window owner, string title, string message, string okText,
-        string cancelText = "Отмена", bool danger = false, string? code = null, bool delayed = false)
+        string? cancelText = null, bool danger = false, string? code = null, bool delayed = false)
     {
         if (code != null)
         {
             code = string.Concat(code.ReplaceLineEndings("\n").Select(ch => ch is '\n' or '\t' ||
                 char.GetUnicodeCategory(ch) is not (UnicodeCategory.Format or UnicodeCategory.Control) ? ch.ToString() : $"⟨U+{(int)ch:X4}⟩"));
             int lines = code.Count(ch => ch == '\n') + 1;
-            if (lines > 12 || code.Length > 700) message += (message.Length > 0 ? "\n" : "") + $"Строк в тексте: {lines} — прокрутите его до конца.";
+            if (lines > 12 || code.Length > 700) message += (message.Length > 0 ? "\n" : "") +
+                Tr($"Строк в тексте: {lines} — прокрутите его до конца.", $"There are {lines} lines. Scroll to the end.");
         }
         var body = new StackPanel();
         if (message.Length > 0) body.Children.Add(ReadOnlyText(message, "TextSoft", Theme.Ui, 14, 340));
@@ -75,7 +76,7 @@ public sealed class DarkDialog : Window
                 Child = ReadOnlyText(code, "Text", Theme.Mono, 12.5, 220),
             }.Paint(Border.BackgroundProperty, "BlockBg"));
         var ok = new Button { Content = okText, IsDefault = !danger && !delayed, IsEnabled = !delayed, Margin = new(8, 0, 0, 0), Style = Theme.Style(danger ? "DangerButton" : "PrimaryButton") };
-        var cancel = new Button { Content = cancelText, IsCancel = true };
+        var cancel = new Button { Content = cancelText ?? Tr("Отмена", "Cancel"), IsCancel = true };
         var dialog = new DarkDialog(owner, title, body, new StackPanel
         {
             Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0), Children = { cancel, ok },
@@ -90,9 +91,9 @@ public sealed class DarkDialog : Window
         return dialog.Run() == true;
     }
 
-    public static void Show(Window owner, string title, FrameworkElement content, string closeText = "Закрыть")
+    public static void Show(Window owner, string title, FrameworkElement content, string? closeText = null)
     {
-        var close = new Button { Content = closeText, IsCancel = true, IsDefault = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0) };
+        var close = new Button { Content = closeText ?? Tr("Закрыть", "Close"), IsCancel = true, IsDefault = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 24, 0, 0) };
         var dialog = new DarkDialog(owner, title, content, close);
         close.Click += (_, _) => dialog.Close();
         dialog.Loaded += (_, _) => close.Focus();

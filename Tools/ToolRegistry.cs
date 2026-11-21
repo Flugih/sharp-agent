@@ -9,7 +9,7 @@ public sealed record ToolOutcome(string Output, bool IsError, bool IsWarning = f
 public sealed class ToolRegistry
 {
     const int MaxToolOutputChars = 100_000;
-    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name];
+    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName];
     static readonly HashSet<string> ReadOnly =
         ["read_file", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin"];
     static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано"];
@@ -26,7 +26,7 @@ public sealed class ToolRegistry
             var key = (Sandbox: Context.SandboxRoot != null, Computer: Context.ComputerUse);
             if (!_definitions.TryGetValue(key, out var definitions))
                 _definitions[key] = definitions = BuildDefinitions(_tools.Where(t =>
-                    !(key.Sandbox && UnsafeInSandbox.Contains(t.Name) || t.Name == ComputerTools.Name && !key.Computer)));
+                    !(key.Sandbox && UnsafeInSandbox.Contains(t.Name) || ComputerTools.IsControl(t.Name) && !key.Computer)));
             return definitions;
         }
     }
@@ -54,7 +54,7 @@ public sealed class ToolRegistry
     public async Task<ToolOutcome> ExecuteAsync(string name, string argumentsJson, Func<ConfirmRequest, Task<bool>>? confirm,
         CancellationToken ct, Action? executionStarted = null)
     {
-        if (!_byName.TryGetValue(name, out var tool) || name == ComputerTools.Name && !Context.ComputerUse)
+        if (!_byName.TryGetValue(name, out var tool) || ComputerTools.IsControl(name) && !Context.ComputerUse)
             return Error($"Ошибка: неизвестный инструмент '{name}'.");
         if (Context.SandboxRoot != null && UnsafeInSandbox.Contains(name))
             return Error($"Ошибка: инструмент '{name}' отключён в режиме песочницы.");
@@ -62,7 +62,7 @@ public sealed class ToolRegistry
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
         var toolArgs = new ToolArgs(args);
-        bool opaque = name is "run_command" or "run_plugin" or "open_path" or ComputerTools.Name;
+        bool opaque = name is "run_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName;
         try
         {
             ct.ThrowIfCancellationRequested();

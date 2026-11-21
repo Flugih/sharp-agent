@@ -24,19 +24,19 @@ public static class FileActions
     {
         if (!Exists(path))
         {
-            Notify?.Invoke($"Не найдено: {path}. Возможно, файл переместили или удалили.", true);
+            Notify?.Invoke(Tr($"Не найдено: {path}. Возможно, файл переместили или удалили.", $"File missing: {path}. It may have been moved or deleted."), true);
             return;
         }
         if (File.Exists(path) && PathHelper.FinalPath(path) is var real && !(PathHelper.IsPassive(path) && PathHelper.IsPassive(real)))
         {
             bool run = PathHelper.IsExecutable(path) || PathHelper.IsExecutable(real);
-            if (!DarkDialog.Ask(owner, run ? "Запустить программу или скрипт?" : "Открыть файл этого типа?",
-                    run ? "Открытие этого файла запустит его. Запускайте только то, чему доверяете."
-                        : "Windows откроет его связанной программой. Такие файлы могут выполнять команды.",
-                    run ? "Запустить" : "Открыть", danger: run, code: path, delayed: true))
+            if (!DarkDialog.Ask(owner, run ? Tr("Запустить программу или скрипт?", "Run this program or script?") : Tr("Открыть файл этого типа?", "Open this file type?"),
+                    run ? Tr("Открытие этого файла запустит его. Запускайте только то, чему доверяете.", "Opening this file will run it. Only run files you trust.")
+                        : Tr("Windows откроет его связанной программой. Такие файлы могут выполнять команды.", "Windows will open this file in its associated app. This file type can run commands."),
+                    run ? Tr("Запустить", "Run") : Tr("Открыть", "Open"), danger: run, code: path, delayed: true))
                 return;
         }
-        Start(new ProcessStartInfo(path) { UseShellExecute = true }, $"Не удалось открыть {Path.GetFileName(path)}: ", () => OpenWith(path));
+        Start(new ProcessStartInfo(path) { UseShellExecute = true }, Tr($"Не удалось открыть {Path.GetFileName(path)}: ", $"Could not open {Path.GetFileName(path)}: "), () => OpenWith(path));
     }
 
     public static void Reveal(string path)
@@ -46,10 +46,10 @@ public static class FileActions
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
             if (Directory.Exists(parent))
             {
-                Notify?.Invoke($"Файла {Path.GetFileName(path)} уже нет — открыта папка, где он лежал.", false);
+                Notify?.Invoke(Tr($"Файла {Path.GetFileName(path)} уже нет — открыта папка, где он лежал.", $"{Path.GetFileName(path)} is missing. Opened its parent folder."), false);
                 OpenFolder(parent);
             }
-            else Notify?.Invoke($"Не найдено: {path}", true);
+            else Notify?.Invoke(Tr($"Не найдено: {path}", $"File missing: {path}"), true);
             return;
         }
         nint pidl = 0;
@@ -59,18 +59,18 @@ public static class FileActions
         }
         catch { }
         finally { Marshal.FreeCoTaskMem(pidl); }
-        Start(new ProcessStartInfo(Explorer, $"/select,\"{path}\""), "Не удалось открыть Проводник: ");
+        Start(new ProcessStartInfo(Explorer, $"/select,\"{path}\""), Tr("Не удалось открыть Проводник: ", "Could not open File Explorer: "));
     }
 
-    public static void OpenFolder(string folder) => Start(new ProcessStartInfo(Explorer) { ArgumentList = { folder } }, "Не удалось открыть папку: ");
+    public static void OpenFolder(string folder) => Start(new ProcessStartInfo(Explorer) { ArgumentList = { folder } }, Tr("Не удалось открыть папку: ", "Could not open folder: "));
 
     static void OpenWith(string path) => Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
-        "shell32.dll,OpenAs_RunDLL " + path), "Не удалось открыть выбор программы: ");
+        "shell32.dll,OpenAs_RunDLL " + path), Tr("Не удалось открыть выбор программы: ", "Could not open the app picker: "));
 
     public static void Copy(string text, string done)
     {
         bool copied = TextClipboard.SetText(text);
-        Notify?.Invoke(copied ? done : "Буфер обмена занят другой программой — попробуйте ещё раз", !copied);
+        Notify?.Invoke(copied ? done : Tr("Буфер обмена занят другой программой — попробуйте ещё раз", "The clipboard is busy. Try again."), !copied);
     }
 
     public static void OpenUrl(string url)
@@ -80,15 +80,15 @@ public static class FileActions
             if (AppNetwork.CustomRoute && !_routeNoticeShown)
             {
                 _routeNoticeShown = true;
-                Notify?.Invoke("Ссылка откроется во внешней программе с её сетевыми настройками.", false);
+                Notify?.Invoke(Tr("Ссылка откроется во внешней программе с её сетевыми настройками.", "This link will open in an external app using that app’s network settings."), false);
             }
-            Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }, "Не удалось открыть браузер: ");
+            Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }, Tr("Не удалось открыть браузер: ", "Could not open browser: "));
         }
-        else Notify?.Invoke("Эту ссылку открыть нельзя: " + url, true);
+        else Notify?.Invoke(Tr("Эту ссылку открыть нельзя: ", "Could not open this link: ") + url, true);
     }
 
     public static void OpenWindowsSettings(string page) =>
-        Start(new ProcessStartInfo("ms-settings:" + page) { UseShellExecute = true }, "Не удалось открыть Параметры Windows: ");
+        Start(new ProcessStartInfo("ms-settings:" + page) { UseShellExecute = true }, Tr("Не удалось открыть Параметры Windows: ", "Could not open Windows Settings: "));
 
     static void Start(ProcessStartInfo info, string failure, Action? noAssociation = null)
     {
@@ -101,13 +101,13 @@ public static class FileActions
     {
         bool isFolder = Directory.Exists(path);
         // Links and cards also appear in the mini window, so the dialog goes over the window the menu was opened in.
-        var open = Item(isFolder ? "Открыть папку" : "Открыть в программе по умолчанию", Glyphs.Open,
+        var open = Item(isFolder ? Tr("Открыть папку", "Open folder") : Tr("Открыть в программе по умолчанию", "Open in default app"), Glyphs.Open,
             () => Open(Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) ?? owner, path));
         if (isFolder) open.FontWeight = FontWeights.SemiBold;
-        var menu = new ContextMenu { Items = { open, Item("Показать в папке", Glyphs.Reveal, () => Reveal(path)) } };
-        if (!isFolder) menu.Items.Add(Item("Открыть с помощью…", Glyphs.OpenWith, () => OpenWith(path)));
+        var menu = new ContextMenu { Items = { open, Item(Tr("Показать в папке", "Show in folder"), Glyphs.Reveal, () => Reveal(path)) } };
+        if (!isFolder) menu.Items.Add(Item(Tr("Открыть с помощью…", "Open with…"), Glyphs.OpenWith, () => OpenWith(path)));
         menu.Items.Add(new Separator());
-        menu.Items.Add(Item("Копировать путь", Glyphs.Copy, () => Copy(path, "Путь скопирован")));
+        menu.Items.Add(Item(Tr("Копировать путь", "Copy path"), Glyphs.Copy, () => Copy(path, Tr("Путь скопирован", "Path copied"))));
         if (extra.Length > 0) menu.Items.Add(new Separator());
         foreach (var item in extra) menu.Items.Add(item);
         return menu;

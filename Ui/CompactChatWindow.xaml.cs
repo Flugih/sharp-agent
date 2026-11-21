@@ -43,19 +43,19 @@ public partial class CompactChatWindow : Window
         return 0;
     }
 
-    internal void SetStatus(string text, string color = "TextMuted")
+    internal void SetStatus(string text, string color = "TextMuted", bool animate = false)
     {
-        StatusText.Text = text;
         StatusText.Base = color;
         ShimmerStatus();
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.SetAnimatedText(text, animate);
         UpdateTranscript(scroll: true);
     }
 
     internal void UpdateAction(bool running, bool enabled, bool resume)
     {
         ActionButton.Content = running ? "\uE71A" : resume ? Glyphs.Play : Glyphs.Send;
-        var label = running ? "Остановить агента" : resume ? "Продолжить задачу" : "Отправить";
+        var label = running ? Tr("Остановить агента", "Stop agent") : resume ? Tr("Продолжить задачу", "Resume task") : Tr("Отправить", "Send");
         ActionButton.ToolTip = !running && resume ? label : null;
         AutomationProperties.SetName(ActionButton, label);
         ActionButton.IsEnabled = enabled;

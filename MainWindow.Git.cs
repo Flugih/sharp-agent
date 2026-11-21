@@ -15,11 +15,11 @@ public partial class MainWindow
             if (openMenu && request == _gitBranchRequest) ShowToast(ex.Message, ToastKind.Warning);
             return null;
         }
-        if (request != _gitBranchRequest || _waitingToClose) return null;
+        if (request != _gitBranchRequest) return null;
         var current = branches?.Current;
         GitBranchButton.Visibility = VisibleIf(current != null);
         GitBranchText.Text = current ?? "";
-        if (current != null) SetHint(GitBranchButton, $"Ветка Git: {current}. Выбрать ветку");
+        if (current != null) SetHint(GitBranchButton, Tr($"Ветка Git: {current}. Выбрать ветку", $"Git branch: {current}. Choose branch"));
         UpdateLayoutWidths();
         return branches;
     }
@@ -45,18 +45,18 @@ public partial class MainWindow
     {
         if (AnyRunning)
         {
-            ShowToast("Переключение ветки доступно после завершения задач агента.", ToastKind.Warning);
+            ShowToast(Tr("Переключение ветки доступно после завершения задач агента.", "You can switch branches after the agent finishes its tasks."), ToastKind.Warning);
             return;
         }
         if (!PathHelper.SamePath(folder, _toolContext.WorkingDirectory)) return;
         try
         {
             var error = await Task.Run(() => LocalProjectContext.SwitchBranchAsync(_toolContext, folder, root, branch));
-            if (error != null) ShowToast("Не удалось переключить ветку. " + error, ToastKind.Error);
+            if (error != null) ShowToast(Tr("Не удалось переключить ветку. ", "Could not switch branches. ") + error, ToastKind.Error);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException or ArgumentException)
         {
-            ShowToast("Не удалось переключить ветку. " + ex.Message, ToastKind.Error);
+            ShowToast(Tr("Не удалось переключить ветку. ", "Could not switch branches. ") + ex.Message, ToastKind.Error);
         }
         await RefreshGitBranchAsync();
     }
