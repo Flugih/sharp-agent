@@ -129,10 +129,9 @@ public static partial class ShellTools
             }
             int? exitCode = timedOut ? null : process.ExitCode;
             var restriction = CommandRestriction.FromOutput(shell, output, errors, scriptPath, exitCode);
-            if (bundled && rg.Success && restriction == null && exitCode != 0 && saveLog &&
-                (errors.Contains("not a valid Win32 application", StringComparison.OrdinalIgnoreCase) ||
-                 errors.Contains("не является приложением Win32", StringComparison.OrdinalIgnoreCase)) &&
-                Fallback("Встроенный rg.exe несовместим с этой Windows.") is { } incompatible) return incompatible;
+            if (bundled && rg.Success && exitCode is not (null or 0) && saveLog &&
+                CommandRestriction.RipgrepLaunchFailure(errors, restriction) is { } reason &&
+                Fallback(reason) is { } alternative) return alternative;
             if (errors.Length > 0) output += (output.Length > 0 ? "\n" : "") + "[stderr]\n" + errors;
             if (restriction != null) output = CommandRestriction.Prefix + restriction.Message + "\n\n" + output;
             var result = CommandLog.Summarize(timedOut ? $"{CommandLog.TimeoutPrefix} ({timeout} с)" : CommandLog.ExitPrefix + exitCode,

@@ -20,10 +20,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     const string ElapsedField = "elapsed_ms", StopField = "stopped", ProgramStopField = "stopped_by_program", SentAtField = "sent_at";
     const string TruncatedCallReply = "Ошибка: ответ оборвался на лимите токенов, аргументы вызова пришли не полностью — действие не выполнено. " +
         "Повтори его меньшими частями (например, write_file по частям с append=true).";
-    const int ImageTokens = 1_000, RunStepLimit = 24, RunTokenLimit = 300_000, WorkingInputTokens = 24_000;
+    const int ImageTokens = 1_000, WorkingInputTokens = 24_000;
     const string RunLimitPauseRu = "Пауза: достигнут лимит работы с моделью. Нажмите «Продолжить», чтобы возобновить задачу.",
         RunLimitPauseEn = "Paused at the model usage limit. Select Continue to resume the task.";
-    static readonly TimeSpan RunTimeLimit = TimeSpan.FromMinutes(8);
 
     readonly bool delegated;
     ChatHistory _history = new();
@@ -37,7 +36,6 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     readonly Dictionary<string, int> _inputCaps = new(StringComparer.OrdinalIgnoreCase);
     readonly Stopwatch _turnClock = new();
     readonly SemaphoreSlim _chatWrites = new(1);
-    ((int Start, int End, int User, int Room) Range, JsonObject Message)? _coldContext;
     IReadOnlyList<JsonNode> _sent = [];
     RequestInputMeter _inputMeter = new();
     JsonObject? _systemMessage;
@@ -133,7 +131,6 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public void NewChat()
     {
         _history = new();
-        _coldContext = null;
         _imageCache.Clear();
         _sent = [];
         _inputMeter = new();
@@ -424,20 +421,12 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     async Task RunStepsAsync(string model, ContextRun context, CancellationToken ct)
     {
         bool truncationReported = false;
-        var started = _turnClock.Elapsed;
-        for (int step = 1; ; step++)
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
-            if (context.Compaction is { IsCompleted: true } && !context.CacheWarm) await CommitCompactionAsync(model, context);
-            if (!delegated && (step > RunStepLimit || context.Spent + context.CompactionReserve >= RunTokenLimit || _turnClock.Elapsed - started >= RunTimeLimit))
-            {
-                await RecordStopAsync(PromptText(RunLimitPauseRu, RunLimitPauseEn), true, preserveReview: true);
-                return;
-            }
             if (CanSpendAsync != null && !await CanSpendAsync()) throw new OperationCanceledException();
-            bool finalWorkerStep = delegated && step == SubagentStepLimit;
             context.NextStep(_history);
-            var result = await CompleteAsync(model, finalWorkerStep, context, ct);
+            var result = await CompleteAsync(model, context, ct);
             if (result.FinishReason == "content_filter")
             {
                 await SaveUnattachedUsageAsync(model, result.Usage);
@@ -453,8 +442,6 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             var text = ExtractText(message["content"]);
             var nextActions = delegated ? [] : ExtractNextActions(message, ref text);
             var calls = message["tool_calls"] is JsonArray { Count: > 0 } array ? array : null;
-            bool blockedCalls = finalWorkerStep && calls != null;
-            if (blockedCalls) calls = null;
             var (review, verification, incomplete) = calls == null && !string.IsNullOrWhiteSpace(text) && result.FinishReason != "length"
                 ? await ReviewAsync(context, ct) : (null, null, null);
             if (incomplete != null)
@@ -496,11 +483,6 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             else await SaveUnattachedUsageAsync(model, result.Usage);
             if (result.Usage != null) UsageReported?.Invoke(model, result.Usage);
             AssistantText?.Invoke(text?.Trim() ?? "", elapsed, sentAt);
-            if (blockedCalls)
-            {
-                await RecordStopAsync(SubagentStepStop, true);
-                return;
-            }
             foreach (var call in skipped)
             {
                 ToolCallStarted?.Invoke(call);
@@ -531,7 +513,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     Warning?.Invoke(PromptText("Ответ обрезан: достигнут лимит токенов ответа. Напишите «продолжай» или увеличьте лимит в настройках.", "The response reached its token limit. Type “continue” or increase the limit in settings."));
                 return;
             }
-            if (await ExecuteToolCallsAsync(calls, context, ct) is { } stuck)
+            if (await ExecuteToolCallsAsync(calls, ct) is { } stuck)
             {
                 await RecordStopAsync(stuck, true);
                 return;
@@ -541,14 +523,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     bool AllowImages(string model) => !_noVisionModels.Contains(model) && ModelSupportsVision?.Invoke(model) != false;
 
-    async Task<ChatResult> CompleteAsync(string model, bool finalWorkerStep, ContextRun context, CancellationToken ct)
+    async Task<ChatResult> CompleteAsync(string model, ContextRun context, CancellationToken ct)
     {
-        var definitions = delegated ? context.Definitions : _scopedDefinitions ?? context.Definitions;
         bool withImages = AllowImages(model), droppedImages = false, harder = false;
         while (true)
         {
             PreparingContext?.Invoke(PromptText("Подготавливаю контекст…", "Preparing context…"));
-            var (messages, images, projectTokens) = await BuildRequestAsync(model, definitions, withImages, harder, finalWorkerStep, context, ct);
+            var (messages, definitions, images, projectTokens) = await BuildRequestAsync(model, withImages, harder, context, ct);
             var input = _inputMeter.Measure(Provider, model, messages, definitions, projectTokens, images * ImageTokens);
             int estimatedInput = input.Total;
             ThinkingStarted?.Invoke();
@@ -559,7 +540,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 Action<string?, bool> stream = delegated ? Emit : new NextActionStream(Emit).Push;
                 var result = await TrackModelAsync("response", model, estimatedInput, images, retry =>
                     Api!.CompleteAsync(model, messages, definitions, MaxTokens, effort,
-                        stream, progress => ProgressReported?.Invoke(progress), ct, !finalWorkerStep, retry), input: input);
+                        stream, progress => ProgressReported?.Invoke(progress), ct, retrying: retry), input: input);
                 context.Observe(estimatedInput, result.Usage);
                 _sent = messages.Where(message => Role(message) == "tool").ToArray();
                 if (droppedImages)
@@ -597,7 +578,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                                            "с большей памятью и нажмите «Повторить» — переписка сохранена.\n\n" + ex.Message, ex.StatusCode);
                 ResetModelProgress();
                 int cap = estimatedInput - HistoryCompressor.EstimateAll(messages.Skip(1)) / 4;
-                if (cap < InputBudget(model, context, MaxInputTokens)) _inputCaps[model] = cap;
+                if (cap < InputBudget(model, context)) _inputCaps[model] = cap;
                 harder = true;
             }
         }
@@ -638,12 +619,11 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         ProgressReported?.Invoke(new());
     }
 
-    int InputBudget(string model, ContextRun context, int maximum)
+    int InputBudget(string model, ContextRun context)
     {
         long window = ModelContextTokens?.Invoke(model) is > 0 and var known ? known : DefaultContextTokens;
-        long cap = delegated ? Math.Min(window / 4, SubagentInputTokens) : maximum;
-        long reserve = Math.Min(MaxTokens ?? context.OutputReserve, window / 2);
-        return (int)Math.Min(Math.Min(window - reserve, cap) / context.InputScale, _inputCaps.GetValueOrDefault(model, int.MaxValue));
+        long reserve = MaxTokens is > 0 and var configured ? Math.Min(configured, window - 1) : Math.Min(context.OutputReserve, window / 2);
+        return (int)Math.Min((window - reserve) / context.InputScale, _inputCaps.GetValueOrDefault(model, int.MaxValue));
     }
 
     static bool Mentions(string? text, params string[] hints) =>
@@ -681,197 +661,55 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         Mentions(ex.Message, "missing", "required", "mandatory", "must be passed", "must be provided", "must be present",
             "pass back", "not provided", "отсутств", "обязател", "требуется"));
 
-    async Task<(List<JsonNode> Messages, int Images, int ProjectTokens)> BuildRequestAsync(string model, JsonArray definitions,
-        bool withImages, bool harder, bool finalWorkerStep, ContextRun context, CancellationToken ct)
+    async Task<(List<JsonNode> Messages, JsonArray Definitions, int Images, int ProjectTokens)> BuildRequestAsync(
+        string model, bool withImages, bool harder, ContextRun context, CancellationToken ct)
     {
+        var definitions = delegated ? context.Definitions : _scopedDefinitions ?? context.Definitions;
         var system = SystemMessage();
         int currentUser = _history.LastIndex(ChatJournal.Flags.User);
-        var shownImages = withImages && currentUser >= 0 && _history[currentUser] is JsonObject active
+        var active = currentUser < 0 ? null : (JsonObject)_history[currentUser];
+        var shownImages = withImages && active != null
             ? Attachment.ListFrom(active).Where(a => a.Kind == AttachmentKind.Image).TakeLast(8).Select(a => (active, a.Path)).ToHashSet()
             : [];
         var screenshot = withImages ? LatestScreenshot() : null;
-        if (_imageCache.Count > 0)
-        {
-            var needed = shownImages.Select(image => image.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (screenshot is { } shot) needed.Add(shot.Path);
-            foreach (var stale in _imageCache.Keys.Where(key => !needed.Contains(key)).ToArray()) _imageCache.Remove(stale);
-        }
-        int overhead = HistoryCompressor.Estimate(system) + RequestInputMeter.ToolTokens(definitions) +
-                       (shownImages.Count + (screenshot != null ? 1 : 0)) * ImageTokens;
-        int room = InputBudget(model, context, WorkingInputTokens) - overhead;
-        var note = RequestTail(harder);
-        if (finalWorkerStep) note += PromptText("\n\n[Последний шаг субагента. Подведи итог по собранным данным и укажи, чего не удалось проверить.]",
-            "\n\n[This is the subagent's last step. Summarize your findings and say what you could not verify.]");
-        var project = WorkMode ? await ProjectContextAsync(Math.Clamp(room * 3 / (harder ? 12 : 5), 0, harder ? 2200 : 11_000), ct) : null;
-        var plan = PlanNote();
-        room = Math.Max(0, room - ((note?.Length ?? 0) + (project?.Length ?? 0) + (plan?.Length ?? 0)) / 3);
+        var needed = shownImages.Select(image => image.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (screenshot is { } shot) needed.Add(shot.Path);
+        foreach (var stale in _imageCache.Keys.Where(key => !needed.Contains(key)).ToArray()) _imageCache.Remove(stale);
+
         int start = SummaryStart();
-        var summary = start > 0 ? SummaryMessage(start) : null;
+        int priorUser = SummaryUser(start);
+        var original = _history.Range(start, _history.Count - start).ToList();
+        var groups = HistoryCompressor.ToolGroups(original);
+        if (tools.PendingCommandOutput is { } running)
+            for (int g = 0; g < groups.Count; g++)
+            {
+                var group = groups[g];
+                if (original.Skip(group.Start + 1).Take(group.End - group.Start).Any(message => Str(message["content"]) == running))
+                    groups[g] = group with { Pending = true };
+            }
+        int protect = groups.Count == 0 ? Math.Max(0, original.Count - 2) : groups[Math.Max(0, groups.Count - 4)].Start;
+        int pending = groups.FindIndex(group => group.Pending);
+        if (pending >= 0) protect = Math.Min(protect, groups[pending].Start);
         var stoppedRequests = StoppedRequests(currentUser);
-        int rawStart = _history.ContextStart(start, Math.Max(1, room) * 2);
-        bool pinnedUser = currentUser >= 0 && currentUser < rawStart;
-        var projected = new List<JsonNode>(_history.Count - rawStart + 2);
-        if (rawStart > start)
+        var prefix = new List<JsonNode> { system };
+        if (start > 0) prefix.Add(SummaryMessage(start));
+        if (priorUser >= 0 && priorUser < start && priorUser != currentUser)
+            prefix.Add((await ProjectUserAsync((JsonObject)_history[priorUser], priorUser)).Message);
+
+        int budget = InputBudget(model, context);
+        int working = Math.Min(budget, delegated ? WorkingInputTokens / 2 : WorkingInputTokens);
+        int overhead = HistoryCompressor.EstimateAll(prefix) + RequestInputMeter.ToolTokens(definitions);
+        var project = WorkMode ? await ProjectContextAsync(Math.Clamp((working - overhead - needed.Count * ImageTokens) * 3 /
+            (harder ? 12 : 5), 0, harder ? 2200 : 11_000), ct) : null;
+        var environment = TextMessage(SystemPrompt.Context(tools.Context, definitions, delegated) + (project == null ? "" : "\n\n" + project));
+        var note = RequestTail(harder);
+        if (PlanNote() is { } plan) note = (note ?? "") + "\n\n" + plan;
+        JsonNode? tail = note == null ? null : TextMessage(note);
+        JsonNode? shotMessage = null;
+        int shown = 0;
+        if (screenshot is var (id, path) && await GetImageAsync(path, ct) is { } url)
         {
-            var range = (Start: start, End: rawStart, User: currentUser, Room: room / 1_000 * 1_000);
-            if (_coldContext is not { } cached || cached.Range != range)
-                _coldContext = (range, HistoryCompressor.ContextExcerpt(_history.Range(start, rawStart - start), start, currentUser, stoppedRequests, range.Room));
-            projected.Add(_coldContext.Value.Message);
-        }
-        int activeIndex = projected.Count + (pinnedUser ? 0 : currentUser - rawStart);
-        if (pinnedUser) projected.Add(_history[currentUser]);
-        int prefixCount = projected.Count;
-        bool omitReasoning = definitions.Count == 0 || !_toolReasoningModels.Contains(model);
-        bool shortened = rawStart > start;
-        var superseded = SupersededResults(Math.Max(currentUser, rawStart - 1));
-        var staleReads = StaleReads();
-        var legacyCalls = new HashSet<string>();
-        var editCalls = new HashSet<string>();
-        JsonNode Shorten(JsonNode node)
-        {
-            var compact = HistoryCompressor.Shorten(node);
-            shortened |= !ReferenceEquals(node, compact);
-            return compact;
-        }
-        int i = rawStart;
-        foreach (var original in _history.Range(rawStart, _history.Count - rawStart))
-        {
-            int messageIndex = i++;
-            var node = ProjectLegacyTools(WithVerificationSummary(original), legacyCalls);
-            if (stoppedRequests.Contains(messageIndex))
-            {
-                var past = (JsonObject)node.DeepClone();
-                past["content"] = StoppedRequest + "\n" + ExtractText(node["content"]);
-                node = past;
-            }
-            // Current-task results stay whole unless repeated later: the model keeps what it read and the prompt prefix stays cacheable.
-            if (Role(node) == "tool")
-            {
-                var toolId = Str(node["tool_call_id"]) ?? "";
-                if (staleReads.Contains(toolId)) node = ToolMessage(toolId, PromptText(
-                    "Файл изменён после чтения. Получи актуальный диапазон, только если он нужен для следующего действия.",
-                    "The file changed after this read. Fetch the current range only if a later action needs it."));
-                else if (superseded.Contains(toolId)) node = ToolMessage(toolId, PromptText(
-                    "Этот результат заменён более свежим результатом того же действия.",
-                    "A newer result of the same action supersedes this output."));
-                else if (messageIndex < context.ArchiveBefore && Str(MetaOf(node)?["saved_read"]) is { } reference &&
-                    Str(node["content"]) is { Length: > 1500 } saved)
-                {
-                    var content = saved.StartsWith(ToolOutputStore.ReferencePrefix, StringComparison.Ordinal) ?
-                        saved[(saved.IndexOf('\n') + 1)..] : saved;
-                    node = ToolMessage(toolId, reference + "\n" + HistoryCompressor.Excerpt(content, 850));
-                }
-                else if (messageIndex < context.ArchiveBefore && Bool(MetaOf(node)?["command_read"]) == true &&
-                    Str(node["content"]) is { Length: > 1500 } readOutput && CommandLog.IdOf(readOutput) is { } journal)
-                    node = ToolMessage(toolId, CommandLog.Brief(readOutput) + $"\nread_log: {journal}\n" + HistoryCompressor.Excerpt(readOutput, 850));
-                else if (messageIndex < currentUser) node = Shorten(node);
-                else if (editCalls.Remove(toolId) && node is JsonObject result && Str(MetaOf(result)?["diff"]) is { } diff && EditPreview(diff) is { } preview)
-                {
-                    var withDiff = (JsonObject)result.DeepClone();
-                    withDiff["content"] = Str(result["content"]) + PromptText("\nФактические изменения в файле:\n", "\nActual changes written to the file:\n") + preview;
-                    node = withDiff;
-                }
-            }
-            if (node is JsonObject message && Role(message) == "assistant")
-            {
-                if (messageIndex > currentUser && currentUser >= 0 && message["tool_calls"] is JsonArray callsForEdit)
-                    foreach (var call in callsForEdit.OfType<JsonObject>())
-                        if (Str(call["function"]?["name"]) == "edit_file" && Str(call["id"]) is { } editId) editCalls.Add(editId);
-                bool sameModel = FromModel(message, model);
-                bool continuation = messageIndex > currentUser && message["tool_calls"] is JsonArray { Count: > 0 } && sameModel;
-                bool removeReasoning = HasReasoning(message) && (omitReasoning || !continuation);
-                bool removeDetails = message["reasoning_details"] != null &&
-                    !(continuation && Provider is (AgentProvider.OpenRouter or AgentProvider.Tooken or AgentProvider.OpenAI or AgentProvider.Anthropic));
-                bool removeSignatures = !(continuation && Provider is AgentProvider.Gemini or AgentProvider.Tooken) &&
-                    message["tool_calls"] is JsonArray calls && calls.OfType<JsonObject>().Any(call => call["extra_content"] != null);
-                if (removeReasoning || removeDetails || removeSignatures)
-                {
-                    var clean = (JsonObject)message.DeepClone();
-                    if (removeReasoning)
-                    {
-                        clean.Remove("reasoning");
-                        clean.Remove("reasoning_content");
-                    }
-                    if (removeDetails) clean.Remove("reasoning_details");
-                    if (removeSignatures && clean["tool_calls"] is JsonArray cleaned)
-                        foreach (var call in cleaned.OfType<JsonObject>()) call.Remove("extra_content");
-                    node = clean;
-                }
-                // Gemini rejects a current-turn tool call without a thought signature, e.g. one made before a model switch.
-                if (messageIndex > currentUser && Provider is AgentProvider.Gemini or AgentProvider.Tooken && model.Contains("gemini", StringComparison.OrdinalIgnoreCase) &&
-                    node["tool_calls"] is JsonArray { Count: > 0 } && node["tool_calls"]![0]?["extra_content"] == null)
-                {
-                    if (ReferenceEquals(node, message)) node = message.DeepClone();
-                    node["tool_calls"]![0]!["extra_content"] = new JsonObject
-                    {
-                        ["google"] = new JsonObject { ["thought_signature"] = "skip_thought_signature_validator" },
-                    };
-                }
-            }
-            projected.Add(node);
-        }
-        int summarySize = summary == null ? 0 : HistoryCompressor.Estimate(summary);
-        int target = room - Math.Min(context.Growth, room / 2);
-        int projectedSize = HistoryCompressor.EstimateAll(projected) + summarySize;
-        bool compress = harder || projectedSize > target;
-        IReadOnlyList<JsonNode> source = compress ? HistoryCompressor.Compress(projected, target - summarySize, harder || delegated) : projected;
-        int localSize = HistoryCompressor.EstimateAll(source) + summarySize;
-        if (!delegated && (harder || target > 0 && localSize >= target * 0.8))
-        {
-            if (context.Compaction == null)
-            {
-                int boundary = HistoryCompressor.CompactionBoundary(projected);
-                int cut = rawStart + boundary - prefixCount;
-                bool retainUser = currentUser >= 0 && activeIndex < boundary;
-                int retained = HistoryCompressor.EstimateAll(projected.Skip(boundary)) + (retainUser ? HistoryCompressor.Estimate(projected[activeIndex]) : 0);
-                context.Compaction = CompactAsync(model, context, start, cut, retained, localSize, room, target,
-                    stoppedRequests, context.CompactionToken);
-            }
-            if (harder || context.Compaction.IsCompleted && (!context.CacheWarm || projectedSize >= room))
-            {
-                if (harder && !context.Compaction.IsCompleted) CompactionStarted?.Invoke();
-                if (await CommitCompactionAsync(model, context))
-                    return await BuildRequestAsync(model, definitions, withImages, harder, finalWorkerStep, context, ct);
-            }
-        }
-        source = FitResults(source, room - summarySize);
-        var list = new List<JsonNode> { system };
-        if (summary != null)
-        {
-            list.Add(summary);
-            if (Role(source.FirstOrDefault()) == "user") list.Add(new JsonObject { ["role"] = "assistant", ["content"] = PromptText("Понял, продолжаю с учётом сводки.", "Understood. I will continue using the summary.") });
-        }
-        int shown = 0, projectAt = -1;
-        var currentRequest = currentUser >= 0 ? _history[currentUser] : null;
-        foreach (var node in source)
-        {
-            if (ReferenceEquals(node, currentRequest)) projectAt = list.Count;
-            if (node is JsonObject message && message.ContainsKey(AttachmentsField) && Role(message) == "user")
-            {
-                var (converted, count) = await ToApiUserMessageAsync(message, shownImages, ct);
-                list.Add(converted);
-                shown += count;
-            }
-            else if (MetaOf(node) is { } meta)
-            {
-                var clean = (JsonObject)node.DeepClone();
-                clean.Remove(MetaField);
-                if (Provider is (AgentProvider.ChatGpt or AgentProvider.OpenAI) && Role(node) == "assistant")
-                    foreach (var key in new[] { "commentary", "phase" })
-                        if (meta[key] is { } value) clean[key] = value.DeepClone();
-                list.Add(clean);
-                if (Str(meta[ReviewField]) is { } review) list.Add(new JsonObject { ["role"] = "user", ["content"] = review });
-            }
-            else list.Add(node);
-        }
-        var environment = SystemPrompt.Context(tools.Context, definitions, delegated);
-        if (projectAt >= 0) AddContext(list, projectAt, environment + (project == null ? "" : "\n\n" + project));
-        else note = environment + note;
-        if (screenshot is var (id, path) && list.FindIndex(node => Str(node["tool_call_id"]) == id) is >= 0 and var at &&
-            await GetImageAsync(path, ct) is { } url)
-        {
-            while (Role(list.ElementAtOrDefault(at + 1)) == "tool") at++;
-            list.Insert(at + 1, new JsonObject
+            shotMessage = new JsonObject
             {
                 ["role"] = "user",
                 ["content"] = new JsonArray
@@ -879,41 +717,296 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     new JsonObject { ["type"] = "text", ["text"] = PromptText($"[Программа: скриншот {path}]", $"[Application screenshot: {path}]") },
                     new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = url } },
                 },
-            });
+            };
             shown++;
         }
-        if ((compress || shortened || summary != null) && plan != null)
-            note += PromptText("\n\n[Программа: часть шагов свёрнута]\n", "\n\n[Application: some steps were summarized]\n") + plan;
-        if (note != null) list.Add(new JsonObject { ["role"] = "user", ["content"] = note });
-        return (list, shown, projectAt >= 0 ? (project?.Length ?? 0) / 3 : 0);
+        int pinnedAt = -1;
+        if (currentUser >= 0 && currentUser < start)
+        {
+            prefix.Add(environment);
+            var (request, imageCount) = await ProjectUserAsync(active!, currentUser);
+            pinnedAt = prefix.Count;
+            prefix.Add(request);
+            shown += imageCount;
+        }
+
+        var reviews = new Dictionary<int, JsonNode>();
+        var archivedAnswers = new HashSet<int>();
+        var projected = new List<JsonNode>(original.Count);
+        for (int i = 0; i < original.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var node = original[i];
+            int index = start + i;
+            if (Role(node) == "user")
+            {
+                var (request, imageCount) = await ProjectUserAsync(index == currentUser ? active! : (JsonObject)node, index);
+                projected.Add(request);
+                shown += imageCount;
+                continue;
+            }
+            if (node is JsonObject message && (Role(node) == "assistant" || MetaOf(message) != null))
+            {
+                var clean = (JsonObject)message.DeepClone();
+                clean.Remove(MetaField);
+                if (Role(message) == "assistant")
+                    ProjectAssistant(clean, message, model, definitions.Count > 0 && _toolReasoningModels.Contains(model), index > currentUser);
+                if (Str(MetaOf(message)?[ReviewField]) is { } review) reviews.Add(i, TextMessage(review));
+                node = clean;
+            }
+            projected.Add(node);
+        }
+        int fixedCost = HistoryCompressor.EstimateAll(prefix) + RequestInputMeter.ToolTokens(definitions) + shown * ImageTokens +
+            (currentUser >= start || currentUser < 0 ? HistoryCompressor.Estimate(environment) : 0) +
+            (tail == null ? 0 : HistoryCompressor.Estimate(tail)) + (shotMessage == null ? 0 : HistoryCompressor.Estimate(shotMessage)) +
+            HistoryCompressor.EstimateAll(reviews.Values);
+        int room = budget - fixedCost;
+        int target = Math.Min(room, working - fixedCost);
+        var old = groups.Where(group => !group.Pending && group.End < protect).ToArray();
+        var superseded = old.Length > 0 ? SupersededResults(currentUser) : [];
+        var staleReads = old.Length > 0 ? StaleReads() : [];
+        foreach (var group in old)
+            for (int i = group.Start + 1; i <= group.End; i++)
+            {
+                var toolId = Str(projected[i]["tool_call_id"]) ?? "";
+                var state = staleReads.Contains(toolId) ? PromptText("Файл изменён после чтения.", "The file changed after this read.") :
+                    superseded.Contains(toolId) ? PromptText("Есть более свежий результат.", "A newer result is available.") : null;
+                PreviewResult(i, ToolRegistry.CommandFailed(Str(projected[i]["content"]) ?? "") ? 1_100 : 750, state);
+            }
+        FitResults(target);
+        int localSize = HistoryCompressor.EstimateAll(projected);
+        bool readingSavedText = false;
+        if (context.ArchivedTurns || localSize > target) ArchiveEarlierAnswers();
+        bool required = localSize > room;
+        if (context.Compaction is { IsCompleted: true } && await CommitCompactionAsync(model, context))
+            return await BuildRequestAsync(model, withImages, harder, context, ct);
+        if (required || !delegated && context.Steps > 1 && localSize + context.Growth >= target)
+        {
+            int retain = HistoryCompressor.EstimateAll(projected.Skip(protect));
+            if (currentUser >= start && currentUser < start + protect) retain += HistoryCompressor.Estimate(projected[currentUser - start]);
+            int cut = start + protect;
+            if (required && retain >= room)
+            {
+                FitProtectedResults(room);
+                localSize = HistoryCompressor.EstimateAll(projected);
+                retain = HistoryCompressor.EstimateAll(projected.Skip(protect)) +
+                    (currentUser >= start && currentUser < cut ? HistoryCompressor.Estimate(projected[currentUser - start]) : 0);
+                required = localSize > room;
+            }
+            if (context.Compaction == null && retain < room &&
+                (required || !delegated && context.Steps > 1 && localSize + context.Growth >= target))
+                context.Compaction = CompactAsync(model, context, start, cut, currentUser, priorUser, retain, localSize,
+                    room, required, stoppedRequests, original, projected, groups, ct: context.CompactionToken);
+            if (required && context.Compaction != null)
+            {
+                if (!context.Compaction.IsCompleted) CompactionStarted?.Invoke();
+                if (await CommitCompactionAsync(model, context)) return await BuildRequestAsync(model, withImages, harder, context, ct);
+            }
+        }
+        if (localSize > room)
+        {
+            FitProtectedResults(room);
+            int excess = HistoryCompressor.EstimateAll(projected) - room;
+            if (excess > 0 && currentUser >= 0)
+            {
+                var messages = pinnedAt >= 0 ? prefix : projected;
+                int at = pinnedAt >= 0 ? pinnedAt : currentUser - start;
+                var request = messages[at];
+                if (ExtractText(request["content"]) is { Length: > 500 } text &&
+                    SavedResult($"request-{currentUser}", text, context) is { } reference)
+                {
+                    var shortened = (JsonObject)request.DeepClone();
+                    var preview = reference + PromptText(
+                        "\n[Превью запроса. Дочитай пропущенные части через read_tool_output перед выполнением.]\n",
+                        "\n[Request preview. Use read_tool_output to read omitted sections before acting.]\n") +
+                        HistoryCompressor.Excerpt(text, Math.Max(300, text.Length - excess * 3 - 300));
+                    if (shortened["content"] is JsonArray parts)
+                    {
+                        for (int i = parts.Count - 1; i >= 0; i--)
+                            if (Str(parts[i]?["type"]) == "text") parts.RemoveAt(i);
+                        parts.Insert(0, new JsonObject { ["type"] = "text", ["text"] = preview });
+                    }
+                    else shortened["content"] = preview;
+                    int saving = HistoryCompressor.Estimate(request) - HistoryCompressor.Estimate(shortened);
+                    if (saving > 0)
+                    {
+                        messages[at] = shortened;
+                        if (pinnedAt >= 0) room += saving;
+                        readingSavedText = true;
+                    }
+                }
+            }
+            if (HistoryCompressor.EstimateAll(projected) > room)
+                throw new ApiException(PromptText(
+                    $"Контекст не помещается в память модели {model}. Выберите модель с большим окном контекста или сократите объём текущего запроса и вложений. Переписка сохранена.",
+                    $"The context exceeds the window of {model}. Choose a model with a larger window or reduce the current request and attachments. The chat was saved."));
+        }
+
+        var recovery = new HashSet<string>();
+        var summaryText = start > 0 ? Str(MetaOf(original[0])?[SummaryField]) ?? "" : "";
+        if (readingSavedText || summaryText.Contains(ToolOutputStore.Name, StringComparison.Ordinal)) recovery.Add(ToolOutputStore.Name);
+        if (summaryText.Contains("read_log", StringComparison.Ordinal)) recovery.Add("read_log");
+        foreach (var tool in projected.Where(message => Role(message) == "tool"))
+        {
+            var output = Str(tool["content"]) ?? "";
+            if (CommandLog.IdOf(output) != null && output.Contains("read_log", StringComparison.Ordinal)) recovery.Add("read_log");
+            if (ToolOutputStore.ReferenceOf(output) != null) recovery.Add(ToolOutputStore.Name);
+        }
+        var added = tools.Definitions.OfType<JsonObject>().Where(item => Str(item["function"]?["name"]) is { } name &&
+            recovery.Contains(name) && !definitions.Any(definition => Str(definition?["function"]?["name"]) == name)).ToArray();
+        if (added.Length > 0)
+        {
+            _scopedDefinitions = new JsonArray([.. definitions.Select(definition => definition?.DeepClone()), .. added.Select(item => item.DeepClone())]);
+            return await BuildRequestAsync(model, withImages, harder, context, ct);
+        }
+
+        var list = prefix;
+        if (currentUser < 0) list.Add(environment);
+        for (int i = 0; i < projected.Count; i++)
+        {
+            if (i + start == currentUser) list.Add(environment);
+            if (!archivedAnswers.Contains(i)) list.Add(projected[i]);
+            if (reviews.TryGetValue(i, out var review)) list.Add(review);
+            if (shotMessage != null && Str(projected[i]["tool_call_id"]) == screenshot?.Id)
+            {
+                while (i + 1 < projected.Count && Role(projected[i + 1]) == "tool") list.Add(projected[++i]);
+                list.Add(shotMessage);
+            }
+        }
+        if (tail != null) list.Add(tail);
+        return (list, definitions, shown, (project?.Length ?? 0) / 3);
+
+        async Task<(JsonNode Message, int Images)> ProjectUserAsync(JsonObject user, int index)
+        {
+            if (Attachment.ListFrom(user).Count == 0 && !stoppedRequests.Contains(index))
+                return (new JsonObject { ["role"] = "user", ["content"] = user["content"]?.DeepClone() }, 0);
+            var (message, images) = await ToApiUserMessageAsync(user, shownImages, ct);
+            if (stoppedRequests.Contains(index)) message["content"] = StoppedRequest + "\n" + ExtractText(message["content"]);
+            return (message, images);
+        }
+
+        void PreviewResult(int index, int chars, string? state)
+        {
+            var message = projected[index];
+            if (Str(message["content"]) is not { } output || output.Length <= chars && state == null) return;
+            var preview = ToolPreview(original[index], output, chars, state, context);
+            if (preview != null && preview.Length < output.Length)
+                projected[index] = ToolMessage(Str(message["tool_call_id"])!, preview);
+        }
+
+        void ArchiveEarlierAnswers()
+        {
+            context.ArchivedTurns = true;
+            if (archivedAnswers.Count > 0 || readingSavedText) return;
+            var archive = new StringBuilder();
+            var previews = new List<(int Index, string Text)>();
+            for (int i = 0; i < protect && start + i < currentUser; i++)
+            {
+                if (Role(projected[i]) != "assistant" || projected[i]["tool_calls"] != null ||
+                    ExtractText(projected[i]["content"]) is not { Length: > 850 } answer) continue;
+                int offset = archive.Length;
+                archive.AppendLine(answer).AppendLine();
+                previews.Add((i, $"- offset={offset}: " + HistoryCompressor.Excerpt(answer, 125)));
+            }
+            if (previews.Count == 0 || SavedResult($"answers-{start}-{previews[^1].Index}", archive.ToString(), context) is not { } reference) return;
+            var excerpts = string.Join("\n", previews.Select(preview => preview.Text));
+            var note = new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = reference + PromptText("\n[Превью прежних ответов]\n", "\n[Earlier answer previews]\n") +
+                    HistoryCompressor.Excerpt(excerpts, 2_100),
+            };
+            var placeholder = new JsonObject { ["role"] = "assistant" };
+            foreach (var (index, _) in previews)
+            {
+                archivedAnswers.Add(index);
+                projected[index] = placeholder;
+            }
+            int last = previews[^1].Index;
+            archivedAnswers.Remove(last);
+            projected[last] = note;
+            localSize = HistoryCompressor.EstimateAll(projected);
+            readingSavedText = true;
+        }
+
+        void ReduceResults(IEnumerable<HistoryCompressor.ToolGroup> eligible, int limit)
+        {
+            int excess = HistoryCompressor.EstimateAll(projected) - limit;
+            foreach (var group in eligible)
+                for (int i = group.Start + 1; i <= group.End && excess > 0; i++)
+                {
+                    int tokens = HistoryCompressor.Estimate(projected[i]);
+                    PreviewResult(i, Math.Max(640, (tokens - excess) * 3), null);
+                    excess -= tokens - HistoryCompressor.Estimate(projected[i]);
+                }
+        }
+
+        void FitResults(int limit) => ReduceResults(old, limit);
+        void FitProtectedResults(int limit) => ReduceResults(groups.Where(group => !group.Pending && group.Start >= protect), limit);
     }
 
-    IReadOnlyList<JsonNode> FitResults(IReadOnlyList<JsonNode> messages, int room)
+    static JsonObject TextMessage(string text) => new() { ["role"] = "user", ["content"] = text };
+
+    void ProjectAssistant(JsonObject clean, JsonObject message, string model, bool sendReasoning, bool currentTurn)
     {
-        int excess = HistoryCompressor.EstimateAll(messages) - room;
-        if (excess <= 0) return messages;
-        var results = HistoryCompressor.CompletedResults(messages).ToHashSet();
-        if (results.Count == 0) return messages;
-        var note = delegated
-            ? PromptText("\n[Программа: результат сокращён, чтобы поместиться в память субагента; недостающее прочитай частями.]",
-                "\n[Application: the result was shortened to fit the subagent's context. Read any missing sections in parts.]")
-            : PromptText("\n[Программа: результат сокращён, чтобы поместиться в контекст; недостающее прочитай частями.]",
-                "\n[Application: the result was shortened to fit the context. Read any missing sections in parts.]");
-        var fitted = messages.ToArray();
-        var outputs = messages.Select((message, index) => (Index: index, Text: results.Contains(message) ? Str(message["content"]) ?? "" : ""));
-        foreach (var (index, content) in outputs.Where(output => output.Text.Length > 600 + note.Length).OrderByDescending(output => output.Text.Length))
+        bool continuation = currentTurn && message["tool_calls"] is JsonArray { Count: > 0 } && FromModel(message, model);
+        if (!sendReasoning || !continuation)
         {
-            if (excess <= 0) break;
-            int chars = Math.Max(600, content.Length - excess * 3 - note.Length - 1);
-            var message = messages[index];
-            fitted[index] = new JsonObject
-            {
-                ["role"] = "tool", ["tool_call_id"] = message["tool_call_id"]?.DeepClone(),
-                ["content"] = HistoryCompressor.Excerpt(content, chars) + note,
-            };
-            excess -= HistoryCompressor.Estimate(message) - HistoryCompressor.Estimate(fitted[index]);
+            clean.Remove("reasoning");
+            clean.Remove("reasoning_content");
         }
-        return fitted;
+        if (!(continuation && Provider is (AgentProvider.OpenRouter or AgentProvider.Tooken or AgentProvider.OpenAI or AgentProvider.Anthropic)))
+            clean.Remove("reasoning_details");
+        if (clean["tool_calls"] is JsonArray { Count: > 0 } calls)
+        {
+            if (!(continuation && Provider is AgentProvider.Gemini or AgentProvider.Tooken))
+                foreach (var call in calls.OfType<JsonObject>()) call.Remove("extra_content");
+            if (currentTurn && Provider is AgentProvider.Gemini or AgentProvider.Tooken &&
+                model.Contains("gemini", StringComparison.OrdinalIgnoreCase) && calls[0]?["extra_content"] == null)
+                calls[0]!["extra_content"] = new JsonObject
+                {
+                    ["google"] = new JsonObject { ["thought_signature"] = "skip_thought_signature_validator" },
+                };
+        }
+        if (Provider is AgentProvider.ChatGpt or AgentProvider.OpenAI && MetaOf(message) is { } meta)
+            foreach (var key in new[] { "commentary", "phase" })
+                if (meta[key] is { } value) clean[key] = value.DeepClone();
+    }
+
+    string? ToolPreview(JsonNode original, string output, int chars, string? state, ContextRun context)
+    {
+        var full = Str(original["content"]) ?? output;
+        var id = Str(original["tool_call_id"]) ?? "";
+        var journal = CommandLog.IdOf(full);
+        string? reference;
+        if (journal != null)
+        {
+            var headers = full.Split('\n', 3);
+            reference = headers[0].TrimEnd() + "\n" + headers[1].Split(',')[0].TrimEnd() + ", подробности: read_log";
+            full = headers.Length == 3 ? headers[2] : "";
+        }
+        else
+        {
+            reference = Str(MetaOf(original)?["saved_read"]) ?? ToolOutputStore.ReferenceOf(full);
+            reference ??= SavedResult(id, full, context);
+            if (reference == null) return null;
+            if (ToolOutputStore.ReferenceOf(full) != null) full = full[(full.IndexOf('\n') + 1)..];
+            if (!reference.Contains(ToolOutputStore.Name, StringComparison.Ordinal)) reference += " — " + ToolOutputStore.Name;
+        }
+        string heading = reference + (state == null ? "" : "\n" + state) +
+            PromptText("\n[Сокращённый вывод]\n", "\n[Output preview]\n");
+        int available = chars - heading.Length;
+        if (available < 180) return null;
+        var important = CommandLog.Details("\n" + full, available / 2);
+        return heading + (important.Length > 0 ? important + "\n" : "") +
+            HistoryCompressor.Excerpt(full, Math.Max(120, available - important.Length - 1));
+    }
+
+    string? SavedResult(string key, string output, ContextRun context)
+    {
+        if (!context.SavedResults.TryGetValue(key, out var reference))
+            context.SavedResults[key] = reference = ToolOutputStore.Save(tools.Context, output);
+        return reference;
     }
 
     (string Id, string Path)? LatestScreenshot()
@@ -985,7 +1078,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         return url;
     }
 
-    async Task<string?> ExecuteToolCallsAsync(JsonArray toolCalls, ContextRun context, CancellationToken ct)
+    async Task<string?> ExecuteToolCallsAsync(JsonArray toolCalls, CancellationToken ct)
     {
         var calls = toolCalls.OfType<JsonObject>().Select(ParseCall).ToList();
         var counted = new Dictionary<string, ToolCallEvent>();
@@ -1020,19 +1113,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                         meta["completed_command"] = finishedCommand;
                         if (ProjectVerification.Command(finishedCommand)) meta["verification"] = true;
                     }
-                    if (call.Name == "exec_command" && !outcome.IsError && !outcome.IsWarning &&
-                        (outcome.CompletedCommand ?? Str(ArgsOf(call)?["command"])) is { } command &&
-                        Regex.IsMatch(command, @"(?i)^\s*(?:rg(?:\.exe)?|Get-Content|Get-ChildItem)\s"))
-                        EnsureMeta(message)["command_read"] = true;
                     if (outcome.Restriction != null) EnsureMeta(message)["command_restricted"] = true;
                     if (!outcome.IsError && !outcome.IsWarning && execution.Key is { } read && call.Name == "local_batch")
                         EnsureMeta(message)["read_identity"] = read.Identity;
-                    if (!outcome.IsError && !outcome.IsWarning && outcome.SavedOutput is { } saved &&
-                        call.Name is ("local_batch" or "search_files"))
+                    if (outcome.SavedOutput is { } saved)
                         EnsureMeta(message)["saved_read"] = saved;
                     if (outcome.DelegatedUsage is { } usage)
                     {
-                        context.Spent += usage.PromptTokens + usage.CompletionTokens;
                         var meta = new JsonObject
                         {
                             ["provider"] = Provider.ToString(), ["model"] = _model,
@@ -1165,13 +1252,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     internal static bool IsRunLimitPause(string reason) => reason is RunLimitPauseRu or RunLimitPauseEn;
 
-    internal async Task RecordStopAsync(string text, bool byProgram = false, bool preserveReview = false)
+    internal async Task RecordStopAsync(string text, bool byProgram = false)
     {
         if (_history.Count > 0)
         {
             var last = _history.Edit(_history.Count - 1);
             // Stopped while the answer was being checked: that answer is the result of the turn.
-            if (!preserveReview && MetaOf(last)?.Remove(ReviewField) == true)
+            if (MetaOf(last)?.Remove(ReviewField) == true)
             {
                 var elapsed = _turnClock.Elapsed;
                 last[MetaField]![ElapsedField] = (long)elapsed.TotalMilliseconds;

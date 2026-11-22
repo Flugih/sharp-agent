@@ -139,8 +139,8 @@ static class FinalLocalChecks
         await agent.SetWorkModeAsync(false);
         await agent.RunAsync("Проверь обязательный файл.", [], "fixture", default);
         var finish = agent.History.Last()["content"]?.ToString() ?? "";
-        Require(provider.Calls == 5 && finish.Contains("не подтверждено") && finish.Contains("failed") && !finish.Contains("SUCCESS"),
-            "mandatory failed contract vetoes false success and caps retries");
+        Require(provider.Calls == 3 && finish.Contains("не подтверждено") && finish.Contains("failed") && !finish.Contains("SUCCESS"),
+            "mandatory failed contract vetoes false success and stops asking when evidence does not change");
         var absent = new JsonObject { ["checks"] = new JsonArray(new JsonObject { ["kind"] = "unit_tests" }) };
         var checkedTests = await tools.ExecuteAsync(LocalContractEngine.Name, absent.ToJsonString(), null, default);
         Require(checkedTests.IsError && checkedTests.Output.Contains("not_verified"), "missing test evidence is unverified");

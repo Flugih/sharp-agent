@@ -20,7 +20,7 @@ public sealed partial class ToolRegistry
     readonly List<AgentTool> _tools;
     readonly ShellTools.Sessions _sessions = new();
     internal Task CancelCommandsAsync() => _sessions.CancelAsync();
-    internal bool CommandsPending => _sessions.Pending;
+    internal string? PendingCommandOutput => _sessions.PendingOutput;
     readonly Dictionary<(bool Sandbox, bool Computer, bool Russian), JsonArray> _definitions = [];
 
     public ToolContext Context { get; }
@@ -72,7 +72,7 @@ public sealed partial class ToolRegistry
             return Error($"Ошибка: неизвестный инструмент '{name}'.");
         if (Context.SandboxRoot != null && UnsafeInSandbox.Contains(name))
             return Error($"Ошибка: инструмент '{name}' отключён в режиме песочницы.");
-        if (_sessions.Pending && name != "exec_command" && !IsReadOnly(name))
+        if (PendingCommandOutput != null && name != "exec_command" && !IsReadOnly(name))
             return Error("Ошибка: сначала получите итог выполняющейся команды через exec_command.");
         JsonObject args;
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
@@ -108,7 +108,8 @@ public sealed partial class ToolRegistry
                 bool warning = name is "exec_command" or "run_plugin" or ScriptRegistry.Name or LocalTestTools.Name && CommandFailed(output);
                 var (change, diff) = warning ? (null, null) :
                     FileChanges.Complete(Context, pending, name == "generate_image" ? ImageTools.SavedPath(output) : null);
-                var saved = ToolOutputStore.Applies(name) ? ToolOutputStore.Save(Context, output) : null;
+                var saved = (output.Length > 2400 && ToolOutputStore.Applies(name) || output.Length > MaxToolOutputChars)
+                    ? ToolOutputStore.Save(Context, output) : null;
                 output = ToolOutputStore.Preview(output, saved);
                 if (output.Length > MaxToolOutputChars)
                     output = output[..MaxToolOutputChars] + $"\n... (результат обрезан до {MaxToolOutputChars} символов)";

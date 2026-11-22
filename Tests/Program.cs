@@ -16,12 +16,14 @@ if (args is ["--benchmark", var report])
 Migration(root);
 await ReadsAndIndexAsync(root);
 await AgentBudgetAsync(root);
+await DelegatedStepsAsync(root);
 await ChatTitlesAsync(root);
 RequestComponents();
 await ToolExpansionAsync(root);
 await SavedOutputsAsync(root);
 await CodexWorkflowAsync(root);
 await BackgroundCompactionAsync(root);
+await ProtectedContextAsync(root);
 await ContextBenchmarkAsync(root);
 await LocalWorkflowsAsync(root);
 await WatcherAsync(root);
@@ -114,20 +116,18 @@ static async Task AgentBudgetAsync(string root)
     agent.AssistantText += (text, _, _) => received |= text == root;
     await agent.RunAsync("покажи рабочую папку", [], "fake", default);
     Check(received, "local route without provider");
-    using var provider = new FakeProvider(100_000);
+    using var provider = new FakeProvider(100_000, 4);
     agent.Api = provider;
     string? stop = null;
     agent.Stopped += text => stop = text;
     await agent.RunAsync("Исследуй файлы", [], "fake", default);
-    Check(provider.Calls == 3 && stop?.Contains("Продолжить") == true && agent.CanContinue, "token budget pauses and can resume");
+    Check(provider.Calls == 5 && stop == null && !agent.CanContinue, "usage does not impose a fixed turn budget");
     var totals = agent.Totals();
-    Check(totals.PromptTokens == 300_000 && totals.CachedTokens == 3_000 && totals.ReasoningTokens == 30 && totals.Requests == 3, "telemetry retains cache and reasoning");
-    await agent.ContinueAsync("fake", default);
-    Check(provider.Calls == 6, "resume starts a new budget");
-    using var cheap = new FakeProvider(30);
+    Check(totals.PromptTokens == 500_000 && totals.CachedTokens == 5_000 && totals.ReasoningTokens == 50 && totals.Requests == 5, "telemetry retains cache and reasoning");
+    using var cheap = new FakeProvider(30, 32);
     agent.Api = cheap;
     await agent.RunAsync("Исследуй файлы", [], "fake", default);
-    Check(cheap.Calls == 24 && agent.CanContinue, "step limit works independently of token limit");
+    Check(cheap.Calls == 33 && stop == null && !agent.CanContinue, "agent completes more than 24 tool steps");
 }
 
 static async Task ContextBenchmarkAsync(string root)
@@ -135,13 +135,25 @@ static async Task ContextBenchmarkAsync(string root)
     for (int i = 1; i <= 24; i++)
         Put(Path.Combine(root, $"source_{i}.txt"), string.Join("\n", Enumerable.Repeat("Проверяемый фрагмент исходного кода " + new string('x', 360), 70)));
     var context = new ToolContext { WorkingDirectory = root, AppFolder = Path.Combine(root, "private", "data") };
-    using var provider = new FakeProvider(null);
+    using var provider = new FakeProvider(null, 24);
     var agent = new AgentRunner(new ToolRegistry(context), new ChatStore(Path.Combine(root, "chats"), Path.Combine(root, "logs")))
         { Api = provider, IsTemporary = true };
     var timer = System.Diagnostics.Stopwatch.StartNew();
     await agent.RunAsync("sentinel: сохрани исходное требование", [], "fake", default);
-    Check(provider.Calls > 5 && provider.PeakInput < 27_000 && agent.CanContinue, "large tool results fit the bounded context");
+    Check(provider.Calls == 25 && provider.PeakInput < 27_000 && !agent.CanContinue, "large tool results fit without a summary when local previews suffice");
     Console.WriteLine($"Context replay: {provider.Calls} requests, {provider.TotalInput:N0} estimated input, {provider.PeakInput:N0} peak, {timer.ElapsedMilliseconds} ms.");
+}
+
+static async Task DelegatedStepsAsync(string root)
+{
+    using var provider = new SubagentProvider();
+    var context = new ToolContext { WorkingDirectory = root, AppFolder = Path.Combine(root, "subagent-data") };
+    var agent = new AgentRunner(new ToolRegistry(context), new ChatStore(Path.Combine(root, "subagent-history"), root))
+        { Api = provider, IsTemporary = true, UseSubagents = true };
+    await agent.RunAsync("Use a subagent to review fixture paths.", [], "fake", default);
+    Check(provider.WorkerCalls == 7 && !agent.CanContinue && agent.History.Any(message =>
+        AgentRunner.Role(message) == "tool" && message["content"]?.ToString().Contains("All fixture paths checked.") == true),
+        "delegated work completes beyond the old step cap");
 }
 
 static async Task ChatTitlesAsync(string root)
@@ -246,6 +258,12 @@ static async Task CodexWorkflowAsync(string root)
         "the shell finds published ripgrep ahead of any host installation");
     Check(LocalGrep.Run("rg -n -C 1 needle .", work, context, default) is { Code: 0, Output: var fallback } && fallback.Contains("omega"),
         "managed search preserves context");
+    var blocked = "Program 'rg.exe' failed to run: This program is blocked by group policy.";
+    Check(CommandRestriction.RipgrepLaunchFailure(blocked,
+        CommandRestriction.FromOutput(CommandShell.PowerShell, "", blocked, null, 1)) != null &&
+        CommandRestriction.RipgrepLaunchFailure(blocked, new("Shell disabled", CommandShell.PowerShell)) == null &&
+        CommandRestriction.RipgrepLaunchFailure("rg: source.txt: Access is denied", null) == null,
+        "fallback is limited to a failure to launch ripgrep");
     var pending = await registry.ExecuteAsync("exec_command", """{"command":"Start-Sleep -Milliseconds 800; Write-Output finished","yield_ms":100}""",
         _ => Task.FromResult(true), default);
     var id = pending.Output.Split("session_id=")[1].Split('.')[0];
@@ -346,22 +364,120 @@ static async Task BackgroundCompactionAsync(string root)
     var context = new ToolContext { WorkingDirectory = work, AppFolder = Path.Combine(root, "background-data") };
     var store = new ChatStore(Path.Combine(work, "chats"), work);
     var history = new ChatHistory();
-    for (int i = 0; i < 21; i++)
+    for (int i = 0; i < 120; i++)
     {
         history.Add(new JsonObject { ["role"] = "user", ["content"] = $"requirement-{i}: retain exact wording" });
-        history.Add(new JsonObject { ["role"] = "assistant", ["content"] = $"Decision {i}: " + new string((char)('a' + i % 20), 2100) });
+        history.Add(new JsonObject { ["role"] = "assistant", ["content"] = $"Decision {i}: " + new string((char)('a' + i % 20), 760) });
     }
     var path = store.NewPath();
     await history.SaveAsync(path, "fake", null, true);
+    var failurePath = store.NewPath();
+    var failureFixture = new ChatHistory();
+    foreach (var message in history) failureFixture.Add(message.DeepClone());
+    await failureFixture.SaveAsync(failurePath, "fake", null, true);
     using var provider = new CompactionProvider();
     var agent = new AgentRunner(new ToolRegistry(context), store) { Api = provider, AutoChatTitles = false };
     await agent.OpenAsync(path);
     await agent.RunAsync("Keep the current request verbatim.", [], "fake", default);
     var persisted = store.Load(path).Messages;
     int boundary = persisted.LastIndex(ChatJournal.Flags.Summary);
-    Check(provider.Overlapped && boundary > 0 && persisted[42]["content"]?.ToString() == "Keep the current request verbatim." &&
+    Check(provider.Overlapped && provider.Summaries == 1 && boundary > 0 && persisted[240]["content"]?.ToString() == "Keep the current request verbatim." &&
         persisted[boundary]["meta"]?["summary_requirements"]?.ToString().Contains("requirement-0: retain exact wording") == true,
         "background summary overlaps the response and retains verbatim requirements");
+    using var failed = new CompactionProvider(6, "length");
+    var retry = new AgentRunner(new ToolRegistry(context), store) { Api = failed, AutoChatTitles = false };
+    await retry.OpenAsync(failurePath);
+    await retry.RunAsync("Keep the current request verbatim.", [], "fake", default);
+    Check(failed.Summaries == 1 && !retry.CanContinue, "a rejected summary is not regenerated after each small step");
+
+    const string active = "Keep active-sentinel verbatim and finish the current work.";
+    var unfinished = new ChatHistory();
+    unfinished.Add(new JsonObject { ["role"] = "user", ["content"] = "Previous exact constraint" });
+    unfinished.Add(new JsonObject { ["role"] = "assistant", ["content"] = "Understood." });
+    unfinished.Add(new JsonObject { ["role"] = "user", ["content"] = active });
+    for (int i = 0; i < 24; i++)
+        unfinished.Add(new JsonObject { ["role"] = "assistant", ["content"] = $"Decision {i}: " + new string('x', 2_100) });
+    unfinished.Add(new JsonObject { ["role"] = "assistant", ["content"] = "" });
+    path = store.NewPath();
+    await unfinished.SaveAsync(path, "fake", null, true);
+    using var forced = new CompactionProvider(0);
+    var resumed = new AgentRunner(new ToolRegistry(context), store)
+        { Api = forced, AutoChatTitles = false, ModelContextTokens = _ => 19_000 };
+    await resumed.OpenAsync(path);
+    await resumed.ContinueAsync("fake", default);
+    var messages = forced.Messages!;
+    Check(forced.Summaries == 1 && !forced.Overlapped &&
+        messages.Count(message => StrContent(message) == active) == 1 &&
+        messages.Any(message => StrContent(message)?.Contains("Previous exact constraint") == true),
+        "hard overflow requires one summary with the original active message and earlier constraints");
+    await resumed.OpenAsync(path);
+    await resumed.RunAsync("Continue the project review.", [], "fake", default);
+    Check(forced.Messages!.Count(message => StrContent(message) == active) == 1, "previously pinned request survives reopening and a new turn");
+
+    static string? StrContent(JsonNode message) => message["content"]?.ToString();
+}
+
+static async Task ProtectedContextAsync(string root)
+{
+    var work = Path.Combine(root, "protected-context");
+    Directory.CreateDirectory(work);
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = work, LogsFolder = Path.Combine(work, "logs") };
+    var registry = new ToolRegistry(context);
+    var store = new ChatStore(Path.Combine(work, "chats"), context.LogsFolder);
+    var history = new ChatHistory();
+    const string current = "Review the project and keep this request exactly.";
+    string[] outputs = [.. Enumerable.Range(0, 5).Select(i => CommandLog.Summarize("Код выхода: 1",
+        string.Join("\n", Enumerable.Range(1, 34).Select(row => row == 17 ? $"error unique-{i}" : new string((char)('a' + i), 150))), context.LogsFolder))];
+    for (int i = 0; i < outputs.Length; i++)
+    {
+        history.Add(new JsonObject
+        {
+            ["role"] = "assistant", ["tool_calls"] = new JsonArray(new JsonObject
+            {
+                ["id"] = $"call-{i}", ["type"] = "function",
+                ["function"] = new JsonObject { ["name"] = "exec_command", ["arguments"] = "{}" },
+            }),
+        });
+        history.Add(new JsonObject { ["role"] = "tool", ["tool_call_id"] = $"call-{i}", ["content"] = outputs[i] });
+    }
+    var path = store.NewPath();
+    await history.SaveAsync(path, "fake", null, true);
+    foreach (int window in new[] { 128_000, 16_000 })
+    {
+        using var provider = new CompactionProvider(0);
+        var agent = new AgentRunner(registry, store) { Api = provider, AutoChatTitles = false, ModelContextTokens = _ => window };
+        await agent.OpenAsync(path);
+        await agent.RunAsync(current, [], "fake", default);
+        var sent = provider.Messages!;
+        Check(provider.Summaries == 0 && sent.Any(node => node["content"]?.ToString() == current), "local previews avoid summary and keep the active request");
+        var results = sent.Where(node => AgentRunner.Role(node) == "tool").ToArray();
+        Check(results.Length == outputs.Length && results.All(result => sent.Any(node =>
+            (node["tool_calls"] as JsonArray)?.Any(call => call?["id"]?.ToString() == result["tool_call_id"]?.ToString()) == true)),
+            "projected tool results remain paired");
+        var older = results.First()["content"]!.ToString();
+        Check(older.Contains("Код выхода: 1") && older.Contains("error unique-0") && older.Contains("read_log") &&
+            CommandLog.IdOf(older) == CommandLog.IdOf(outputs[0]), "an old command keeps exit code, an error and its journal");
+        Check(window == 128_000 ? results.Skip(1).Select(node => node["content"]!.ToString()).SequenceEqual(outputs.Skip(1)) :
+            results.Skip(1).Any(node => node["content"]!.ToString().Contains("Output preview")), "four latest groups stay whole unless the hard limit requires previews");
+    }
+    var log = await registry.ExecuteAsync("read_log", new JsonObject
+        { ["log_id"] = CommandLog.IdOf(outputs[0]), ["offset"] = 17, ["limit"] = 1 }.ToJsonString(), null, default);
+    Check(!log.IsError && log.Output.Contains("error unique-0"), "original output remains accessible by range");
+    using var oversizedProvider = new CompactionProvider(0);
+    var oversized = new AgentRunner(registry, store)
+        { Api = oversizedProvider, IsTemporary = true, ModelContextTokens = _ => 20_000 };
+    var large = "Review the project as described.\n" + new string('x', 60_000) + "\nKeep this requirement.";
+    await oversized.RunAsync(large, [], "fake", default);
+    var preview = oversizedProvider.Messages!.Select(node => AgentRunner.ExtractText(node["content"]))
+        .OfType<string>().Single(text => text.Contains("Request preview."));
+    var saved = ToolOutputStore.ReferenceOf(preview)!;
+    var read = await registry.ExecuteAsync(ToolOutputStore.Name, new JsonObject
+    {
+        ["id"] = saved[ToolOutputStore.ReferencePrefix.Length..].Split(',')[0], ["offset"] = large.Length - 22,
+    }.ToJsonString(), null, default);
+    Check(preview.Contains("Keep this requirement.") && read.Output.EndsWith("Keep this requirement.") &&
+        oversized.History.Any(message => AgentRunner.ExtractText(message["content"]) == large),
+        "oversized active text is recoverable by range and never altered in chat history");
 }
 
 static async Task WatcherAsync(string root)
@@ -648,7 +764,7 @@ static void Check(bool condition, string name)
     if (!condition) throw new InvalidOperationException(name);
 }
 
-sealed class FakeProvider(long? fixedInput) : IChatProvider
+sealed class FakeProvider(long? fixedInput, int toolCalls) : IChatProvider
 {
     public int Calls { get; private set; }
     public long PeakInput { get; private set; }
@@ -664,6 +780,8 @@ sealed class FakeProvider(long? fixedInput) : IChatProvider
         if (fixedInput == null && !messages.Any(message => message["role"]?.ToString() == "user" &&
                 message["content"]?.ToString().Contains("sentinel:") == true))
             throw new InvalidOperationException("The active request was lost during local compaction.");
+        var usage = new UsageInfo(input, 10, input > 1_000 ? 1_000 : 0, 10);
+        if (Calls > toolCalls) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Verified." }, "stop", usage, null));
         return Task.FromResult(new ChatResult(new JsonObject
         {
             ["tool_calls"] = new JsonArray(new JsonObject
@@ -677,7 +795,7 @@ sealed class FakeProvider(long? fixedInput) : IChatProvider
                         new JsonObject { ["path"] = "missing_" + Calls },
                 },
             }),
-        }, "tool_calls", new UsageInfo(input, 10, input > 1_000 ? 1_000 : 0, 10), null));
+        }, "tool_calls", usage, null));
     }
     public void Dispose() { }
 }
@@ -698,10 +816,38 @@ sealed class TitleProvider(Task<ChatResult> title) : IChatProvider
     public void Dispose() { }
 }
 
-sealed class CompactionProvider : IChatProvider
+sealed class SubagentProvider : IChatProvider
+{
+    public int WorkerCalls { get; private set; }
+    bool _delegated;
+    public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
+    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
+    {
+        if (messages.Any(message => AgentRunner.Role(message) == "user" &&
+            AgentRunner.ExtractText(message["content"])?.Contains("Assignment from the main agent:", StringComparison.Ordinal) == true))
+            return ++WorkerCalls <= 6 ? Call($"read-{WorkerCalls}", "get_file_info", new() { ["path"] = $"fixture-{WorkerCalls}" }) :
+                Task.FromResult(new ChatResult(new JsonObject { ["content"] = "All fixture paths checked." }, "stop", null, null));
+        if (_delegated) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Verified." }, "stop", null, null));
+        _delegated = true;
+        return Call("delegate", "delegate_tasks", new() { ["tasks"] = new JsonArray(new JsonObject
+            { ["title"] = "Fixture paths", ["task"] = "Check each fixture path." }) });
+
+        static Task<ChatResult> Call(string id, string name, JsonObject args) => Task.FromResult(new ChatResult(new JsonObject
+        {
+            ["tool_calls"] = new JsonArray(new JsonObject { ["id"] = id,
+                ["function"] = new JsonObject { ["name"] = name, ["arguments"] = args.ToJsonString() } }),
+        }, "tool_calls", null, null));
+    }
+    public void Dispose() { }
+}
+
+sealed class CompactionProvider(int toolCalls = 4, string summaryFinish = "stop") : IChatProvider
 {
     readonly TaskCompletionSource _summary = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    bool _started;
+    int _steps;
+    public int Summaries { get; private set; }
+    public IReadOnlyList<JsonNode>? Messages { get; private set; }
     public bool Overlapped { get; private set; }
     public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
     public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
@@ -709,13 +855,26 @@ sealed class CompactionProvider : IChatProvider
     {
         if (!callTools)
         {
-            _started = true;
-            await _summary.Task.WaitAsync(ct);
-            return new(new JsonObject { ["content"] = "Archived decisions and pending work." }, "stop", new UsageInfo(100, 10), null);
+            Summaries++;
+            if (toolCalls > 0) await _summary.Task.WaitAsync(ct);
+            return new(new JsonObject { ["content"] = "Archived decisions and pending work." }, summaryFinish, new UsageInfo(100, 10), null);
         }
-        Overlapped |= _started && !_summary.Task.IsCompleted;
-        _summary.TrySetResult();
+        Messages = messages;
+        if (toolCalls > 0 && Summaries > 0)
+        {
+            Overlapped |= !_summary.Task.IsCompleted;
+            _summary.TrySetResult();
+        }
         await Task.Delay(40, ct);
+        if (++_steps <= toolCalls)
+            return new(new JsonObject
+            {
+                ["tool_calls"] = new JsonArray(new JsonObject
+                {
+                    ["id"] = "inspect-" + _steps,
+                    ["function"] = new JsonObject { ["name"] = "get_file_info", ["arguments"] = new JsonObject { ["path"] = "fixture-" + _steps }.ToJsonString() },
+                }),
+            }, "tool_calls", null, null);
         return new(new JsonObject { ["content"] = "Done." }, "stop", null, null);
     }
     public void Dispose() { }

@@ -257,15 +257,6 @@ partial class AgentRunner
         return notes.Count > 0 ? PromptText("\n\n[Сведения программы о текущем шаге]\n", "\n\n[Application context for this step]\n") + string.Join("\n\n", notes) : null;
     }
 
-    static void AddContext(List<JsonNode> list, int at, string? context)
-    {
-        if (at < 0 || context == null) return;
-        var copy = (JsonObject)list[at].DeepClone();
-        if (copy["content"] is JsonArray parts) parts.Add(new JsonObject { ["type"] = "text", ["text"] = context });
-        else copy["content"] = (ExtractText(copy["content"]) ?? "") + context;
-        list[at] = copy;
-    }
-
     async Task<string?> ProjectContextAsync(int limit, CancellationToken ct)
     {
         if (limit < 300) return null;
@@ -289,42 +280,4 @@ partial class AgentRunner
 
     static bool VerificationCommand(ToolCallEvent call) =>
         Str(ArgsOf(call)?["command"]) is { } command && ProjectVerification.Command(command);
-
-    static JsonNode ProjectLegacyTools(JsonNode node, HashSet<string> legacy)
-    {
-        if (Role(node) == "tool" && Str(node["tool_call_id"]) is { } id && legacy.Remove(id))
-            return new JsonObject { ["role"] = "assistant", ["content"] = "[Previous tool result]\n" + Clip(ExtractText(node["content"]) ?? "", 2400) };
-        if (node["tool_calls"] is not JsonArray calls) return node;
-        var removed = calls.OfType<JsonObject>().Select(ParseCall).Where(call =>
-            call.Name is "run_command" or "read_file" or "read_many" or "search_text" or "edit_file").ToArray();
-        if (removed.Length == 0) return node;
-        var ids = removed.Select(call => call.Id).ToHashSet();
-        legacy.UnionWith(ids);
-        var copy = (JsonObject)node.DeepClone();
-        var remaining = new JsonArray([.. calls.Where(call => !ids.Contains(Str(call?["id"]) ?? "")).Select(call => call?.DeepClone())]);
-        if (remaining.Count == 0) copy.Remove("tool_calls");
-        else copy["tool_calls"] = remaining;
-        copy["content"] = ExtractText(node["content"]) + "\n[Previous actions]\n" +
-            string.Join("\n", removed.Select(call => HistoryCompressor.Describe(call.Name, call.ArgumentsJson)));
-        return copy;
-    }
-
-    JsonNode WithVerificationSummary(JsonNode node)
-    {
-        if (MetaOf(node) is not { } meta) return node;
-        string? summary = null;
-        if (Str(meta["local_command"]) is { } local)
-            summary = local.StartsWith("git ", StringComparison.Ordinal)
-                ? PromptText($"Пользователю показан локальный вывод команды `{local}`.", $"The user was shown the local output of `{local}`.")
-                : PromptText($"Локально выполнена команда `{local}`. Сводка вывода:\n", $"Command `{local}` ran locally. Output summary:\n") + Clip(ExtractText(node["content"]) ?? "", 1900);
-        else if (Bool(meta["verification"]) == true && Bool(meta["command_restricted"]) != true &&
-                 Str(node["content"]) is { } content && CommandLog.IdOf(content) != null)
-            summary = CommandLog.Brief(content) + (CommandLog.Details(content, 2600) is { Length: > 0 } details ? "\n" + details : "") +
-                      PromptText("\nПолный доступный вывод открывается через read_log.", "\nUse read_log to access the full available output.");
-        if (summary == null) return node;
-        var copy = (JsonObject)node.DeepClone();
-        copy["content"] = summary;
-        return copy;
-    }
-
 }

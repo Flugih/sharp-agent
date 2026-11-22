@@ -23,7 +23,7 @@ static class ToolOutputStore
 
     internal static string? Save(ToolContext context, string output)
     {
-        if (output.Length <= 2400 || context.AppFolder == null) return null;
+        if (output.Length == 0 || context.AppFolder == null) return null;
         var data = Encoding.UTF8.GetBytes(output);
         if (data.LongLength > Capacity) return null;
         var id = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
@@ -56,6 +56,14 @@ static class ToolOutputStore
         if (reference == null || output.Length <= PreviewChars) return output;
         var important = CommandLog.Details(output, 1700);
         return reference + "\n" + HistoryCompressor.Excerpt(output, 3300) + (important.Length > 0 ? "\nВажные строки:\n" + important : "");
+    }
+
+    internal static string? ReferenceOf(string output)
+    {
+        var first = output.Split('\n', 2)[0].TrimEnd();
+        return first.StartsWith(ReferencePrefix, StringComparison.Ordinal) && first.Length > ReferencePrefix.Length + 64 &&
+            first[ReferencePrefix.Length + 64] == ',' && first.AsSpan(ReferencePrefix.Length, 64).IndexOfAnyExcept("0123456789abcdef") < 0
+            ? first : null;
     }
 
     static string Read(ToolArgs args, ToolContext context, CancellationToken ct)

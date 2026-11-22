@@ -3,7 +3,6 @@ namespace SharpAgent.Agent;
 partial class AgentRunner
 {
     const string ReviewField = "review", AlreadySent = "Полный результат этого действия уже передан.";
-    const int MaxReviews = 3;
     // Standalone scripts are not pushed toward a check: the only check is to run them, and that may change data.
     static readonly string[] Scripts = [".ps1", ".sql", ".py"];
 
@@ -45,11 +44,9 @@ partial class AgentRunner
     {
         int start = _history.LastIndex(ChatJournal.Flags.User);
         if (delegated || start < 0) return (null, null, null);
-        int reviews = _history.Range(start + 1, _history.Count - start - 1).Count(message => ReviewOf(message) != null);
-        if (tools.CommandsPending)
-            return reviews < 2 ? (PromptText("Команда ещё выполняется. Получи её итог по session_id.",
-                "A command is still running. Poll its session_id before completing the task."), null, null) :
-                (null, null, PromptText("Команда не завершена к концу задачи.", "The task ended before the command completed."));
+        if (tools.PendingCommandOutput != null)
+            return ContinueReview(PromptText("Команда ещё выполняется. Получи её итог по session_id.",
+                "A command is still running. Poll its session_id before completing the task."), null, _history.LastIndex(ChatJournal.Flags.Tool));
         int lastChange = -1, lastCheck = -1;
         var changed = new List<string>();
         var failed = new Dictionary<string, ToolCallEvent>();
@@ -93,10 +90,9 @@ partial class AgentRunner
             Str(ArgsOf(action.Call)?["command"]) is { } command && ProjectVerification.Tests(command));
         if (automatic && lastChange >= 0 && (lastCheck < lastChange || missingTest))
         {
-            if (reviews < MaxReviews && context.VerificationAttempts < 2 && lastChange > context.LastVerifiedChange &&
+            if (lastChange > context.LastVerifiedChange &&
                 changed.LastOrDefault() is { } changedPath && ApplicableRecipe(changedPath, testsOnly: lastCheck > lastChange) is { } recipe)
             {
-                context.VerificationAttempts++;
                 context.LastVerifiedChange = lastChange;
                 var outcome = await VerifyAsync(recipe, ct);
                 verification = Clip(outcome.Report, 3000);
@@ -117,17 +113,17 @@ partial class AgentRunner
         if (checks.Length > 0)
         {
             var latest = CurrentActions().ToArray();
-            if (automatic && reviews < MaxReviews && context.VerificationAttempts < 2 &&
+            if (automatic && context.LastContractVerification != lastChange &&
                 checks.Any(check => check.Kind is "build" or "unit_tests" && ContractEvidence(check, latest) == null) &&
                 ApplicableRecipe(changed.LastOrDefault(), testsOnly: checks.All(check => check.Kind != "build")) is { } project)
             {
-                context.VerificationAttempts++;
+                context.LastContractVerification = lastChange;
                 var outcome = await VerifyAsync(project, ct);
                 verification = Clip(outcome.Report, 3000);
                 latest = CurrentActions().ToArray();
             }
             foreach (var check in checks.Where(check => check.Kind == "ui_tests" && !check.Optional && check.Key.Length > 0).Take(3))
-                if (automatic && reviews < MaxReviews && ContractEvidence(check, latest) == null)
+                if (automatic && ContractEvidence(check, latest) == null)
                 {
                     await RunLocalToolAsync(LocalTestTools.Name, new() { ["action"] = "run", ["id"] = check.Key }, ct);
                     latest = CurrentActions().ToArray();
@@ -138,22 +134,25 @@ partial class AgentRunner
             verification = verification == null ? report : verification + "\n\n" + report;
             if (results.Any(LocalContractEngine.Unmet))
             {
-                if (reviews >= MaxReviews || results.Where(LocalContractEngine.Unmet).All(result => result.State == LocalContractEngine.State.Blocked))
+                if (results.Where(LocalContractEngine.Unmet).All(result => result.State == LocalContractEngine.State.Blocked))
                     incomplete = PromptText("Выполнение задачи не подтверждено.\n\n", "Task completion could not be verified.\n\n") + report;
                 else notes.Add(report);
             }
         }
-        if (reviews >= MaxReviews)
-        {
-            if (incomplete == null && WorkMode && notes.Count > 0)
-                incomplete = PromptText("Задача не завершена.\n\n", "The task is incomplete.\n\n") + string.Join("\n", notes);
-            return (null, verification, incomplete);
-        }
         if (incomplete != null) return (null, verification, incomplete);
-        return (notes.Count == 0 ? null
-            : PromptText("[Программа: проверка перед завершением] ", "[Application: pre-completion check] ") + string.Join("\n", notes) +
-              PromptText("\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, повтори итоговый ответ полностью: пользователь увидит только его.",
-                  "\nCompare the result with the user's request. If everything is complete and verified, repeat the final answer in full. The user sees only that version."), verification, null);
+        return notes.Count == 0 ? (null, verification, null) : ContinueReview(string.Join("\n", notes), verification, lastChange, checks.Length > 0);
+
+        (string? Review, string? Verification, string? Incomplete) ContinueReview(string notes, string? verification, int revision, bool contract = false)
+        {
+            if (context.LastReview == (revision, notes))
+                return (null, verification, (contract
+                    ? PromptText("Выполнение задачи не подтверждено.\n\n", "Task completion could not be verified.\n\n")
+                    : PromptText("Задача не завершена.\n\n", "The task is incomplete.\n\n")) + notes);
+            context.LastReview = (revision, notes);
+            return (PromptText("[Программа: проверка перед завершением] ", "[Application: pre-completion check] ") + notes +
+                PromptText("\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, повтори итоговый ответ полностью: пользователь увидит только его.",
+                    "\nCompare the result with the user's request. If everything is complete and verified, repeat the final answer in full. The user sees only that version."), verification, null);
+        }
     }
 
     LocalContractEngine.Result? ContractEvidence(LocalContractEngine.Check check,

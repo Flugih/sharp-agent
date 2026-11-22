@@ -24,8 +24,14 @@ function Invoke-Benchmark([string]$Checkout, [string]$Label) {
     Invoke-Native { dotnet build $testProject -c Release --warnaserror -o $artifact --artifacts-path (Join-Path $artifact 'artifacts') }
     $dataset = Join-Path $temporary "$Label.json"
     $entry = Join-Path $artifact 'SharpAgent.Tests.dll'
-    if ($Label -eq 'before') { Invoke-Native { dotnet $entry $dataset } }
-    else { Invoke-Native { dotnet $entry --benchmark $dataset } }
+    if ($Label -eq 'before') {
+        $previousFailures = $env:SHARP_AGENT_BENCH_ALLOW_FAILURES
+        $env:SHARP_AGENT_BENCH_ALLOW_FAILURES = '1'
+        try { Invoke-Native { dotnet $entry $dataset } }
+        finally { $env:SHARP_AGENT_BENCH_ALLOW_FAILURES = $previousFailures }
+    } else {
+        Invoke-Native { dotnet $entry --benchmark $dataset }
+    }
     Get-Content -Raw -LiteralPath $dataset | ConvertFrom-Json
 }
 

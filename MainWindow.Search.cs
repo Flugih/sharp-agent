@@ -221,15 +221,13 @@ public partial class MainWindow
                 {
                     rich.Focus();
                     rich.Selection.Select(range.Start, range.End);
+                    MarkSearchSelection(rich);
                     position = range.Start.GetCharacterRect(LogicalDirection.Forward);
                     view = rich;
                 }
-                else if (node is TextBox text && text.Text.IndexOf(query, StringComparison.OrdinalIgnoreCase) is >= 0 and var at)
+                else if (node is TextBox text && HighlightTextMatch(text, query) is { } start)
                 {
-                    text.IsInactiveSelectionHighlightEnabled = true;
-                    text.Focus();
-                    text.Select(at, query.Length);
-                    position = text.GetRectFromCharacterIndex(at);
+                    position = text.GetRectFromCharacterIndex(start);
                     view = text;
                 }
                 else continue;
@@ -253,21 +251,59 @@ public partial class MainWindow
         var segments = new List<(int Offset, string Text, TextPointer Start)>();
         for (var pointer = document.ContentStart; pointer != null; pointer = pointer.GetNextContextPosition(LogicalDirection.Forward))
         {
-            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.Text)
+            var context = pointer.GetPointerContext(LogicalDirection.Forward);
+            if (context == TextPointerContext.Text)
             {
                 var run = pointer.GetTextInRun(LogicalDirection.Forward);
                 segments.Add((text.Length, run, pointer));
                 text.Append(run);
             }
-            else if (pointer.GetAdjacentElement(LogicalDirection.Forward) is Paragraph or LineBreak) text.Append('\n');
+            else if (context == TextPointerContext.ElementStart)
+            {
+                if (pointer.GetAdjacentElement(LogicalDirection.Forward) is Paragraph) text.Append('\u2029');
+                else if (pointer.GetAdjacentElement(LogicalDirection.Forward) is LineBreak) text.Append('\n');
+            }
         }
-        int at = text.ToString().IndexOf(query, StringComparison.OrdinalIgnoreCase);
-        if (at < 0) return null;
-        var first = segments.FirstOrDefault(segment => segment.Offset <= at && at < segment.Offset + segment.Text.Length);
-        int end = at + query.Length;
+        var content = text.ToString();
+        int at = content.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+        if (query.Length == 0 || at < 0) return null;
+        var (start, length) = AppSearch.SentenceRange(content, at, query.Length);
+        var first = segments.FirstOrDefault(segment => segment.Offset <= start && start < segment.Offset + segment.Text.Length);
+        int end = start + length;
         var last = segments.FirstOrDefault(segment => segment.Offset < end && end <= segment.Offset + segment.Text.Length);
         if (first.Start == null || last.Start == null) return null;
-        return new(first.Start.GetPositionAtOffset(at - first.Offset), last.Start.GetPositionAtOffset(end - last.Offset));
+        return new(first.Start.GetPositionAtOffset(start - first.Offset), last.Start.GetPositionAtOffset(end - last.Offset));
+    }
+
+    static int? HighlightTextMatch(TextBox text, string query)
+    {
+        var content = text.Text;
+        int at = content.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+        if (query.Length == 0 || at < 0) return null;
+        var (start, length) = AppSearch.SentenceRange(content, at, query.Length);
+        text.Focus();
+        text.Select(start, length);
+        MarkSearchSelection(text);
+        return start;
+    }
+
+    static void MarkSearchSelection(TextBoxBase view)
+    {
+        if (ReferenceEquals(view.SelectionBrush, Theme.Get("SearchHighlight"))) return;
+        double opacity = view.SelectionOpacity;
+        bool inactive = view.IsInactiveSelectionHighlightEnabled;
+        view.IsInactiveSelectionHighlightEnabled = true;
+        view.SelectionOpacity = 0.4;
+        view.Paint(TextBoxBase.SelectionBrushProperty, "SearchHighlight");
+        view.SelectionChanged += Restore;
+
+        void Restore(object sender, RoutedEventArgs e)
+        {
+            view.SelectionChanged -= Restore;
+            view.IsInactiveSelectionHighlightEnabled = inactive;
+            view.SelectionOpacity = opacity;
+            view.Paint(TextBoxBase.SelectionBrushProperty, "Accent");
+        }
     }
 
     static IEnumerable<DependencyObject> SearchNodes(DependencyObject parent, bool logical = false)
@@ -302,18 +338,18 @@ public partial class MainWindow
             if (match.Area == SearchArea.Folders) FileActions.OpenFolder(path);
             else
             {
-                if (match.Area == SearchArea.Text) ShowPreview(path);
+                if (match.Area == SearchArea.Text)
+                {
+                    ShowPreview(path, searchLine: match.Line);
+                    if (PreviewBody.Content is Grid grid && grid.Children.OfType<TextBox>().FirstOrDefault() is { } text)
+                        Dispatcher.InvokeAsync(() =>
+                        {
+                            if (!IsShown(PreviewPane) || PreviewBody.Content != grid || HighlightTextMatch(text, match.Query) is not { } start) return;
+                            int line = text.GetLineIndexFromCharacterIndex(start);
+                            if (line >= 0) text.ScrollToLine(line);
+                        }, DispatcherPriority.Loaded);
+                }
                 else OpenInApp(path);
-                if (match.Line > 0 && PreviewBody.Content is Grid grid && grid.Children.OfType<TextBox>().FirstOrDefault() is { } text)
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        if (!IsShown(PreviewPane) || PreviewBody.Content != grid || match.Line > text.LineCount) return;
-                        int start = text.GetCharacterIndexFromLineIndex(match.Line - 1);
-                        if (start < 0) return;
-                        text.Focus();
-                        text.Select(start, text.GetLineLength(match.Line - 1));
-                        text.ScrollToLine(match.Line - 1);
-                    }, DispatcherPriority.Loaded);
             }
         }
         catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { ShowToast(ex.Message, ToastKind.Warning); }

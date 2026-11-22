@@ -9,16 +9,27 @@ using SharpAgent.Tools;
 static class LocalBenchmark
 {
     internal sealed record Row(string Scenario, int Requests, long EstimatedInput, long EstimatedOutput, long RepeatedContext,
-        long? Input, long? Output, long? Cached, long? Reasoning, int LocalActions, long Milliseconds, bool Passed, string? Error);
+        long? Input, long? Output, long? Cached, long? Reasoning, int LocalActions, long Milliseconds, bool Passed, string? Error,
+        int Compactions, decimal? CostUsd);
     sealed record Step(string Name, JsonObject Arguments);
-    sealed record Case(string Name, string Request, Step[] Steps, Func<string, AgentRunner, bool> Verify, bool Work = true, bool Resume = false);
+    sealed record Case(string Name, string Request, Step[] Steps, Func<string, AgentRunner, bool> Verify,
+        bool Work = true, bool Resume = false, bool Seed = false);
 
     internal static async Task RunAsync(string root, string output)
     {
         var result = new List<Row>();
         var live = Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_LIVE") == "1";
+        var authPath = live ? Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_CHATGPT_AUTH") : null;
+        var providerKind = authPath == null ? AgentProvider.OpenAI : AgentProvider.ChatGpt;
         var model = live ? Setting("MODEL") : "deterministic-replay";
-        foreach (var scenario in Cases())
+        var selected = Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_SCENARIOS")?.Split(',');
+        var cases = Cases().Where(scenario => selected == null || selected.Contains(scenario.Name)).ToArray();
+        if (cases.Length == 0) throw new InvalidOperationException("No benchmark scenarios match the filter.");
+        var rates = Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_USD_PER_MILLION")?.Split(',')
+            .Select(value => decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        if (rates != null && (rates.Length != 3 || rates.Any(rate => rate < 0)))
+            throw new InvalidOperationException("Expected three non-negative rates for uncached input, cached input, and output.");
+        foreach (var scenario in cases)
         {
             var workspace = Path.Combine(root, scenario.Name);
             Directory.CreateDirectory(workspace);
@@ -31,12 +42,13 @@ static class LocalBenchmark
             using var watcher = context.ProjectWatcher;
             watcher.Watch(context);
             var store = new ChatStore(Path.Combine(root, scenario.Name + "-chat"), context.LogsFolder);
-            using var provider = new MeasuredProvider(scenario.Steps, live ? new ChatApiClient(Setting("URL"), Setting("KEY"), AgentProvider.OpenAI) : null,
-                scenario.Resume);
+            using var provider = new MeasuredProvider(scenario.Steps, live ? authPath == null
+                ? new ChatApiClient(Setting("URL"), Setting("KEY"), AgentProvider.OpenAI)
+                : new ChatGptClient(new ChatGptAuth(authPath)) : null, scenario.Resume);
             AgentRunner agent = Make();
             AgentRunner Make() => new(new ToolRegistry(context), store)
             {
-                Api = provider, Provider = AgentProvider.OpenAI, RussianLanguage = false, ConfirmAsync = _ => Task.FromResult(true),
+                Api = provider, Provider = providerKind, RussianLanguage = false, AutoChatTitles = false, ConfirmAsync = _ => Task.FromResult(true),
             };
             int actions = 0;
             agent.ToolCallStarted += _ => actions++;
@@ -47,6 +59,19 @@ static class LocalBenchmark
             bool passed = false;
             try
             {
+                if (scenario.Seed)
+                {
+                    var history = new ChatHistory();
+                    for (int i = 0; i < 40; i++)
+                    {
+                        history.Add(new JsonObject { ["role"] = "user", ["content"] = $"Fixture requirement {i}: keep existing public names." });
+                        history.Add(new JsonObject { ["role"] = "assistant", ["content"] = $"Fixture decision {i}: " +
+                            string.Concat(Enumerable.Repeat("Existing fixture code was reviewed and the current public names are retained. ", 27)) });
+                    }
+                    var path = store.NewPath();
+                    await history.SaveAsync(path, model, null, scenario.Work);
+                    await agent.OpenAsync(path);
+                }
                 string request = scenario.Request + (live && scenario.Name is "05-compile" or "06-tests" ?
                     " Everything is synthetic. Run only the requested .NET fixture commands and edit files in this folder." : "");
                 try { await agent.RunAsync(request, [], model, timeout.Token); }
@@ -62,15 +87,30 @@ static class LocalBenchmark
                 passed = scenario.Verify(workspace, agent);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or InvalidOperationException or ApiException)
-            { error = ex.GetType().Name; }
+            {
+                error = ex is ApiException api ? $"ApiException ({(int?)api.StatusCode}, {api.Code})" : ex.GetType().Name;
+                if (authPath != null && ex is ApiException { StatusCode: null } failure)
+                    error = failure.Message switch
+                    {
+                        var message when message.Contains("Нет связи с сервером входа", StringComparison.Ordinal) => "OpenAI sign-in endpoint unreachable",
+                        var message when message.Contains("войдите", StringComparison.OrdinalIgnoreCase) => "ChatGPT sign-in required",
+                        var message when message.Contains("не ответил вовремя", StringComparison.Ordinal) => "OpenAI sign-in endpoint timed out",
+                        _ => error,
+                    };
+            }
+            var usage = provider.Usage;
+            decimal? cost = rates != null && usage != null
+                ? (Math.Max(0, usage.PromptTokens - usage.CachedTokens) * rates[0] +
+                    usage.CachedTokens * rates[1] + usage.CompletionTokens * rates[2]) / 1_000_000 : null;
             result.Add(new(scenario.Name, provider.Calls, provider.EstimateInput, provider.EstimateOutput, provider.Repeated,
-                provider.Usage?.PromptTokens, provider.Usage?.CompletionTokens, provider.Usage?.CachedTokens, provider.Usage?.ReasoningTokens,
-                actions, timer.ElapsedMilliseconds, passed, error));
+                usage?.PromptTokens, usage?.CompletionTokens, usage?.CachedTokens, usage?.ReasoningTokens,
+                actions, timer.ElapsedMilliseconds, passed, error, provider.Compactions, cost));
             Console.WriteLine($"{scenario.Name}: {provider.Calls} model calls, {provider.EstimateInput} estimated input, pass={passed}, error={error ?? "-"}");
         }
         File.WriteAllText(output, JsonSerializer.Serialize(new { Mode = live ? "live" : "replay", Model = model, Results = result },
             new JsonSerializerOptions { WriteIndented = true }));
-        if (result.Any(row => !row.Passed)) throw new InvalidOperationException("One or more benchmark scenarios failed. See the report.");
+        if (result.Any(row => !row.Passed) && Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_ALLOW_FAILURES") != "1")
+            throw new InvalidOperationException("One or more benchmark scenarios failed. See the report.");
     }
 
     static string Setting(string suffix) => Environment.GetEnvironmentVariable("SHARP_AGENT_BENCH_" + suffix) is { Length: > 0 } value ? value :
@@ -98,11 +138,19 @@ static class LocalBenchmark
             new("local_research", new() { ["action"] = "search", ["query"] = "DocBenchmark" })],
             (_, agent) => Saw(agent, "guide.md") && Saw(agent, "records.csv")),
         new("09-long", "Review the methods across the project and inspect each file listed from Fixture01.cs to Fixture12.cs.",
-            Enumerable.Range(1, 12).Select(i => Read($"Fixture{i:D2}.cs", 30)).ToArray(), (_, agent) => Saw(agent, "Fixture12")),
+            Enumerable.Range(1, 12).Select(i => Read($"Fixture{i:D2}.cs", 30)).ToArray(), (_, agent) => Enumerable.Range(1, 12)
+                .All(i => agent.History.Any(message => AgentRunner.Role(message) == "tool" &&
+                    message["content"]?.ToString().Contains($"class Fixture{i:D2}", StringComparison.Ordinal) == true))),
         new("10-resume", "Edit Code.cs Value from 1 to 2 and Caller.cs from 1 to 3. No tests.",
             [Edit("Code.cs", "=> 1;", "=> 2;"), Edit("Caller.cs", "=> 1;", "=> 3;")],
             (path, _) => File.ReadAllText(Path.Combine(path, "Code.cs")).Contains("=> 2;") &&
                          File.ReadAllText(Path.Combine(path, "Caller.cs")).Contains("=> 3;"), Resume: true),
+        new("11-pressure", "Review the project. Inspect Code.cs and Caller.cs, then compare their Value methods and keep the public names.",
+            [Read("Code.cs"), Read("Caller.cs"), Command("Get-ChildItem -Name")],
+            (_, agent) => Saw(agent, "class Code") && Saw(agent, "class Caller") && !agent.CanContinue, Seed: true),
+        new("12-steps", "Inspect all 30 distinct fixture paths and report completion.",
+            Enumerable.Range(1, 30).Select(i => new Step("get_file_info", new() { ["path"] = $"fixture-{i:D2}.txt" })).ToArray(),
+            (_, agent) => agent.History.Count(message => AgentRunner.Role(message) == "tool") == 30 && !agent.CanContinue),
     ];
 
     static Step Read(string path, int count = 20) => Command($"Get-Content -LiteralPath '{path}' -TotalCount {count}");
@@ -172,6 +220,7 @@ static class LocalBenchmark
         bool _hadLiveStep;
         public bool Interrupted { get; private set; }
         public int Calls { get; private set; }
+        public int Compactions { get; private set; }
         public long EstimateInput { get; private set; }
         public long EstimateOutput { get; private set; }
         public long Repeated { get; private set; }
@@ -187,6 +236,8 @@ static class LocalBenchmark
                 throw new OperationCanceledException();
             }
             Calls++;
+            bool compaction = !callTools && messages[0]["content"]?.ToString().Contains("Summarize this Sharp Agent", StringComparison.Ordinal) == true;
+            if (compaction) Compactions++;
             EstimateInput += HistoryCompressor.EstimateAll(messages) + HistoryCompressor.Estimate(tools);
             foreach (var item in messages.Where(msg => msg["role"]?.ToString() == "tool"))
             {
@@ -212,7 +263,11 @@ static class LocalBenchmark
                     }),
                 }, "tool_calls", null, null);
             }
-            else result = new(new JsonObject { ["content"] = callTools ? "Completed the requested checks." : "Fixture task" }, "stop", null, null);
+            else result = new(new JsonObject
+            {
+                ["content"] = callTools ? "Completed the requested checks." :
+                    compaction ? "The user requires preserving all public names. The previous fixture review found no requested edits. Inspect both Value implementations and compare them." : "Fixture task",
+            }, "stop", null, null);
             EstimateOutput += HistoryCompressor.Estimate(result.Message);
             if (result.Usage is { } usage) Usage = Usage?.Add(usage) ?? usage;
             return result;

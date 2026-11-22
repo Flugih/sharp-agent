@@ -14,19 +14,16 @@ public sealed record SubagentUpdate(string Id, string Title, string Status, Date
 
 partial class AgentRunner
 {
-    const int SubagentInputTokens = 12_000, SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 4, MaxSubagentSteps = 4;
-    const string SubagentStepStop = "Достигнут лимит шагов субагента.";
+    const int SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 4;
     static readonly JsonNode AskDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"ask_user","description":"Уточнить существенную неоднозначность прямо у пользователя и дождаться ответа.","parameters":{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}},"required":["question","choices"]}}}""")!;
 
     static readonly JsonNode DelegateDefinition = JsonNode.Parse("""
-        {"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string","description":"Самодостаточное поручение с нужными требованиями пользователя."},"attachments":{"type":"array","description":"Только точные пути нужных вложений из текущего сообщения пользователя. По умолчанию вложения не передаются.","items":{"type":"string"},"maxItems":3},"steps":{"type":"integer","minimum":2,"maximum":8,"description":"Сколько шагов модели дать субагенту по сложности поручения: точечная проверка — 2–3, широкий анализ — 6–8."}},"required":["title","task","steps"]}}},"required":["tasks"]}}}
+        {"type":"function","function":{"name":"delegate_tasks","description":"Параллельно поручить независимые проверки субагентам с инструментами чтения. Возвращает результат каждого.","parameters":{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"title":{"type":"string"},"task":{"type":"string","description":"Самодостаточное поручение с нужными требованиями пользователя."},"attachments":{"type":"array","description":"Только точные пути нужных вложений из текущего сообщения пользователя. По умолчанию вложения не передаются.","items":{"type":"string"},"maxItems":3}},"required":["title","task"]}}},"required":["tasks"]}}}
         """)!;
 
     public bool UseSubagents { get; set; }
     public bool FastMode { get; set; }
     int SubagentTaskLimit => FastMode ? MaxSubagentTasks : 2;
-    int SubagentStepsPerTask => FastMode ? MaxSubagentSteps : 3;
-    int SubagentStepLimit { get; init; } = MaxSubagentSteps;
     public Func<string, string?>? SubagentEffort { get; set; }
     public Func<Clarification, CancellationToken, Task<string>>? ClarifyAsync { get; set; }
     public event Action<SubagentUpdate>? SubagentChanged;
@@ -69,9 +66,6 @@ partial class AgentRunner
             var definition = DelegateDefinition.DeepClone();
             var tasks = definition["function"]!["parameters"]!["properties"]!["tasks"]!;
             tasks["maxItems"] = remaining;
-            var steps = tasks["items"]!["properties"]!["steps"]!;
-            steps["maximum"] = SubagentStepsPerTask;
-            if (!FastMode) steps["description"] = "Дай 2 шага для точечной проверки и 3, если нужно больше чтения.";
             catalog.Add("delegate_tasks", definition);
         }
         var selected = catalog.Where(item => initial == null || initial(item.Key) || item.Key == "ask_user" ||
@@ -133,7 +127,7 @@ partial class AgentRunner
         int remaining = RemainingSubagentTasks(user);
         if (tasks.Count > remaining) return new($"Ошибка: в этом запросе осталось поручений для субагентов: {remaining}.", true);
         var available = Attachment.ListFrom(user);
-        var briefs = new List<(string Title, string Task, List<Attachment> Files, int Steps)>();
+        var briefs = new List<(string Title, string Task, List<Attachment> Files)>();
         foreach (var node in tasks)
         {
             if (node is not JsonObject task || TextArg(task["title"]) is not { Length: <= 100 } title ||
@@ -152,14 +146,14 @@ partial class AgentRunner
                     if (!files.Contains(file)) files.Add(file);
                 }
             }
-            briefs.Add((title, text, files, Math.Clamp(new ToolArgs(task).Int("steps", FastMode ? 4 : 2), 2, SubagentStepsPerTask)));
+            briefs.Add((title, text, files));
         }
         EnsureMeta(_history.Edit(_history.LastIndex(ChatJournal.Flags.User)))["delegated_tasks"] = (long)SubagentTaskLimit - remaining + briefs.Count;
         await SaveAsync();
         var registry = new ToolRegistry(tools.Context, readOnly: true);
         using var slots = new SemaphoreSlim(4);
         var results = await Task.WhenAll(briefs.Select(brief =>
-            RunSubagentAsync(registry, slots, model, brief.Title, brief.Task, brief.Files, brief.Steps, ct)));
+            RunSubagentAsync(registry, slots, model, brief.Title, brief.Task, brief.Files, ct)));
         var usage = results.Aggregate(new UsageInfo(0, 0, Requests: 0), (total, result) => total.Add(result.Usage));
         if (ct.IsCancellationRequested) return new("Отменено пользователем.", true, DelegatedUsage: usage);
         bool failed = results.All(result => result.Failed);
@@ -170,7 +164,7 @@ partial class AgentRunner
     int RemainingSubagentTasks(JsonObject user) => SubagentTaskLimit - (int)Math.Clamp(Long(MetaOf(user)?["delegated_tasks"]), 0, SubagentTaskLimit);
 
     async Task<(string Text, bool Failed, UsageInfo Usage)> RunSubagentAsync(ToolRegistry registry, SemaphoreSlim slots, string model,
-        string title, string task, List<Attachment> files, int steps, CancellationToken ct)
+        string title, string task, List<Attachment> files, CancellationToken ct)
     {
         var effort = _noEffortModels.Contains(model) ? null : SubagentEffort?.Invoke(model);
         var update = new SubagentUpdate(Guid.NewGuid().ToString("N"), title, "В очереди") { Model = model, Provider = Provider, Effort = effort };
@@ -200,7 +194,7 @@ partial class AgentRunner
                 // Providers count reasoning into the output limit, so the short answer gets room for thinking on top.
                 Api = Api, Provider = Provider, RussianLanguage = RussianLanguage, MaxTokens = Math.Min(MaxTokens ?? SubagentOutputTokens, SubagentOutputTokens) +
                     (FastMode ? SubagentReasoningTokens : SubagentReasoningTokens / 2),
-                ReasoningEffort = effort, SubagentStepLimit = steps, CanSpendAsync = CanSpendAsync,
+                ReasoningEffort = effort, CanSpendAsync = CanSpendAsync,
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
                 _timeline = _timeline, _timelineParent = update.Id,
             };
@@ -252,7 +246,7 @@ partial class AgentRunner
             clock.Stop();
             if (entered) slots.Release();
         }
-        var status = warning == SubagentStepStop ? "Лимит шагов" : failed ? "Ошибка" : "Готово";
+        var status = failed ? "Ошибка" : "Готово";
         SubagentChanged?.Invoke(update with { Status = status, Elapsed = clock.Elapsed, Result = answer, Failed = failed, Action = null });
         return (title + "\n" + answer, failed, total);
     }

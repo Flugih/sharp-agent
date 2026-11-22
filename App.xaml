@@ -17,6 +17,7 @@
         <SolidColorBrush x:Key="ChatModeShadow" Color="#101010"/>
         <SolidColorBrush x:Key="ChatModeText" Color="#BDBDBD"/>
         <SolidColorBrush x:Key="SearchGlass" Color="#E61B1B1B"/>
+        <SolidColorBrush x:Key="SearchHighlight" Color="#B8984A"/>
         <SolidColorBrush x:Key="Surface2" Color="#292929"/>
         <SolidColorBrush x:Key="Surface3" Color="#3B3B3B"/>
         <SolidColorBrush x:Key="BlockBg" Color="#292929"/>
@@ -714,14 +715,19 @@
         </Style>
 
         <DataTemplate x:Key="ComposerLoadingTemplate">
-            <StackPanel>
-                <DockPanel Height="14" TextElement.Foreground="{DynamicResource TextMuted}" TextElement.FontSize="11">
-                    <TextBlock DockPanel.Dock="Right" Text="{Binding Remaining}" Margin="6,0,0,0"/>
-                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite"/>
-                </DockPanel>
-                <ProgressBar Style="{StaticResource Meter}" Height="2" Foreground="{DynamicResource Accent}" Value="{Binding Percent}"
+            <Grid Height="16" TextElement.Foreground="{DynamicResource TextMuted}" TextElement.FontSize="11">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" MaxWidth="180" TextTrimming="CharacterEllipsis"
+                           AutomationProperties.LiveSetting="Polite"/>
+                <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="2" Margin="8,0" VerticalAlignment="Center"
+                             Foreground="{DynamicResource Accent}" Value="{Binding Percent, Mode=OneWay}"
                              IsIndeterminate="{Binding IsIndeterminate}" AutomationProperties.Name="{Binding Label}"/>
-            </StackPanel>
+                <TextBlock Grid.Column="2" Text="{Binding Remaining}" VerticalAlignment="Center" MaxWidth="155" TextTrimming="CharacterEllipsis"/>
+            </Grid>
         </DataTemplate>
         <Style x:Key="ComposerLoading" TargetType="ContentControl">
             <Setter Property="Height" Value="16"/>

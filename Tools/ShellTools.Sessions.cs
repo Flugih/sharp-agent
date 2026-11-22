@@ -27,7 +27,7 @@ partial class ShellTools
     internal sealed class Sessions
     {
         (string Id, Task<string> Result, CancellationTokenSource Cancellation, string? Command)? _active;
-        internal bool Pending => _active != null;
+        internal string? PendingOutput => _active is { } active ? Running(active.Id) : null;
 
         internal async Task<string> RunAsync(ToolArgs args, ToolContext context, CancellationToken ct)
         {
