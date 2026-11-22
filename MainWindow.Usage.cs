@@ -107,6 +107,61 @@ public partial class MainWindow
             if (!AddPlaceholder(_agent.Totals() is { PromptTokens: 0, CompletionTokens: 0 }, Tr("Расход появится после первого ответа модели.", "Usage will appear after the first model response.")))
                 AddChatSection();
         }
+        AddRunTimeline();
+    }
+
+    void AddRunTimeline()
+    {
+        if (AgentProgressManager.Last(_toolContext, _agent.ChatPath) is not { } run) return;
+        int calls = run.Operations.Count(step => step.Model != null);
+        double seconds = (run.Ended - run.Started).TotalSeconds;
+        var details = new StackPanel();
+        foreach (var step in run.Operations.Where(step => step.Model != null || step.Step > run.Operations.Length - 36))
+        {
+            var name = step.Name switch
+            {
+                "start" => Tr("Подготовка", "Preparing"),
+                "context" => Tr("Подготовка контекста", "Preparing context"),
+                "response" => Tr("Запрос модели", "Model request"),
+                "local_model" => Tr("Запрос локальной модели", "Local model request"),
+                "title" => Tr("Название чата", "Chat title"),
+                "compaction" => Tr("Сжатие истории", "History compaction"),
+                _ => Activity(step.Name, "{}"),
+            };
+            var status = step.State switch
+            {
+                "completed" => Tr("готово", "done"),
+                "paused" => Tr("пауза", "paused"),
+                "failed" => Tr("ошибка", "failed"),
+                "cancelled" => Tr("отменено", "cancelled"),
+                "warning" => Tr("предупреждение", "warning"),
+                _ => Tr("в работе", "running"),
+            };
+            var duration = step.Ended is { } ended ? $" · {(ended - step.Started).TotalSeconds:F1} с" : "";
+            var usage = step.Usage is { } actual ? Tr(
+                $" · вход {Tokens.Format(actual.PromptTokens)}, без кэша {Tokens.Format(Math.Max(0, actual.PromptTokens - actual.CachedTokens))}, кэш {Tokens.Format(actual.CachedTokens)}, выход {Tokens.Format(actual.CompletionTokens)}, рассуждение {Tokens.Format(actual.ReasoningTokens)}",
+                $" · input {Tokens.Format(actual.PromptTokens)}, uncached {Tokens.Format(Math.Max(0, actual.PromptTokens - actual.CachedTokens))}, cached {Tokens.Format(actual.CachedTokens)}, output {Tokens.Format(actual.CompletionTokens)}, reasoning {Tokens.Format(actual.ReasoningTokens)}") :
+                step.EstimatedInput > 0 ? Tr($" · вход ≈{Tokens.Format(step.EstimatedInput)}", $" · input ≈{Tokens.Format(step.EstimatedInput)}") : "";
+            var retries = step.Retries > 0 ? Tr($" · повторов {step.Retries}", $" · retries {step.Retries}") : "";
+            var images = step.Images > 0 ? Tr($" · изображений {step.Images}", $" · images {step.Images}") : "";
+            var model = step.Model != null ? " · " + ModelDisplayName(step.Model) : "";
+            var line = Caption($"{step.Step}. {name}{model} · {status}{duration}{usage}{images}{retries}", 4);
+            line.ToolTip = step.Error;
+            details.Children.Add(line);
+            if (step.Input is { } input)
+            {
+                var parts = Tr(
+                    $"Оценка входа ≈{input.Total:N0}: системный промпт {input.System:N0}, схемы {input.Tools:N0}, история {input.History:N0}, проект {input.Project:N0}, результаты {input.Results:N0}, изображения {input.Attachments:N0}. Совпавший префикс {input.StablePrefix:N0}, повторные результаты {input.RepeatedResults:N0}.",
+                    $"Estimated input ≈{input.Total:N0}: system prompt {input.System:N0}, tool schemas {input.Tools:N0}, history {input.History:N0}, project {input.Project:N0}, tool results {input.Results:N0}, images {input.Attachments:N0}. Matching prefix {input.StablePrefix:N0}, repeated results {input.RepeatedResults:N0}.");
+                details.Children.Add(Caption(parts, 0));
+            }
+        }
+        var title = Tr($"Последний запуск · запросов к моделям {calls} · повторов {run.Retries} · {seconds:F0} с",
+            $"Last run · {calls} model requests · {run.Retries} retries · {seconds:F0} s");
+        var view = new Expander { Header = title, Style = Theme.Style("ProgressSection"),
+            Content = new ScrollViewer { MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = details } };
+        AutomationProperties.SetName(view, title);
+        AddUsage(Divider(), view);
     }
 
     private void AddUsage(params UIElement[] items)
@@ -232,6 +287,13 @@ public partial class MainWindow
         if (chatTokens > 0)
         {
             AddUsage(Row(Tr("Этот чат", "This chat"), Tokens.Format(chatTokens) + Tr(" токенов", " tokens")));
+            if (totals.Requests > 0)
+                AddUsage(Caption(Tr($"Вход: {Tokens.Format(totals.PromptTokens)} · Выход: {Tokens.Format(totals.CompletionTokens)} · Учтено запросов: {totals.Requests}",
+                    $"Input: {Tokens.Format(totals.PromptTokens)} · Output: {Tokens.Format(totals.CompletionTokens)} · Requests recorded: {totals.Requests}"), 2));
+            if (totals.CachedTokens > 0)
+                AddUsage(Caption(Tr($"Вход из кэша: {Tokens.Format(totals.CachedTokens)}", $"Cached input: {Tokens.Format(totals.CachedTokens)}"), 2));
+            if (totals.ReasoningTokens > 0)
+                AddUsage(Caption(Tr($"Из выхода на рассуждение: {Tokens.Format(totals.ReasoningTokens)}", $"Reasoning output: {Tokens.Format(totals.ReasoningTokens)}"), 2));
             if (tooken && totals.TokensByModel.Where(pair => pair.Key.Provider == AgentProvider.Tooken).Sum(pair => pair.Value * (_usage.RateOf(pair.Key.Model) ?? 0)) is >= 1 and var charged)
                 AddUsage(Caption(Tr($"С баланса за него списано около {Tokens.Format((long)Math.Round(charged))}", $"Charged about {Tokens.Format((long)Math.Round(charged))} tokens"), 2));
         }

@@ -7,7 +7,8 @@ static class ChatJournal
     static ReadOnlySpan<byte> Magic => "{\"format\":\"sharp-agent-chat-jsonl/1\"}\n"u8;
     [Flags]
     internal enum Flags { User = 1, Assistant = 2, Tool = 4, Summary = 8, Stopped = 16 }
-    internal sealed record Usage(string? Provider, string? Model, long Prompt, long Completion, bool Response);
+    internal sealed record Usage(string? Provider, string? Model, long Prompt, long Completion, bool Response,
+        long Cached = 0, long Reasoning = 0, long Requests = 0);
     internal readonly record struct Entry(long Offset, int Length, int EstimatedTokens, Flags Flags, Usage[]? Usage);
     internal sealed record Header(string? Title, string? FirstTitle, string? Model, bool WorkMode, DateTime Updated);
     internal sealed record Index(long End, long Length, long Timestamp, Header Header, Entry[] Entries);
@@ -35,8 +36,10 @@ static class ChatJournal
         List<Usage>? usage = null;
         void Record(JsonObject data, bool response)
         {
-            if (data["prompt_tokens"] != null)
-                (usage ??= []).Add(new(Str(data["provider"]), Str(data["model"]), Long(data["prompt_tokens"]), Long(data["completion_tokens"]), response));
+            if (data["prompt_tokens"] == null) return;
+            var measured = UsageInfo.Read(data);
+            (usage ??= []).Add(new(Str(data["provider"]), Str(data["model"]), measured.PromptTokens, measured.CompletionTokens,
+                response, measured.CachedTokens, measured.ReasoningTokens, Long(data["requests"])));
         }
         Record(meta, flags.HasFlag(Flags.Assistant));
         if (meta["summary_usage"] is JsonArray extra)

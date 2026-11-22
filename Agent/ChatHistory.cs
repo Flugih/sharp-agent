@@ -82,18 +82,6 @@ sealed class ChatHistory : IReadOnlyList<JsonNode>
         return -1;
     }
 
-    internal int ContextStart(int start, int tokens)
-    {
-        int i = Count;
-        while (i > start && tokens > 0)
-        {
-            var entry = EntryAt(--i);
-            tokens -= entry.EstimatedTokens > 0 ? entry.EstimatedTokens : HistoryCompressor.Estimate(this[i]);
-        }
-        while (i > start && i < Count && EntryAt(i).Flags.HasFlag(Flags.Tool)) i--;
-        return i;
-    }
-
     internal JsonObject Edit(int index)
     {
         var message = (JsonObject)this[index];

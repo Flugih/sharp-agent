@@ -65,8 +65,10 @@ public class OpenAiResponsesClient : IChatProvider
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
         bool summary = (_auth != null || IsGpt6ReasoningModel(model)) && !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
-        var body = Request(model, messages, tools, maxTokens, effort, summary);
-        if (!callTools && (_auth != null || tools is { Count: > 0 })) body["tool_choice"] = "none";
+        var schemas = _auth == null ? ToolSchemas.Get(tools) : null;
+        var additional = _auth != null ? AdditionalTools.Get(tools) : null;
+        var body = Request(model, messages, schemas != null, maxTokens, effort, summary);
+        if (!callTools && (_auth != null || schemas != null)) body["tool_choice"] = "none";
         void Reset()
         {
             reportText(null, false);
@@ -75,7 +77,7 @@ public class OpenAiResponsesClient : IChatProvider
         var result = await ApiException.RetryAsync((attemptToken, reportActivity) =>
         {
             body["stream"] = streaming;
-            return SendCompletionAsync(body.ToJsonString(), streaming, reportText, reportProgress, attemptToken, reportActivity);
+            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas, additional), streaming, reportText, reportProgress, attemptToken, reportActivity);
         }, ex =>
         {
             if (summary && SummaryRejected(ex, effort != null))
@@ -109,29 +111,26 @@ public class OpenAiResponsesClient : IChatProvider
         (ex.Parameter == "reasoning.summary" || !hasEffort && ex.Parameter == "reasoning" ||
          ex.Message.Contains("reasoning.summary", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("reasoning summar", StringComparison.OrdinalIgnoreCase));
 
-    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort, bool summary)
+    static readonly ToolSchemaWire ToolSchemas = new(Functions);
+    static readonly ToolSchemaWire AdditionalTools = new(static tools => new JsonObject
     {
-        JsonArray functions =
-        [
-            .. tools?.OfType<JsonObject>().Select(tool => tool["function"]).OfType<JsonObject>().Select(function => new JsonObject
-            {
-                ["type"] = "function", ["name"] = function["name"]?.DeepClone(), ["description"] = function["description"]?.DeepClone(),
-                ["strict"] = false, ["parameters"] = function["parameters"]?.DeepClone(),
-            }) ?? [],
-        ];
-        JsonArray input = _auth != null && functions.Count > 0
-            ?
-            [
-                new JsonObject
-                {
-                    ["type"] = "additional_tools", ["role"] = "developer",
-                    ["tools"] = new JsonArray(new JsonObject { ["type"] = "namespace", ["name"] = Namespace, ["description"] = "", ["tools"] = functions }),
-                },
-            ]
-            : [];
+        ["type"] = "additional_tools", ["role"] = "developer",
+        ["tools"] = new JsonArray(new JsonObject { ["type"] = "namespace", ["name"] = Namespace, ["description"] = "", ["tools"] = Functions(tools) }),
+    });
+
+    static JsonArray Functions(JsonArray tools) => [.. tools.OfType<JsonObject>().Select(tool => tool["function"]).OfType<JsonObject>()
+        .Select(function => new JsonObject
+        {
+            ["type"] = "function", ["name"] = function["name"]?.DeepClone(), ["description"] = function["description"]?.DeepClone(),
+            ["strict"] = false, ["parameters"] = function["parameters"]?.DeepClone(),
+        })];
+
+    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, bool hasTools, int? maxTokens, string? effort, bool summary)
+    {
+        var input = new JsonArray();
         foreach (var message in messages.OfType<JsonObject>()) AddInput(input, message);
         var body = new JsonObject { ["model"] = model, ["input"] = input, ["store"] = false };
-        if (_auth == null && functions.Count > 0) body["tools"] = functions;
+        if (hasTools) body["tools"] = null;
         if (maxTokens is > 0) body["max_output_tokens"] = Math.Max(16, maxTokens.Value);
         var reasoning = new JsonObject();
         if (effort != null) reasoning["effort"] = effort;
@@ -288,7 +287,7 @@ public class OpenAiResponsesClient : IChatProvider
         var reason = Str((answer?["incomplete_details"] as JsonObject)?["reason"]);
         if (reason == "content_filter")
             return new(new JsonObject(), reason, answer?["usage"] is JsonObject billed
-                ? new UsageInfo(Long(billed["input_tokens"]), Long(billed["output_tokens"])) : null, requestId);
+                ? ReadUsage(billed) : null, requestId);
         if (answer?["output"] is JsonArray { Count: > 0 } output) items = output.OfType<JsonObject>().ToList();
         List<string> texts = [], commentary = [];
         var calls = new JsonArray();
@@ -327,9 +326,12 @@ public class OpenAiResponsesClient : IChatProvider
             .SelectMany(item => (item["summary"] as JsonArray)?.OfType<JsonObject>() ?? []).Select(part => Str(part["text"])).OfType<string>();
         var finish = incomplete || status == "incomplete" || reason != null ? "length" : calls.Count > 0 ? "tool_calls" : "stop";
         return new ChatResult(message, finish,
-            answer?["usage"] is JsonObject usage ? new UsageInfo(Long(usage["input_tokens"]), Long(usage["output_tokens"])) : null,
+            answer?["usage"] is JsonObject usage ? ReadUsage(usage) : null,
             requestId ?? Str(answer?["id"]), new(Join(finalSummaries) ?? Join(summaries ?? []), Join(commentary)), phase);
     }
+
+    static UsageInfo ReadUsage(JsonObject usage) => new(Long(usage["input_tokens"]), Long(usage["output_tokens"]),
+        Long((usage["input_tokens_details"] as JsonObject)?["cached_tokens"]), Long((usage["output_tokens_details"] as JsonObject)?["reasoning_tokens"]));
 
     static bool IsCommentary(JsonObject? item) => Str(item?["type"]) == "message" && Str(item?["phase"]) == "commentary";
 

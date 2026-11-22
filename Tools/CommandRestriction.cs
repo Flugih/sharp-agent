@@ -51,6 +51,22 @@ internal sealed record CommandRestriction(string Message, CommandShell? Unavaila
             ? new("политика компьютера запретила одно из действий команды." + NextStep) : null;
     }
 
+    internal static string? RipgrepLaunchFailure(string stderr, CommandRestriction? restriction)
+    {
+        if (restriction?.UnavailableShell != null) return null;
+        if (Has(stderr, "not a valid Win32 application", "не является приложением Win32"))
+            return "Встроенный rg.exe несовместим с этой Windows.";
+        var diagnostic = string.Join(" ", stderr.Split('\n').TakeWhile(line => !line.TrimStart().StartsWith('+')));
+        if (restriction != null && Has(diagnostic, "blocked by group policy", "заблокирована групповой политикой",
+                "blocked by your system administrator", "заблокировано системным администратором"))
+            return "Политика Windows ограничила запуск rg.exe.";
+        if (!Has(diagnostic, "rg.exe") || !Has(diagnostic, "failed to run", "could not be started", "не удалось запустить",
+                "не удалось выполнить", "заблокирован", "blocked", "restricted"))
+            return null;
+        return restriction == null ? "Windows не смогла запустить rg.exe." :
+            "Политика Windows ограничила запуск rg.exe.";
+    }
+
     static bool Has(string text, params string[] values) => values.Any(value => text.Contains(value, StringComparison.OrdinalIgnoreCase));
 }
 

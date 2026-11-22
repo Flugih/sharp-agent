@@ -31,7 +31,7 @@
                     <ColumnDefinition x:Name="PreviewColumn" Width="0"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Panel.ZIndex="5" HorizontalAlignment="Center" CornerRadius="17" Background="{DynamicResource ChatModeTrack}" Margin="0,8,0,8">
+                <Border x:Name="ChatModePicker" Panel.ZIndex="5" HorizontalAlignment="Center" CornerRadius="17" Background="{DynamicResource ChatModeTrack}" Margin="0,8,0,8">
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.28"/>
                     </Border.Effect>
@@ -115,7 +115,8 @@
                     <Button x:Name="ScrollDownButton" Style="{StaticResource FloatButton}" Content="&#xE74B;" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'К последнему сообщению', 'Jump to latest message'}" Click="ScrollDown_Click"/>
                 </Grid>
 
-                <StackPanel x:Name="ComposerPanel" Grid.Row="2" MaxWidth="736" Margin="24,0,24,19" SizeChanged="ComposerPanel_SizeChanged">
+                <Grid x:Name="ComposerHost" Grid.Row="2" ClipToBounds="True">
+                <StackPanel x:Name="ComposerPanel" MaxWidth="736" Margin="24,0,24,19" SizeChanged="ComposerPanel_SizeChanged">
                     <TextBlock x:Name="ComposerIntro" HorizontalAlignment="Center" Foreground="{DynamicResource TextSoft}" FontSize="25" FontWeight="Normal" TextWrapping="Wrap" TextAlignment="Center">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
@@ -233,8 +234,10 @@
                                 </Grid>
                             </Grid>
                         </Border>
+                        <ContentControl x:Name="ComposerLoadingStatus" Style="{StaticResource ComposerLoading}" VerticalAlignment="Bottom" Margin="8,0,8,-17"/>
                     </Grid>
                 </StackPanel>
+                </Grid>
 
                 <DockPanel x:Name="RightPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed">
                     <Border x:Name="PreviewPane" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
@@ -252,7 +255,7 @@
                     </DockPanel>
                     </Border>
                 </DockPanel>
-                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
+                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
                 <Border x:Name="BrowserPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed"
                         Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
                     <Border.Resources>
@@ -321,7 +324,7 @@
                         </StackPanel>
                     </Grid>
                 </Border>
-                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="{ui:Localized 'Панель субагентов', 'Subagents panel'}">
+                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="{ui:Localized 'Панель субагентов', 'Subagents panel'}">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Height="44" Margin="16,0,8,0">
                             <Button x:Name="SubagentsCloseButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="SubagentsClose_Click" ToolTip="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}" AutomationProperties.Name="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}"/>
@@ -645,19 +648,19 @@
 
                                     <Border x:Name="ChatGptPanel" Style="{StaticResource SettingsRow}" Visibility="Collapsed">
                                         <StackPanel>
-                                            <TextBlock Text="{ui:Localized 'Аккаунт ChatGPT', 'ChatGPT account'}"/>
-                                            <DockPanel x:Name="ChatGptAccountPanel" Margin="0,8,0,0" Visibility="Collapsed">
-                                                <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="{ui:Localized 'Выйти', 'Sign out'}" Margin="12,0,0,0" AutomationProperties.Name="{ui:Localized 'Выйти из ChatGPT', 'Sign out of ChatGPT'}" Click="ChatGptSignOut_Click"/>
-                                                <StackPanel VerticalAlignment="Center">
-                                                    <TextBlock x:Name="ChatGptEmail" TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock x:Name="ChatGptPlan" Style="{StaticResource RowHint}"/>
+                                            <DockPanel>
+                                                <Button x:Name="ChatGptAccountButton" Style="{StaticResource RowDropdown}" Visibility="Collapsed" Click="ChatGptAccountButton_Click"/>
+                                                <StackPanel Style="{StaticResource RowText}">
+                                                    <TextBlock Text="{ui:Localized 'Аккаунт ChatGPT', 'ChatGPT account'}"/>
+                                                    <TextBlock x:Name="ChatGptPlan" Style="{StaticResource RowStatus}"/>
                                                 </StackPanel>
                                             </DockPanel>
-                                            <StackPanel x:Name="ChatGptSignInPanel" Orientation="Horizontal" Margin="0,12,0,0">
-                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" AutomationProperties.Name="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" Click="ChatGptSignIn_Click"/>
-                                                <Button x:Name="ChatGptCancelButton" Content="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Margin="8,0,0,0" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Click="ChatGptCancel_Click"/>
-                                            </StackPanel>
-                                            <TextBlock x:Name="ChatGptHint" Style="{StaticResource FieldHint}" Margin="0,8,0,0"/>
+                                            <WrapPanel Margin="0,12,0,0">
+                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" Margin="0,0,8,0" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}}" Click="ChatGptSignIn_Click"/>
+                                                <Button x:Name="ChatGptCancelButton" Content="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Visibility="Collapsed" Click="ChatGptCancel_Click"/>
+                                                <Button x:Name="ChatGptSignOutButton" Content="{ui:Localized 'Выйти', 'Sign out'}" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Выйти из ChatGPT', 'Sign out of ChatGPT'}" Click="ChatGptSignOut_Click"/>
+                                            </WrapPanel>
+                                            <TextBlock x:Name="ChatGptHint" Style="{StaticResource RowStatus}"/>
                                         </StackPanel>
                                     </Border>
 

@@ -9,7 +9,7 @@ public partial class CompactChatWindow : Window
     double? _anchorBottom;
 
     internal event Action<string>? DraftChanged;
-    internal event Action? Send, Stop;
+    internal event Action? Send, Stop, ChooseFiles;
 
     internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView)
     {
@@ -30,6 +30,28 @@ public partial class CompactChatWindow : Window
 
     internal void FocusInput() => PromptInput.Focus();
 
+    internal void ShowAttachments(IReadOnlyList<Attachment> files, Action<Attachment> remove)
+    {
+        Attachments.Children.Clear();
+        foreach (var file in files)
+        {
+            var name = new TextBlock { Text = file.Name, MaxWidth = 172, TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new(8, 0, 2, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = file.Path }.Paint(ForegroundProperty, "TextSoft");
+            var button = Theme.IconButton(Glyphs.Cancel, Tr("Убрать вложение ", "Remove attachment ") + file.Name, 24, 10);
+            button.Click += (_, _) => remove(file);
+            Attachments.Children.Add(new Border
+            {
+                CornerRadius = new(8), Margin = new(0, 0, 5, 4),
+                Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { name, button } },
+            }.Paint(Border.BackgroundProperty, "Surface3"));
+        }
+        AttachmentScroll.Visibility = files.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    internal void ShowAttachmentDrop(bool visible) => CompactComposer.Paint(Border.BorderBrushProperty, visible ? "Accent" : "ComposerLine");
+
+    void AttachFiles_Click(object sender, RoutedEventArgs e) => ChooseFiles?.Invoke();
+
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
@@ -43,12 +65,13 @@ public partial class CompactChatWindow : Window
         return 0;
     }
 
-    internal void SetStatus(string text, string color = "TextMuted", bool animate = false)
+    internal void SetStatus(string text, string color = "TextMuted")
     {
+        if (StatusText.Base == color && StatusText.Text == text) return;
         StatusText.Base = color;
         ShimmerStatus();
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.SetAnimatedText(text, animate);
+        StatusText.Text = text;
         UpdateTranscript(scroll: true);
     }
 
@@ -177,6 +200,12 @@ public partial class CompactChatWindow : Window
 
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            ChooseFiles?.Invoke();
+            return;
+        }
         if (e.Key != Key.Escape || !Equals(ActionButton.Content, "\uE71A")) return;
         e.Handled = true;
         Stop?.Invoke();

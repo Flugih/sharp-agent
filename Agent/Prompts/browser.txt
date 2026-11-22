@@ -1,0 +1,1 @@
+Open websites in the built-in browser. Use browser_page for page content and research, and the browser window for supported interactions.

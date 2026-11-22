@@ -34,11 +34,15 @@ public partial class MainWindow
             RussianLanguage = _config.RussianLanguage,
             FastMode = _state.FastMode, UseSubagents = _config.UseSubagents, ReasoningEffort = _agent?.ReasoningEffort,
             ModelSupportsVision = id => _models.GetValueOrDefault(id)?.Vision, ModelContextTokens = id => _models.GetValueOrDefault(id)?.ContextTokens,
+            EconomyModel = () => _state.EconomyModels?.GetValueOrDefault(_config.Provider) is { } candidate &&
+                _models.GetValueOrDefault(candidate)?.Chat == true &&
+                (_usage.RateOf(candidate) is not { } rate || _usage.RateOf(CurrentModel()) is not { } current || rate <= current) ? candidate : null,
+            LocalModel = () => _config.LocalModel,
             SubagentEffort = id => EffortLevelsOf(id).FirstOrDefault(level => level is "minimal" or "low"),
         };
         agent.ConfirmAsync = async request =>
         {
-            if (_confirmOff) return true;
+            if (_confirmOff && !request.AlwaysAsk) return true;
             await WaitForActiveChatAsync(agent, _runs[agent].Cancellation.Token);
             return await ConfirmAsync(request);
         };
@@ -52,8 +56,13 @@ public partial class MainWindow
         agent.AssistantDelta += (text, usesTools) => PublishDelta(agent, text, usesTools);
         agent.ProgressReported += progress => Publish(agent, () => OnModelProgress(progress), progress: true);
         agent.ToolCallStarted += call => Publish(agent, () => OnToolCallStarted(call));
-        agent.ToolCallFinished += result => Publish(agent, () => OnToolCallFinished(result));
+        agent.ToolCallFinished += result =>
+        {
+            long finishedAt = Environment.TickCount64;
+            Publish(agent, () => OnToolCallFinished(result, finishedAt));
+        };
         agent.CompactionStarted += () => Publish(agent, ShowCompacting);
+        agent.PreparingContext += status => Publish(agent, () => ShowPreparingContext(status), progress: true);
         agent.ThinkingStarted += () => Publish(agent, ShowThinking);
         agent.SubagentChanged += update => Publish(agent, () => OnSubagentChanged(update));
         agent.ComputerUseStarted += () =>
@@ -69,7 +78,7 @@ public partial class MainWindow
             if (_agent == agent) UpdateContextBanner();
         };
         agent.Warning += text => Publish(agent, () => AddNotice(text, true));
-        agent.Stopped += text => Publish(agent, () => AddNotice(text, true, false));
+        agent.Stopped += text => Publish(agent, () => ShowStop(text));
         agent.Notice += text => Publish(agent, () => AddNotice(text));
         agent.Retrying += (attempt, total) => Publish(agent, () => ShowReconnect(attempt, total));
         agent.ChatTitleChanged += () => SyncChat(agent, touched: false);

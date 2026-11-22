@@ -169,6 +169,7 @@ static class ChatCompletionStream
 
     internal static UsageInfo? Usage(JsonObject? data) =>
         (data?["usage"] as JsonObject ?? (data?["x_groq"] as JsonObject)?["usage"] as JsonObject) is { } usage
-            ? new UsageInfo(Long(usage["prompt_tokens"]), Long(usage["completion_tokens"]))
+            ? new UsageInfo(Long(usage["prompt_tokens"]), Long(usage["completion_tokens"]),
+                Long((usage["prompt_tokens_details"] as JsonObject)?["cached_tokens"]), Long((usage["completion_tokens_details"] as JsonObject)?["reasoning_tokens"]))
             : null;
 }

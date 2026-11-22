@@ -8,6 +8,8 @@ obj/
 TestResults/
 publish/
 artifacts/
+/data/
+/data.migrating/
 
 history/
 workspace/

@@ -22,3 +22,5 @@ jobs:
         run: dotnet new globaljson --sdk-version ${{ steps.dotnet.outputs.dotnet-version }}
       - name: Build
         run: dotnet build SharpAgent.csproj -c Release --warnaserror
+      - name: Test local workflows
+        run: dotnet run --project Tests/SharpAgent.Tests.csproj -c Release

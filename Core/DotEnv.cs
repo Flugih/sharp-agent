@@ -11,20 +11,17 @@ public static class DotEnv
         {
             var line = rawLine.Trim();
             if (line.StartsWith('#') || !TrySplit(line, out var key, out var value)) continue;
-            result[key] = value switch
-            {
-                ['"', .. var inner, '"'] => inner.Replace("\\n", "\n").Replace("\\\"", "\""),
-                ['\'', .. var inner, '\''] => inner,
-                _ => value.Split(" #")[0].TrimEnd(),
-            };
+            var decoded = Decode(value);
+            result[key] = Secret(key) ? UserDataProtection.Read(decoded) : decoded;
         }
         return result;
     }
 
-    public static void Save(string path, IReadOnlyDictionary<string, string?> values)
+    public static void Save(string path, IReadOnlyDictionary<string, string?> values, bool protect = false)
     {
         var lines = File.Exists(path) ? File.ReadAllLines(path, Encoding.UTF8).ToList() : [];
-        var pending = new Dictionary<string, string?>(values, StringComparer.OrdinalIgnoreCase);
+        var pending = values.ToDictionary(pair => pair.Key, pair => protect && Secret(pair.Key) && !string.IsNullOrEmpty(pair.Value)
+            ? UserDataProtection.Protect(pair.Value) : pair.Value, StringComparer.OrdinalIgnoreCase);
         foreach (bool commentedPass in new[] { false, true })
             for (int n = 0; n < lines.Count && pending.Count > 0; n++)
             {
@@ -50,6 +47,23 @@ public static class DotEnv
             throw;
         }
     }
+
+    internal static bool Secret(string name) => name.EndsWith("_API_KEY", StringComparison.OrdinalIgnoreCase) ||
+        name.ToUpperInvariant() is "AGENT_PROXY_PASSWORD" or "AGENT_VPN_SUBSCRIPTION" or "AGENT_VPN_PROFILES" or "AGENT_VPN_NODE";
+
+    internal static void ProtectExisting(string path) => File.WriteAllLines(path, File.ReadAllLines(path).Select(line =>
+    {
+        var text = line.Trim();
+        return !text.StartsWith('#') && TrySplit(text, out var key, out var value) && Secret(key) &&
+            UserDataProtection.Read(Decode(value)) is { Length: > 0 } secret ? $"{key}={UserDataProtection.Protect(secret)}" : line;
+    }).ToArray(), new UTF8Encoding(false));
+
+    static string Decode(string value) => value switch
+    {
+        ['"', .. var inner, '"'] => inner.Replace("\\n", "\n").Replace("\\\"", "\""),
+        ['\'', .. var inner, '\''] => inner,
+        _ => value.Split(" #")[0].TrimEnd(),
+    };
 
     static bool TrySplit(string line, out string key, out string value)
     {

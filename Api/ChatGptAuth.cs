@@ -25,7 +25,7 @@ public sealed class ChatGptAuth(string path)
     JsonObject? _discovery;
     JsonArray? _keys;
 
-    sealed record Attempt(string State, string Nonce, string Verifier, string Redirect, string? ClientId, Credentials? Account);
+    sealed record Attempt(string State, string Nonce, string Verifier, string Redirect, string? ClientId, Credentials? Account, bool SelectAccount);
 
     sealed class Credentials
     {
@@ -34,7 +34,7 @@ public sealed class ChatGptAuth(string path)
         public string[]? Scopes;
         public DateTimeOffset? SavedAt;
         public Dictionary<string, string>? Hosts;
-        public bool PlanWelcomed;
+        public bool PlanWelcomed, RegistrationExpired;
         public List<Credentials>? Accounts;
 
         public Credentials Copy() => (Credentials)MemberwiseClone();
@@ -45,17 +45,22 @@ public sealed class ChatGptAuth(string path)
     public bool PlanAllowed => SignedIn && Granted(_record);
     public string? Label => LabelOf(_record);
     public string? ClientId => _record.ClientId;
-    public IEnumerable<(string ClientId, string? Label)> SavedAccounts => (_record.Accounts ?? []).Select(account => (account.ClientId!, LabelOf(account)));
+    public IEnumerable<(string ClientId, string? Label)> SavedAccounts => Saved().Select(account => (account.ClientId!, LabelOf(account)));
 
     public async Task<bool> SignInAsync(Action<string> openBrowser, string? clientId, CancellationToken ct)
     {
-        var host = await Locked(() => Task.FromResult(HostId()), ct);
+        var (host, account, registration, selectAccount) = await Locked(() =>
+        {
+            var host = HostId();
+            var account = clientId == null ? null : Saved().FirstOrDefault(saved => saved.ClientId == clientId);
+            var registration = account is { RegistrationExpired: false } ? account.ClientId : _record.PendingClientId;
+            return Task.FromResult((host, account, registration, account == null && Saved().Any()));
+        }, ct);
         var listener = Listen();
         try
         {
             var redirect = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}{Callback}";
-            var account = clientId == null ? null : Saved().FirstOrDefault(saved => saved.ClientId == clientId);
-            var attempt = new Attempt(Secret(32), Secret(32), Secret(64), redirect, clientId ?? _record.PendingClientId, account);
+            var attempt = new Attempt(Secret(32), Secret(32), Secret(64), redirect, registration, account, selectAccount);
             openBrowser(AuthorizeUrl(attempt, host));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromMinutes(10));
@@ -104,6 +109,7 @@ public sealed class ChatGptAuth(string path)
         bool revoked = _record.RefreshToken == null || _record.ClientId == null || await RevokeAsync();
         var record = _record.Copy();
         Drop(record, keepHint: false);
+        record.Accounts = Remembered(record.ClientId);
         return Commit(record) ? revoked : throw new ApiException(
             "Не удалось стереть вход из файла auth\\chatgpt.json: его держит другая программа или он только для чтения. Закройте эту программу или снимите «Только чтение» и нажмите «Выйти» ещё раз.");
     });
@@ -138,7 +144,8 @@ public sealed class ChatGptAuth(string path)
 
     static string? LabelOf(Credentials record) => record.Label ?? record.Email;
 
-    IEnumerable<Credentials> Saved() => (_record.Accounts ?? []).Prepend(_record);
+    IEnumerable<Credentials> Saved() => (_record.Accounts ?? []).Prepend(_record)
+        .Where(account => !string.IsNullOrEmpty(account?.ClientId)).DistinctBy(account => account.ClientId);
 
     string HostId()
     {
@@ -162,6 +169,7 @@ public sealed class ChatGptAuth(string path)
             ("resource", Resource), ("state", attempt.State), ("nonce", attempt.Nonce),
             ("code_challenge", Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(attempt.Verifier)))), ("code_challenge_method", "S256"),
         ]);
+        if (attempt.SelectAccount) query.Add(("prompt", "select_account"));
         if (attempt.Account is { } account)
         {
             if (account.IdToken != null) query.Add(("id_token_hint", account.IdToken));
@@ -215,9 +223,12 @@ public sealed class ChatGptAuth(string path)
     async Task<bool> FinishAsync(Dictionary<string, string> query, Attempt attempt, CancellationToken ct)
     {
         if (query.GetValueOrDefault("error") is { Length: > 0 } error)
+        {
+            if (error == "invalid_client") await ExpireRegistrationAsync(attempt.ClientId, ct);
             throw error == "access_denied"
                 ? new ApiException("Доступ не разрешён в браузере. Чтобы подключить ChatGPT, нажмите «Продолжить с ChatGPT» и разрешите доступ.")
                 : TryAgain($"OpenAI не разрешил вход ({query.GetValueOrDefault("error_description") ?? error}).");
+        }
         var returned = query.GetValueOrDefault("client_id");
         if (attempt.ClientId == null && (string.IsNullOrEmpty(returned) || returned == NewClient))
             throw TryAgain("Регистрация Sharp Agent в ChatGPT не завершилась.");
@@ -237,7 +248,11 @@ public sealed class ChatGptAuth(string path)
             new("redirect_uri", attempt.Redirect), new("resource", Resource),
         ], ct);
         if (!Ok(status))
-            throw TryAgain(ErrorCode(reply) == "invalid_grant" ? "Код входа устарел или уже использован." : $"OpenAI не выдал вход ({Describe(status, reply)}).");
+        {
+            var errorCode = ErrorCode(reply);
+            if (errorCode == "invalid_client") await ExpireRegistrationAsync(clientId, ct);
+            throw TryAgain(errorCode == "invalid_grant" ? "Код входа устарел или уже использован." : $"OpenAI не выдал вход ({Describe(status, reply)}).");
+        }
         bool plan = Text(reply?["scope"])?.Split(' ').Contains(PlanScope) == true;
         if (Text(reply?["id_token"]) is not { Length: > 0 } idToken ||
             plan && (Text(reply?["access_token"]) is not { Length: > 0 } || Text(reply?["refresh_token"]) is not { Length: > 0 }))
@@ -247,13 +262,13 @@ public sealed class ChatGptAuth(string path)
         {
             var subject = Text(claims["sub"]);
             if (attempt.Account is { Subject: { } expected } account && expected != subject)
-                throw new ApiException($"Вы вошли в другой аккаунт ChatGPT, а выбран {LabelOf(account) ?? "прежний"}. Войдите в него — или " +
-                    (Connected ? "нажмите в настройках Sharp Agent «Выйти» и выберите другой аккаунт." : "выберите другой аккаунт в настройках Sharp Agent."));
-            var email = Text(claims["email"]);
+                throw new ApiException($"Вы вошли в другой аккаунт ChatGPT, а выбран {LabelOf(account) ?? "прежний"}. Войдите в выбранный аккаунт или смените его в списке Sharp Agent.");
+            var email = Text(claims["email"]) ?? attempt.Account?.Email;
             var record = new Credentials
             {
-                Email = email, Label = LabelFor(clientId, email), Issuer = Issuer, Subject = subject, ClientId = clientId, IdToken = idToken,
-                Hosts = _record.Hosts, PlanWelcomed = _record.PlanWelcomed, Accounts = Remembered(clientId),
+                Email = email, Label = attempt.Account is { } selected ? selected.Label : LabelFor(clientId, email),
+                Issuer = Issuer, Subject = subject, ClientId = clientId, IdToken = idToken,
+                Hosts = _record.Hosts, PlanWelcomed = _record.PlanWelcomed, Accounts = Remembered(clientId, attempt.Account?.ClientId),
             };
             Apply(record, reply!);
             bool welcome = Granted(record) && !record.PlanWelcomed;
@@ -264,7 +279,7 @@ public sealed class ChatGptAuth(string path)
 
     string? LabelFor(string clientId, string? email)
     {
-        var registrations = Saved().Where(saved => saved.ClientId != null).ToList();
+        var registrations = Saved().ToList();
         if (registrations.FirstOrDefault(saved => saved.ClientId == clientId) is { } same) return same.Label;
         if (email == null || registrations.All(saved => saved.Email != email)) return null;
         int number = 2;
@@ -272,11 +287,15 @@ public sealed class ChatGptAuth(string path)
         return $"{email} ({number})";
     }
 
-    List<Credentials>? Remembered(string active)
+    // Keep only the metadata needed to recognize an account and sign in again.
+    List<Credentials>? Remembered(string? active, string? replaced = null)
     {
-        var accounts = (_record.Accounts ?? []).Where(saved => saved.ClientId != active && saved.ClientId != _record.ClientId).ToList();
-        if (_record.ClientId is { } previous && previous != active)
-            accounts.Insert(0, new() { Email = _record.Email, Label = _record.Label, Subject = _record.Subject, ClientId = previous, Scopes = _record.Scopes });
+        var accounts = Saved().Where(saved => saved.ClientId != active && saved.ClientId != replaced)
+            .Select(saved => new Credentials
+            {
+                Email = saved.Email, Label = saved.Label, Subject = saved.Subject, ClientId = saved.ClientId,
+                Scopes = saved.Scopes, RegistrationExpired = saved.RegistrationExpired,
+            }).ToList();
         return accounts.Count > 0 ? accounts : null;
     }
 
@@ -330,6 +349,24 @@ public sealed class ChatGptAuth(string path)
         return _keys = (await GetJsonAsync(uri, ct))["keys"] as JsonArray ?? throw Unverified();
     }
 
+    Task<bool> ExpireRegistrationAsync(string? clientId, CancellationToken ct) => Locked(() =>
+    {
+        if (clientId != null)
+        {
+            ExpireRegistration(clientId);
+            Save();
+        }
+        return Task.FromResult(true);
+    }, ct);
+
+    void ExpireRegistration(string clientId)
+    {
+        if (_record.PendingClientId == clientId) _record.PendingClientId = null;
+        if (Saved().FirstOrDefault(account => account.ClientId == clientId) is not { } account) return;
+        Drop(account, keepHint: false);
+        account.RegistrationExpired = true;
+    }
+
     bool AdoptSaved()
     {
         var saved = Read(_path);
@@ -353,7 +390,7 @@ public sealed class ChatGptAuth(string path)
             return;
         }
         var code = ErrorCode(reply);
-        if (code == "invalid_client") _record = new() { Hosts = _record.Hosts, PlanWelcomed = _record.PlanWelcomed, Accounts = _record.Accounts };
+        if (code == "invalid_client") ExpireRegistration(_record.ClientId!);
         else if (code is { } known && DeadRefresh.Contains(known)) Drop(_record, keepHint: true);
         else if ((int)status >= 500 || status == HttpStatusCode.TooManyRequests)
             throw new ApiException($"Сервер входа OpenAI временно недоступен ({Describe(status, reply)}). Повторите чуть позже.", status, retryable: true);
@@ -502,7 +539,7 @@ public sealed class ChatGptAuth(string path)
 
     static Credentials Read(string file)
     {
-        try { return File.Exists(file) ? JsonSerializer.Deserialize<Credentials>(File.ReadAllText(file, Encoding.UTF8), FileFormat) ?? new() : new(); }
+        try { return File.Exists(file) ? JsonSerializer.Deserialize<Credentials>(AppPaths.ReadAuth(File.ReadAllText(file, Encoding.UTF8)), FileFormat) ?? new() : new(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return new(); }
     }
 
@@ -514,7 +551,8 @@ public sealed class ChatGptAuth(string path)
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             using (var file = new FileInfo(temp).Create(FileMode.CreateNew, FileSystemRights.FullControl, FileShare.None, 4096, FileOptions.None, OwnerOnly()))
             {
-                file.Write(JsonSerializer.SerializeToUtf8Bytes(_record, FileFormat));
+                var json = JsonSerializer.Serialize(_record, FileFormat);
+                file.Write(Encoding.UTF8.GetBytes(AppPaths.ProtectSecrets ? AppPaths.ProtectAuth(json) : json));
                 file.Flush(flushToDisk: true);
             }
             File.Move(temp, _path, overwrite: true);

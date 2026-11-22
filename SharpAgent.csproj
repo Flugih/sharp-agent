@@ -9,17 +9,21 @@
     <RootNamespace>SharpAgent</RootNamespace>
     <AssemblyName>SharpAgent</AssemblyName>
     <Product>Sharp Agent</Product>
-    <Version>1.7.0</Version>
+    <Version>1.8.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**;data\**;data.migrating\**;Tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SharpAgent.Tests" />
     <Resource Include="Assets\app.ico" />
     <None Include="plugins\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="Agent\CodeIndexWorker.cs" />
     <EmbeddedResource Include="Agent\CodeIndexWorker.cs" LogicalName="SharpAgent.CodeIndexWorker.cs" />
+    <EmbeddedResource Include="Agent\Prompts\*.txt" LogicalName="SharpAgent.Prompts.%(Filename)%(Extension)" />
+    <None Update="Vendor\ripgrep\*" Link="tools\ripgrep\%(Filename)%(Extension)" TargetPath="tools\ripgrep\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 
 </Project>

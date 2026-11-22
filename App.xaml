@@ -17,6 +17,7 @@
         <SolidColorBrush x:Key="ChatModeShadow" Color="#101010"/>
         <SolidColorBrush x:Key="ChatModeText" Color="#BDBDBD"/>
         <SolidColorBrush x:Key="SearchGlass" Color="#E61B1B1B"/>
+        <SolidColorBrush x:Key="SearchHighlight" Color="#B8984A"/>
         <SolidColorBrush x:Key="Surface2" Color="#292929"/>
         <SolidColorBrush x:Key="Surface3" Color="#3B3B3B"/>
         <SolidColorBrush x:Key="BlockBg" Color="#292929"/>
@@ -349,6 +350,12 @@
             <Setter Property="FontSize" Value="16"/>
             <Setter Property="Tag" Value="accent"/>
             <Style.Triggers>
+                <Trigger Property="Content" Value="{x:Static ui:Glyphs.Send}">
+                    <Setter Property="FontSize" Value="14"/>
+                </Trigger>
+                <Trigger Property="Content" Value="{x:Static ui:Glyphs.Play}">
+                    <Setter Property="FontSize" Value="14"/>
+                </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="1"/>
                     <Setter Property="Background" Value="{DynamicResource Track}"/>
@@ -688,8 +695,16 @@
         <ControlTemplate x:Key="MeterTemplate" TargetType="ProgressBar">
             <Grid>
                 <Border x:Name="PART_Track" Background="{TemplateBinding Background}" CornerRadius="2"/>
-                <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left"/>
+                <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left" ClipToBounds="True">
+                    <Border x:Name="PART_GlowRect" Width="44" HorizontalAlignment="Left" Visibility="Collapsed" Background="{TemplateBinding Foreground}" CornerRadius="2"/>
+                </Border>
             </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsIndeterminate" Value="True">
+                    <Setter TargetName="PART_Indicator" Property="Background" Value="Transparent"/>
+                    <Setter TargetName="PART_GlowRect" Property="Visibility" Value="Visible"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
         </ControlTemplate>
         <Style x:Key="Meter" TargetType="ProgressBar">
             <Setter Property="Height" Value="4"/>
@@ -697,6 +712,34 @@
             <Setter Property="Background" Value="{DynamicResource Track}"/>
             <Setter Property="IsTabStop" Value="False"/>
             <Setter Property="Template" Value="{StaticResource MeterTemplate}"/>
+        </Style>
+
+        <DataTemplate x:Key="ComposerLoadingTemplate">
+            <Grid Height="16" TextElement.Foreground="{DynamicResource TextMuted}" TextElement.FontSize="11">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" MaxWidth="180" TextTrimming="CharacterEllipsis"
+                           AutomationProperties.LiveSetting="Polite"/>
+                <ProgressBar Grid.Column="1" Style="{StaticResource Meter}" Height="2" Margin="8,0" VerticalAlignment="Center"
+                             Foreground="{DynamicResource Accent}" Value="{Binding Percent, Mode=OneWay}"
+                             IsIndeterminate="{Binding IsIndeterminate}" AutomationProperties.Name="{Binding Label}"/>
+                <TextBlock Grid.Column="2" Text="{Binding Remaining}" VerticalAlignment="Center" MaxWidth="155" TextTrimming="CharacterEllipsis"/>
+            </Grid>
+        </DataTemplate>
+        <Style x:Key="ComposerLoading" TargetType="ContentControl">
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="ContentTemplate" Value="{StaticResource ComposerLoadingTemplate}"/>
+            <Style.Triggers>
+                <Trigger Property="Content" Value="{x:Null}">
+                    <Setter Property="Visibility" Value="Hidden"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <ControlTemplate x:Key="ToolTipTemplate" TargetType="ToolTip">

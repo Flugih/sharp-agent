@@ -30,7 +30,7 @@ public partial class MainWindow
     readonly ToolContext _toolContext = new()
     {
         AppFolder = AppPaths.AppFolder,
-        InstallationFolder = AppPaths.IsInstalled ? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) : null,
+        InstallationFolder = !PathHelper.IsInside(AppPaths.AppFolder, AppContext.BaseDirectory) ? Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) : null,
         LogsFolder = AppPaths.LogsFolder,
     };
     readonly UiState _state = UiState.Load();
@@ -40,6 +40,7 @@ public partial class MainWindow
     readonly ChatGptAuth _chatGpt = new(AppPaths.ChatGptAuthPath);
     readonly Dictionary<AgentProvider, List<string>> _modelLists = [];
     readonly DispatcherTimer _subagentTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    readonly DispatcherTimer _cacheTimer = new() { Interval = TimeSpan.FromHours(6) };
     Dictionary<string, ModelInfo> _models = new(StringComparer.OrdinalIgnoreCase);
     List<string>? _imageModels;
     AppConfig _config = null!;
@@ -55,13 +56,18 @@ public partial class MainWindow
         _links = new(this, new PathRefs(() => _toolContext.WorkingDirectory), OpenInApp);
         _toolContext.OpenUrl = OpenBrowserUrl;
         _toolContext.BrowserWindow = () => Dispatcher.Invoke(BrowserWindowHandle);
+        _toolContext.ReadBrowser = ReadBrowserAsync;
         _markdown = new(_links.Markdown);
         _usage = new(_state);
+        _toolContext.ProjectWatcher.ProgressChanged += OnIndexProgressChanged;
         ChatScroll.PreviewMouseWheel += ChatScroll_PreviewMouseWheel;
         Action<string, bool> notice = (text, error) => ShowToast(text, error ? ToastKind.Error : ToastKind.Info);
         FileActions.Notify += notice;
         Closed += (_, _) =>
         {
+            _toolContext.ProjectWatcher.ProgressChanged -= OnIndexProgressChanged;
+            _toolContext.ProjectWatcher.Dispose();
+            _cacheTimer.Stop();
             _recorder?.Cancel();
             CloseOfficePreview();
             _computerOverlay?.Dispose();
@@ -73,6 +79,7 @@ public partial class MainWindow
             compact?.Close();
         };
         _subagentTimer.Tick += (_, _) => UpdateSubagentTimes();
+        _cacheTimer.Tick += (_, _) => _ = Task.Run(AppCache.Maintain);
         _voiceTimer.Tick += (_, _) => OnVoiceTick();
         RestoreWindowPlacement();
     }
@@ -101,7 +108,8 @@ public partial class MainWindow
         _ = OpenStartupChatAsync();
         UpdateTrashCount();
         _ = LoadChatsAsync();
-        _ = Task.Run(() => CommandLog.Prune(AppPaths.LogsFolder));
+        _ = Task.Run(AppCache.Maintain);
+        _cacheTimer.Start();
         if (_config.LoadError != null)
             FolderBanner("env", Tr("Не удалось прочитать файл настроек .env", "Could not read the .env settings file"), Tr("Пока действуют настройки по умолчанию, а сеть отключена, чтобы запросы не прошли мимо выбранного VPN или прокси. Причина: ", "Default settings are in effect. Networking is disabled to keep requests from bypassing your VPN or proxy. Reason: ") + _config.LoadError);
         if (!AppPaths.IsWritable(AppPaths.AppFolder))
@@ -167,7 +175,7 @@ public partial class MainWindow
         try
         {
             if (!File.Exists(AppPaths.EnvPath)) File.WriteAllText(AppPaths.EnvPath, AppConfig.EnvTemplate);
-            DotEnv.Save(AppPaths.EnvPath, values);
+            DotEnv.Save(AppPaths.EnvPath, values, AppPaths.ProtectSecrets);
             _config = AppConfig.Load();
             return null;
         }
@@ -177,6 +185,8 @@ public partial class MainWindow
     void ApplyWorkDir()
     {
         var folder = _toolContext.WorkingDirectory = _config.WorkingDirectory;
+        _toolContext.ProjectWatcher.Watch(_toolContext);
+        UpdateSendButton();
         var dir = Path.TrimEndingDirectorySeparator(folder);
         FolderText.Text = Path.GetFileName(dir) is { Length: > 0 } name ? name : dir;
         FolderButton.ToolTip = folder + Tr("\nОткрыть в Проводнике (Ctrl+Shift+O)", "\nOpen in File Explorer (Ctrl+Shift+O)");
@@ -266,7 +276,7 @@ public partial class MainWindow
 
     Task<bool> ConfirmAsync(ConfirmRequest request)
     {
-        if (_confirmOff) return Task.FromResult(true);
+        if (_confirmOff && !request.AlwaysAsk) return Task.FromResult(true);
         SetTaskbar(TaskbarItemProgressState.Paused);
         var owner = ActiveChatWindow;
         WindowEffects.Flash(owner);
@@ -305,10 +315,11 @@ public partial class MainWindow
 
     void UpdateSendButton()
     {
+        var loading = UpdateComposerLoading();
         bool hasDraft = !string.IsNullOrWhiteSpace(InputBox.Text) || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
-        SendButton.IsEnabled = !ChatFileBusy && (hasDraft || resume);
+        SendButton.IsEnabled = loading == null && (hasDraft || resume);
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
-        SendButton.ToolTip = _attachmentImports > 0 ? Tr("Подготавливаю вложения…", "Preparing attachments…") : resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter");
+        SendButton.ToolTip = loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
         AutomationProperties.SetName(SendButton, resume ? Tr("Продолжить задачу", "Resume task") : Tr("Отправить", "Send"));
         NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _cts == null && !hasDraft && !VoiceShown && NextActionPanel.Children.Count > 0);
         UpdateCompactAction();
@@ -326,7 +337,7 @@ public partial class MainWindow
 
     async Task SendAsync()
     {
-        if (ChatFileBusy) return;
+        if (ChatSubmitBusy) return;
         if (_cts != null)
         {
             ShowToast(Tr("Агент ещё работает. Дождитесь ответа или остановите его (Esc)", "The agent is still working. Wait for the response or stop it (Esc)."), ToastKind.Warning);
@@ -339,7 +350,9 @@ public partial class MainWindow
             await RetryAsync();
             return;
         }
-        if ((attachments.Count == 0 && AgentRunner.LocalCommand(text) != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
+        bool canRunLocally = attachments.Count == 0 && (LocalActionRouter.Match(text) != null || LocalActionRouter.Diagnosis(text) != null ||
+            !_agent.WorkMode && !_config.Sandbox && _config.LocalModel != null && AdaptiveModelRouter.IsSimple(text));
+        if ((canRunLocally ? CurrentModel() : ModelForRequest()) is not { } model) return;
         var history = _agent.HistoryView;
         if (Enumerable.Range(_renderedHistory.Count, Math.Max(0, history.Count - _renderedHistory.Count)).Count(history.IsUser) >= HistoryPageSize)
             RenderCurrentChat();
@@ -353,6 +366,11 @@ public partial class MainWindow
 
     string? ModelForRequest()
     {
+        if (_config.Provider == AgentProvider.ChatGpt && (_signIn != null || _chatGptSigningOut))
+        {
+            ShowToast(Tr("Дождитесь завершения входа или выхода из ChatGPT.", "Wait for ChatGPT sign-in or sign-out to finish."), ToastKind.Warning);
+            return null;
+        }
         if (_provider == null)
         {
             ShowToast(NotReadyText(), ToastKind.Warning);
@@ -367,8 +385,8 @@ public partial class MainWindow
 
     async Task RetryAsync()
     {
-        if (ChatFileBusy || _cts != null || !_agent.CanContinue ||
-            (_agent.PendingLocalCommand != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
+        if (ChatSubmitBusy || _cts != null || !_agent.CanContinue ||
+            (_agent.PendingLocalCommand != null || _agent.PendingDiagnosis != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
         ScrollToLatest();
         await RunAgentAsync((agent, ct) => agent.ContinueAsync(model, ct), () =>
         {

@@ -2,13 +2,14 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    sealed record ReadKey(string Identity, string? Path = null, long Size = 0, DateTime Written = default, DateTime Created = default);
+    sealed record ReadKey(string Identity, string? Path = null, string? RelatedPaths = null);
     sealed record ToolExecution(Task<ToolOutcome> Task, ReadKey? Key, string? PreviousId = null);
 
     List<ToolExecution> PrepareCalls(List<ToolCallEvent> calls, CancellationToken ct)
     {
         var scheduled = new Dictionary<ReadKey, (string Id, Task<ToolOutcome> Task)>();
         var executions = new List<ToolExecution>();
+        bool readOnly = CurrentDiagnosis() is { Repair: false };
         foreach (var call in calls)
         {
             var key = ReadKeyOf(call);
@@ -19,7 +20,9 @@ partial class AgentRunner
             else
             {
                 ToolCallStarted?.Invoke(call);
-                var task = ExecuteCallAsync(call, ct);
+                var task = readOnly && (!ToolRegistry.IsReadOnly(call.Name) || call.Name == "use_plugin") &&
+                    call.Name != "ask_user" && call.Name != BrowserTools.Name
+                    ? Task.FromResult(new ToolOutcome("Ошибка: диагностика доступна только для чтения.", true)) : ExecuteCallAsync(call, ct);
                 if (key != null) scheduled[key] = (call.Id, task);
                 executions.Add(new(task, key));
             }
@@ -29,17 +32,36 @@ partial class AgentRunner
 
     ReadKey? ReadKeyOf(ToolCallEvent call)
     {
-        if (call.Name is not ("read_file" or "use_plugin") || ArgsOf(call) is not { } parameters) return null;
-        var args = new ToolArgs(parameters);
+        if (ArgsOf(call) is not { } parameters) return null;
+        if (call.Name == "use_plugin" && PluginName(call) is { } plugin) return new("use_plugin " + plugin.ToUpperInvariant());
+        if (call.Name != "local_batch" || parameters["operations"] is not JsonArray { Count: > 0 } operations) return null;
+        List<string> identity = [], paths = [];
         try
         {
-            if (call.Name == "use_plugin") return new("use_plugin " + args.Required("name").ToUpperInvariant());
-            var path = tools.Context.Resolve(args.Required("path"));
-            tools.Context.GuardSecrets(path);
-            var file = new FileInfo(PathHelper.FinalPath(path));
-            if (!file.Exists) return null;
-            var (offset, limit) = FileTools.ReadRange(args);
-            return new($"read_file {file.FullName}|{offset}|{limit}", file.FullName, file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+            foreach (var operation in operations.OfType<JsonObject>())
+            {
+                if (operation["arguments"] is not JsonObject args) return null;
+                var requests = Str(operation["name"]) switch
+                {
+                    "read" => new[] { args },
+                    "ranges" => (args["files"] as JsonArray)?.OfType<JsonObject>().ToArray() ?? [],
+                    _ => [],
+                };
+                if (requests.Length == 0) return null;
+                foreach (var request in requests)
+                {
+                    var input = new ToolArgs(request);
+                    var path = PathHelper.FinalPath(tools.Context.Resolve(input.Required("path")));
+                    tools.Context.GuardSecrets(path);
+                    var file = new FileInfo(path);
+                    long revision = PathHelper.Revision(path);
+                    if (!file.Exists || revision == 0) return null;
+                    var (offset, limit) = FileTools.ReadRange(input, Str(operation["name"]) == "ranges" ? 60 : 250);
+                    identity.Add($"{path}|{offset}|{limit}|{file.Length}|{revision}");
+                    paths.Add(path);
+                }
+            }
+            return identity.Count == 0 ? null : new("local_batch " + string.Join("\u001f", identity), RelatedPaths: string.Join("\n", paths));
         }
         catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -50,7 +72,13 @@ partial class AgentRunner
     string ResultForModel(ToolCallEvent call, ToolOutcome outcome, int index, List<ToolExecution> batch)
     {
         var execution = batch[index];
-        if (execution.Key is not { } key || outcome.IsError) return outcome.Output;
+        if (outcome.IsError || outcome.IsWarning) return outcome.Output;
+        if (ToolOutputStore.Applies(call.Name) && (ResultAlreadySent(outcome.Output) ||
+            batch.Take(index).Any(previous => previous.Task.IsCompletedSuccessfully &&
+                !previous.Task.Result.IsError && previous.Task.Result.Output == outcome.Output)))
+            return AlreadySent + " " + (outcome.Output.StartsWith(ToolOutputStore.ReferencePrefix, StringComparison.Ordinal)
+                ? outcome.Output.Split('\n', 2)[0] : "Используй недавний результат.");
+        if (execution.Key is not { } key) return outcome.Output;
         if (call.Name == "use_plugin" && PluginName(call) is { } name)
         {
             _activePlugins[name] = outcome.Output;
@@ -66,10 +94,51 @@ partial class AgentRunner
     bool ResultInContext(string id, string output) => _sent.Any(node => Role(node) == "tool" && Str(node["tool_call_id"]) == id &&
         Str(node["content"])?.StartsWith(output, StringComparison.Ordinal) == true);
 
-    void InvalidateReads(ToolCallEvent call)
+    bool ResultAlreadySent(string output) => _sent.Any(node => Role(node) == "tool" &&
+        Str(node["content"]) is { } sent && (sent == output || sent == output + RepeatReply));
+
+    HashSet<string> StaleReads()
     {
-        foreach (var key in _reads.Keys.Where(key => key.Path != null).ToArray()) _reads.Remove(key);
-        if (call.Name == "run_command") (_systemMessage, _plugins) = (null, null);
-        InvalidateProjectContext(call);
+        var stale = new HashSet<string>(StringComparer.Ordinal);
+        var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (call, result, _) in CurrentActions().Reverse())
+        {
+            foreach (var edit in ChangesOf(result)) changed.Add(edit.Path);
+            if (Str(MetaOf(result)?["read_identity"]) is { } identity && ReadKeyOf(call)?.Identity != identity)
+            {
+                stale.Add(call.Id);
+                continue;
+            }
+            if (changed.Count == 0 || ArgsOf(call) is not { } args) continue;
+            var paths = call.Name switch
+            {
+                "read_file" => new[] { Str(args["path"]) },
+                "read_many" => (args["files"] as JsonArray)?.OfType<JsonObject>().Select(item => Str(item["path"])) ?? [],
+                _ => [],
+            };
+            foreach (var path in paths.OfType<string>())
+                try
+                {
+                    if (changed.Contains(PathHelper.FinalPath(tools.Context.Resolve(path)))) { stale.Add(call.Id); break; }
+                }
+                catch (ToolException) { }
+        }
+        return stale;
+    }
+
+    void InvalidateReads(ToolCallEvent call, string? changedPath)
+    {
+        bool unknown = changedPath == null && call.Name is ("exec_command" or "run_plugin" or "move_path" or "copy_path" or "delete_path");
+        if (unknown || changedPath != null)
+        {
+            var path = unknown ? null : PathHelper.FinalPath(changedPath!);
+            tools.Context.Snapshots.Invalidate(path);
+            foreach (var key in _reads.Keys.Where(key =>
+                key.Path != null && (path == null || PathHelper.IsInside(key.Path, path)) ||
+                key.RelatedPaths != null && (path == null ||
+                    key.RelatedPaths.Split('\n').Any(file => PathHelper.IsInside(file, path)))).ToArray())
+                _reads.Remove(key);
+        }
+        if (call.Name == "exec_command") (_systemMessage, _plugins) = (null, null);
     }
 }

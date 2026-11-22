@@ -18,31 +18,16 @@ public static partial class FileTools
             Flag("recursive", "Показать и содержимое вложенных папок (по умолчанию false)."),
             Flag("show_hidden", "Показывать скрытые и системные файлы (по умолчанию false)."),
             Number("max_entries", "Максимум элементов в ответе (по умолчанию 300).")]),
-        Tool("read_file", $"Прочитать текстовый файл (кодировка UTF-8/UTF-16/Windows-1251 определяется автоматически) или извлечь текст из документа .docx, .xlsx, .pptx. За раз — до {MaxReadChars} символов; строки длиннее {MaxLineChars} символов обрезаются с пометкой, кроме чтения одной строки (limit=1). Если показано не всё, в заголовке сказано, с какого offset читать дальше. Чтобы увидеть, например, функцию целиком, укажи offset и limit побольше.", ReadFile, [
-            FilePath,
-            Number("offset", "С какой строки читать (нумерация с 1). По умолчанию 1."),
-            Number("limit", $"Сколько строк прочитать (по умолчанию {DefaultReadLines}, максимум {MaxReadLines}).")]),
         Tool("get_file_info", "Подробности о файле или папке: существует ли, размер, даты создания/изменения, атрибуты.", GetFileInfo, [Text("path", "Путь к файлу или папке.", true)]),
         Tool("search_files", "Найти файлы и папки по маске имени (например *.txt, отчет*.docx) в папке и её подпапках.", SearchFiles, [
             Text("pattern", "Маска имени: * — любые символы, ? — один символ. Пример: *.pdf", true),
             Text("directory", "Где искать. По умолчанию — рабочая папка."),
             Flag("recursive", "Искать во вложенных папках (по умолчанию true)."),
             Number("max_results", $"Максимум результатов (по умолчанию {DefaultResults}).")]),
-        Tool("search_text", "Найти текст внутри текстовых файлов (как grep). Возвращает путь, номер строки и саму строку.", SearchText, [
-            Text("query", "Искомый текст.", true),
-            Text("directory", "Где искать (рекурсивно). По умолчанию — рабочая папка."),
-            Text("file_pattern", "Маска файлов, например *.cs или *.txt. По умолчанию все файлы."),
-            Flag("case_sensitive", "Учитывать регистр (по умолчанию false)."),
-            Number("max_results", $"Максимум совпадений (по умолчанию {DefaultResults}).")]),
         Tool("write_file", "Создать текстовый файл или полностью перезаписать существующий (UTF-8). Недостающие папки создаются автоматически. append=true — дописать в конец.", WriteFile, [
             FilePath,
             Text("content", "Полное содержимое файла (или добавляемый текст при append=true).", true),
             Flag("append", "Дописать в конец, а не перезаписывать (по умолчанию false).")], ConfirmWrite),
-        Tool("edit_file", "Точечно изменить текстовый файл: заменить фрагмент old_text на new_text. old_text должен совпадать с текстом файла посимвольно (сначала прочитай файл). Кодировка файла сохраняется.", EditFile, [
-            FilePath,
-            Text("old_text", "Точный фрагмент, который нужно заменить (должен встречаться в файле один раз).", true),
-            Text("new_text", "Новый текст на место old_text (может быть пустым — тогда фрагмент удаляется).", true),
-            Flag("replace_all", "Заменить все вхождения (по умолчанию false).")], ConfirmEdit),
         Tool("create_directory", "Создать папку (вместе со всеми недостающими родительскими папками).", CreateDirectory, [Text("path", "Путь к новой папке.", true)]),
         Tool("move_path", "Переместить или переименовать файл либо папку. Если destination — существующая папка, источник кладётся внутрь неё.", MovePath, [
             Text("source", "Что перемещаем.", true),
@@ -122,19 +107,67 @@ public static partial class FileTools
         return sb.ToString();
     }
 
-    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct)
+    internal static string ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
+    {
+        var files = args.Array("files");
+        if (files.Count is < 1 or > 8 || files.Any(file => file is not JsonObject))
+            throw new ToolException("Укажите от одного до восьми диапазонов файлов.");
+        var pages = new List<string>();
+        var ranges = new Dictionary<string, List<(int Start, int Count)>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files.OfType<JsonObject>())
+        {
+            ct.ThrowIfCancellationRequested();
+            var request = new ToolArgs(file);
+            try
+            {
+                var path = context.Resolve(request.Required("path"));
+                context.GuardSecrets(path);
+                if (!ranges.TryGetValue(path, out var requested)) ranges[path] = requested = [];
+                requested.Add(ReadRange(request, 60));
+            }
+            catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+        }
+        foreach (var (path, requested) in ranges)
+        {
+            var merged = new List<(int Start, int Count)>();
+            foreach (var (start, count) in requested.OrderBy(range => range.Start))
+            {
+                if (merged.Count > 0 && merged[^1] is var earlier && start <= (long)earlier.Start + earlier.Count &&
+                    Math.Max((long)start + count - earlier.Start, earlier.Count) is <= MaxReadLines and var combined)
+                    merged[^1] = (earlier.Start, (int)combined);
+                else merged.Add((start, count));
+            }
+            foreach (var (start, count) in merged)
+            {
+                var request = new ToolArgs(new JsonObject { ["path"] = path, ["offset"] = start, ["limit"] = count });
+                try { pages.Add(ReadFile(request, context, ct, Math.Max(6_000, MaxReadChars / files.Count), 60)); }
+                catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+            }
+        }
+        return string.Join("\n\n", pages);
+    }
+
+    internal static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct) => ReadFile(a, c, ct, MaxReadChars, DefaultReadLines);
+
+    internal static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct, int maxChars, int defaultLines)
     {
         var path = c.Resolve(a.Required("path"));
-        c.GuardSecrets(path);
+        var sourcePath = PathHelper.FinalPath(path);
+        c.GuardSecrets(sourcePath);
         if (Directory.Exists(path)) throw new ToolException($"Это папка, а не файл: {path}. Используйте list_directory.");
         if (!File.Exists(path)) throw new ToolException($"Файл не найден: {path}");
-        var (offset, limit) = ReadRange(a);
-        if (OfficeText.Extract(path) is { } document)
+        var (offset, limit) = ReadRange(a, defaultLines);
+        if (OfficeText.Extract(sourcePath) is { } document)
         {
             using var reader = new StringReader(document);
             return Page(reader, "текст извлечён из документа");
         }
-        using var stream = File.OpenRead(path);
+        if (c.Snapshots.Read(sourcePath) is { } snapshot)
+        {
+            using var reader = new StringReader(snapshot.Text);
+            return Page(reader, "кодировка: " + snapshot.Encoding.WebName);
+        }
+        using var stream = File.OpenRead(sourcePath);
         if (stream.Length > 20 * 1024 * 1024)
             throw new ToolException($"Файл слишком большой для чтения как текст ({FormatSize(stream.Length)}).");
         var prefix = new byte[Math.Min(stream.Length, 8000)];
@@ -174,9 +207,10 @@ public static partial class FileTools
                 var line = ClipLine(current, number + 1, single);
                 if (number >= offset)
                 {
-                    if (body.Length + line.Length + 1 > MaxReadChars) break;
+                    if (body.Length + line.Length + 1 > maxChars) break;
                     body.Append('\n');
                 }
+                if (line.Length > maxChars) line = line[..maxChars] + " … [строка обрезана]";
                 body.Append(line);
                 if (line.Length != current.Length) clipped++;
                 number++;
@@ -201,8 +235,8 @@ public static partial class FileTools
         return line.Length > 0 && line[^1] == '\r' ? line.ToString(0, line.Length - 1) : line.ToString();
     }
 
-    internal static (int Offset, int Limit) ReadRange(ToolArgs args) =>
-        (Math.Max(1, args.Int("offset", 1)), Math.Clamp(args.Int("limit", DefaultReadLines), 1, MaxReadLines));
+    internal static (int Offset, int Limit) ReadRange(ToolArgs args, int defaultLines = DefaultReadLines) =>
+        (Math.Max(1, args.Int("offset", 1)), Math.Clamp(args.Int("limit", defaultLines), 1, MaxReadLines));
 
     public static string ClipLine(string line, int number, bool single)
     {
@@ -261,16 +295,16 @@ public static partial class FileTools
             : $"Найдено по маске '{pattern}' в {dir}:\n{sb}";
     }
 
-    static string SearchText(ToolArgs a, ToolContext c, CancellationToken ct)
+    internal static string SearchText(ToolArgs a, ToolContext c, CancellationToken ct)
     {
-        const int scanLimit = 20_000, cloudOnly = 0x00400000 | 0x00040000 | 0x00001000;
+        const int scanLimit = 20_000, outputLimit = 8_000_000, cloudOnly = 0x00400000 | 0x00040000 | 0x00001000;
         var (dir, max) = SearchScope(a, c);
         var query = a.Required("query");
         var pattern = a.Optional("file_pattern") ?? "*";
         var comparison = a.Bool("case_sensitive") ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         var sb = new StringBuilder();
         int hits = 0, scanned = 0, cloudSkipped = 0;
-        bool more = false;
+        bool more = false, outputFull = false;
         foreach (var file in new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true }))
         {
             ct.ThrowIfCancellationRequested();
@@ -289,12 +323,14 @@ public static partial class FileTools
                 if (!line.Contains(query, comparison)) continue;
                 if (hits == max) { more = true; break; }
                 var shown = line.Trim();
-                sb.AppendLine($"{file.FullName}:{lineNo}: {(shown.Length > 200 ? shown[..200] + "…" : shown)}");
+                if (sb.Length + shown.Length + file.FullName.Length + 20 > outputLimit) { more = outputFull = true; break; }
+                sb.AppendLine($"{file.FullName}:{lineNo}: {shown}");
                 hits++;
             }
         }
         var summary = $"Просмотрено текстовых файлов: {scanned}, совпадений: {hits}" +
-                      (more ? $" (показаны первые {max} — есть ещё; уточни запрос, маску или папку{MoreHint(max)})" : "") +
+                      (outputFull ? " (достигнут предел размера результата — уточни запрос, маску или папку)" :
+                        more ? $" (показаны первые {max} — есть ещё; уточни запрос, маску или папку{MoreHint(max)})" : "") +
                       (scanned >= scanLimit ? $"; поиск остановлен на лимите {scanLimit} файлов — сузьте папку или маску" : "") +
                       (cloudSkipped > 0 ? $"; пропущено нескачанных файлов OneDrive: {cloudSkipped}" : "");
         return hits == 0 ? $"Текст «{query}» не найден в {dir}. {summary}" : sb + summary;

@@ -27,7 +27,7 @@ public partial class App
         ToolTipService.InitialShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(500));
         ToolTipService.BetweenShowDelayProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(500));
         base.OnStartup(e);
-        var id = "SharpAgent_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(AppPaths.AppFolder.ToLowerInvariant())))[..16];
+        var id = "SharpAgent_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(AppPaths.LegacyFolder.ToLowerInvariant())))[..16];
         var mutex = new Mutex(true, id, out bool isFirst);
         if (!isFirst)
         {
@@ -43,6 +43,14 @@ public partial class App
             return;
         }
         _instanceMutex = mutex;
+        try { AppPaths.Migrate(AppPaths.LegacyFolder, AppPaths.AppFolder, AppPaths.ProtectSecrets); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            MessageBox.Show("Не удалось завершить перенос данных Sharp Agent. Исходные данные сохранены.\n\n" + ex.Message,
+                "Sharp Agent", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shutdown();
+            return;
+        }
         _activateSignal = new EventWaitHandle(false, EventResetMode.AutoReset, id + "_show");
         ThreadPool.RegisterWaitForSingleObject(_activateSignal, (_, _) => Dispatcher.BeginInvoke(() =>
         {
@@ -99,6 +107,7 @@ public partial class App
         try
         {
             var info = new FileInfo(AppPaths.ErrorLogPath);
+            Directory.CreateDirectory(info.DirectoryName!);
             if (info.Exists && info.Length > 1024 * 1024) info.Delete();
             File.AppendAllText(AppPaths.ErrorLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Sharp Agent {Version}\n{exception}\n\n",
                 new UTF8Encoding(false));

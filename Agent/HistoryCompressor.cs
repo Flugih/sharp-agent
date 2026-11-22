@@ -5,16 +5,10 @@ namespace SharpAgent.Agent;
 public static class HistoryCompressor
 {
     const int CharsPerToken = 3, MessageTokens = 12, AttachmentTokens = 40;
-    const int FailureChars = 1_500, ErrorChars = 600, ToolHeadChars = 3_000, ToolTailChars = 1_000;
-    const string Header =
-        "[Сводка программы: давняя переписка свёрнута, чтобы сэкономить память модели. Это журнал прошлых запросов и действий, " +
-        "а не новая просьба; если нужны подробности, получи их заново инструментами.]";
-    const string NextHeader = "[Сводка программы, продолжение]";
     static readonly Regex ImportantText = new(@"\b(?:требован\w*|огранич\w*|услови\w*|сохрани\w*|решени\w*|важно|обязательно|только|не меня\w*|долж\w*|нельзя|без|must|required|only|preserve|decision|do not|never)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    sealed record Unit(int Start, int End, bool User);
-    sealed record Call(string Name, JsonObject Args, string Output);
+    internal sealed record ToolGroup(int Start, int End, bool Pending);
 
     public static int Estimate(JsonNode? node)
     {
@@ -29,205 +23,20 @@ public static class HistoryCompressor
 
     public static string Describe(string tool, string argumentsJson) => tool + Subject(tool, ParseArgs(argumentsJson));
 
-    internal static JsonObject ContextExcerpt(IEnumerable<JsonNode> messages, int start, int currentUser, HashSet<int> stopped, int room)
+    internal static List<ToolGroup> ToolGroups(IReadOnlyList<JsonNode> history)
     {
-        var calls = new Dictionary<string, (string Name, string Label)>();
-        var lines = new Queue<string>();
-        int chars = 0, limit = Math.Clamp(room / 3, 600, 6_000);
-        void Add(string text)
-        {
-            lines.Enqueue(text);
-            chars += text.Length;
-            while (chars > limit) chars -= lines.Dequeue().Length;
-        }
-        foreach (var message in messages)
-        {
-            int at = start++;
-            switch (Role(message))
-            {
-                case "user" when at != currentUser:
-                    Add((stopped.Contains(at) ? "- Остановленный запрос: " : "- Запрос: ") + Excerpt(ExtractText(message["content"]) ?? "", 450));
-                    break;
-                case "assistant":
-                    calls.Clear();
-                    foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>() ?? [])
-                        if (Str(call["id"]) is { } id && call["function"] is JsonObject function && Str(function["name"]) is { } name)
-                            calls[id] = (name, Clip(Describe(name, Str(function["arguments"]) ?? ""), 260));
-                    if (ExtractText(message["content"]) is { Length: > 0 } text) Add("- Ответ: " + Excerpt(text, 450));
-                    break;
-                case "tool" when Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var call):
-                    Add("- " + call.Label + " → " + Result(new(call.Name, new(), Str(message["content"]) ?? "")));
-                    break;
-            }
-        }
-        return new() { ["role"] = "user", ["content"] = Summary(Header, lines.ToList(), false) };
-    }
-
-    public static List<JsonNode> Compress(IReadOnlyList<JsonNode> history, int room, bool harder)
-    {
-        if (!harder && EstimateAll(history) <= room) return [.. history];
-        var units = Split(history);
-        int currentUser = units.FindLast(unit => unit.User)?.Start ?? -1;
-        var steps = units.Where(unit => !unit.User).ToList();
-        var lines = steps.ToDictionary(step => step, step => Lines(history, step, harder));
-        int total = units.Where(unit => unit.User).Sum(unit => Size(history, unit)) + steps.Sum(step => LineTokens(lines[step]));
-        int boundary = ProtectedStart(history, units);
-        var deltas = steps.Select(step => Size(history, step) - LineTokens(lines[step])).ToArray();
-        int protectedDelta = steps.Select((step, index) => step.Start >= boundary ? deltas[index] : 0).Sum();
-        var projected = history.ToArray();
-        foreach (var unit in units)
-        {
-            if (total + protectedDelta <= room) break;
-            int index = unit.Start;
-            if (unit.User && index != currentUser && projected[index] is JsonObject message &&
-                ExtractText(message["content"]) is { } request && request.Length > (harder ? 600 : 1_200))
-            {
-                var copy = (JsonObject)message.DeepClone();
-                copy["content"] = "[Сводка прежнего запроса]\n" + Excerpt(request, harder ? 600 : 1_200);
-                total += Estimate(copy) - Estimate(message);
-                projected[index] = copy;
-            }
-        }
-        int keepFrom = steps.Count;
-        for (int k = steps.Count - 1; k >= 0; k--)
-        {
-            if (steps[k].Start < boundary && (harder || total + deltas[k] > room)) break;
-            total += deltas[k];
-            keepFrom = k;
-        }
-        AddLatestFailure(history, steps, keepFrom, lines);
-        var result = Assemble(projected, units, keepFrom, lines, harder);
-        if (currentUser < 0 || EstimateAll(result) <= room) return result;
-
-        int retained = Math.Min(boundary, currentUser);
-        int start = result.FindIndex(message => ReferenceEquals(message, projected[retained]));
-        var latest = result.GetRange(start, result.Count - start);
-        int available = (room - EstimateAll(latest) - MessageTokens) * CharsPerToken;
-        if (available > 300)
-        {
-            var previous = units.TakeWhile(unit => unit.Start < retained)
-                .SelectMany(unit => unit.User ? ["- Запрос: " + Excerpt(ExtractText(projected[unit.Start]["content"]) ?? "", 450)] : lines[unit])
-                .ToList();
-            latest.Insert(0, new JsonObject { ["role"] = "assistant", ["content"] = Clip(Summary(Header, previous, harder), available - 1) });
-        }
-        return latest;
-    }
-
-    internal static int CompactionBoundary(IReadOnlyList<JsonNode> history) => ProtectedStart(history, Split(history));
-
-    static int ProtectedStart(IReadOnlyList<JsonNode> history, List<Unit> units) =>
-        units.FirstOrDefault(unit => HasPendingCall(history, unit))?.Start ?? units.LastOrDefault()?.Start ?? 0;
-
-    static bool HasPendingCall(IReadOnlyList<JsonNode> history, Unit unit)
-    {
-        if (history[unit.Start]["tool_calls"] is not JsonArray { Count: > 0 } calls) return false;
-        var results = new HashSet<string>(StringComparer.Ordinal);
-        for (int i = unit.Start + 1; i <= unit.End; i++)
-            if (Str(history[i]["tool_call_id"]) is { } id) results.Add(id);
-        return calls.OfType<JsonObject>().Any(call => Str(call["id"]) is not { } id || !results.Contains(id));
-    }
-
-    internal static IEnumerable<JsonNode> CompletedResults(IReadOnlyList<JsonNode> history)
-    {
-        foreach (var unit in Split(history))
-            if (unit.End > unit.Start && !HasPendingCall(history, unit))
-                for (int i = unit.Start + 1; i <= unit.End; i++) yield return history[i];
-    }
-
-    static List<Unit> Split(IReadOnlyList<JsonNode> history)
-    {
-        var units = new List<Unit>();
+        var groups = new List<ToolGroup>();
         for (int i = 0; i < history.Count; i++)
         {
-            bool user = Role(history[i]) == "user";
-            int end = i;
-            while (!user && end + 1 < history.Count && Role(history[end + 1]) == "tool") end++;
-            units.Add(new(i, end, user));
-            i = end;
+            if (history[i]["tool_calls"] is not JsonArray { Count: > 0 } calls) continue;
+            int start = i;
+            var results = new HashSet<string>(StringComparer.Ordinal);
+            while (i + 1 < history.Count && Role(history[i + 1]) == "tool")
+                if (Str(history[++i]["tool_call_id"]) is { } id) results.Add(id);
+            groups.Add(new(start, i, calls.OfType<JsonObject>().Any(call =>
+                Str(call["id"]) is not { } id || !results.Contains(id))));
         }
-        return units;
-    }
-
-    static List<JsonNode> Assemble(IReadOnlyList<JsonNode> history, List<Unit> units, int keepFrom, Dictionary<Unit, List<string>> lines,
-        bool harder)
-    {
-        var result = new List<JsonNode>();
-        var pending = new List<string>();
-        bool headed = false;
-        string TakeSummary()
-        {
-            var summary = Summary(headed ? NextHeader : Header, pending, harder);
-            headed = true;
-            pending.Clear();
-            return summary;
-        }
-        void Flush()
-        {
-            if (pending.Count > 0) result.Add(new JsonObject { ["role"] = "user", ["content"] = TakeSummary() });
-        }
-        int step = 0;
-        foreach (var unit in units)
-        {
-            if (unit.User)
-            {
-                Flush();
-                result.Add(history[unit.Start]);
-                continue;
-            }
-            if (step++ < keepFrom)
-            {
-                pending.AddRange(lines[unit]);
-                continue;
-            }
-            Flush();
-            for (int i = unit.Start; i <= unit.End; i++) result.Add(history[i]);
-        }
-        Flush();
-        return result;
-    }
-
-    internal static JsonNode Shorten(JsonNode tool)
-    {
-        if (Str(tool["content"]) is not { Length: > ToolHeadChars + ToolTailChars } content) return tool;
-        int head = content.LastIndexOf('\n', ToolHeadChars) is > ToolHeadChars / 2 and var end ? end : ToolHeadChars;
-        int tail = content.IndexOf('\n', content.Length - ToolTailChars, ToolTailChars - 1) is >= 0 and var start
-            ? start + 1
-            : content.Length - ToolTailChars;
-        string skipped = content[head..tail], rest = content[tail..];
-        bool tailMidLine = skipped[^1] != '\n';
-        int missing = skipped.Count(c => c == '\n') - 1 + (skipped[0] == '\n' ? 0 : 1) + (tailMidLine ? 1 : 0);
-        int after = rest.Count(c => c == '\n') + (tailMidLine ? 0 : 1);
-        return new JsonObject
-        {
-            ["role"] = "tool",
-            ["tool_call_id"] = tool["tool_call_id"]?.DeepClone(),
-            ["content"] = content[..head] + $"\n… (сокращено, чтобы поместиться в память модели: пропущено строк: {missing}, " +
-                          $"строк после пропуска: {after}; заголовок описывает полный результат — пропущенное получи заново частями) …\n" +
-                          rest,
-        };
-    }
-
-    static string Summary(string header, List<string> lines, bool harder)
-    {
-        var rows = new List<(string Line, int Count)>();
-        foreach (var line in lines)
-        {
-            if (rows.Count > 0 && rows[^1].Line == line) rows[^1] = (line, rows[^1].Count + 1);
-            else rows.Add((line, 1));
-        }
-        var shown = rows.Select(row => row.Count > 1 ? $"{row.Line} (×{row.Count})" : row.Line).ToList();
-        int cap = harder ? 20 : 60;
-        if (shown.Count > cap) shown = [$"- … и ещё {shown.Count - cap + 1} более ранних действий", .. shown.TakeLast(cap - 1)];
-        return header + "\n" + string.Join("\n", shown);
-    }
-
-    static List<string> Lines(IReadOnlyList<JsonNode> history, Unit step, bool harder)
-    {
-        var lines = Calls(history, step).Select(call => $"- {call.Name}{Subject(call.Name, call.Args)} → {Result(call)}").ToList();
-        if (history[step.Start] is JsonObject message && Role(message) == "assistant" && message["tool_calls"] == null &&
-            ExtractText(message["content"]) is { } text && !string.IsNullOrWhiteSpace(text))
-            lines.Add("- Ответ: " + Excerpt(text, harder ? 200 : 600));
-        return lines;
+        return groups;
     }
 
     internal static string Excerpt(string text, int limit)
@@ -241,51 +50,12 @@ public static class HistoryCompressor
             text[^tail..];
     }
 
-    static void AddLatestFailure(IReadOnlyList<JsonNode> history, List<Unit> steps, int keepFrom, Dictionary<Unit, List<string>> lines)
-    {
-        var latest = new Dictionary<string, (int Step, Call Call)>();
-        for (int k = 0; k < steps.Count; k++)
-            foreach (var call in Calls(history, steps[k]))
-                latest[call.Name + Subject(call.Name, call.Args)] = (k, call);
-        (int Step, Call? Call) failure = (-1, null);
-        foreach (var (step, call) in latest.Values)
-            if (step > failure.Step && Failed(call)) failure = (step, call);
-        if (failure.Call is not { } failed || failure.Step >= keepFrom) return;
-        var details = failed.Name is "run_command" or "run_plugin" && !ToolRegistry.IsErrorOutput(failed.Output)
-            ? CommandLog.Details(failed.Output, FailureChars)
-            : Clip(string.Join("\n", failed.Output.Split('\n').Take(3)), ErrorChars);
-        int at = failure.Step;
-        while (at + 1 < keepFrom && steps[at + 1].Start == steps[at].End + 1) at++;
-        if (details.Length > 0)
-            lines[steps[at]].Add($"- Последняя ошибка ({failed.Name}{Subject(failed.Name, failed.Args)}) подробно:\n  " +
-                                 details.Replace("\n", "\n  "));
-    }
-
-    static bool Failed(Call call) =>
-        call.Output.StartsWith("Ошибка", StringComparison.Ordinal) ||
-        call.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(call.Output);
-
-    static IEnumerable<Call> Calls(IReadOnlyList<JsonNode> history, Unit step)
-    {
-        if (history[step.Start] is not JsonObject assistant || assistant["tool_calls"] is not JsonArray calls) yield break;
-        var outputs = new Dictionary<string, string>();
-        for (int i = step.Start + 1; i <= step.End; i++)
-            if (history[i] is JsonObject tool)
-                outputs[Str(tool["tool_call_id"]) ?? ""] = (Str(tool["content"]) ?? "").Replace(RepeatReply, "");
-        foreach (var call in calls.OfType<JsonObject>())
-        {
-            var function = call["function"] as JsonObject;
-            yield return new(Str(function?["name"]) ?? "?", ParseArgs(Str(function?["arguments"])),
-                outputs.GetValueOrDefault(Str(call["id"]) ?? "", ""));
-        }
-    }
-
     static string Subject(string tool, JsonObject args)
     {
         string? Get(string key) => Str(args[key]) is { Length: > 0 } value ? value : null;
         var subject = tool switch
         {
-            "run_command" => Get("command") is { } command ? "`" + Clip(OneLine(command), 120) + "`" : null,
+            "exec_command" => Get("command") is { } command ? "`" + Clip(OneLine(command), 120) + "`" : null,
             "search_text" => $"«{Clip(OneLine(Get("query")), 60)}» в {Get("directory") ?? "рабочей папке"}" +
                              (Get("file_pattern") is { } mask ? $" ({mask})" : ""),
             "search_files" => $"{Get("pattern")} в {Get("directory") ?? "рабочей папке"}",
@@ -301,39 +71,6 @@ public static class HistoryCompressor
         };
         return subject == null ? "" : " " + subject;
     }
-
-    static string Result(Call call)
-    {
-        var output = call.Output;
-        var first = output.Split('\n', 2)[0].Trim();
-        if (call.Name is "run_command" or "run_plugin") return CommandLog.Brief(output);
-        if (ToolRegistry.IsErrorOutput(output)) return Clip(first, 200);
-        return call.Name switch
-        {
-            "read_file" => "прочитан" + string.Concat(first.Split(" | ").Skip(3)
-                .Where(part => part.StartsWith("строк", StringComparison.Ordinal) || part.StartsWith("показаны", StringComparison.Ordinal))
-                .Select(part => ", " + part)),
-            "search_text" => Clip(output.TrimEnd().Split('\n')[^1].Trim(), 200),
-            "search_files" => first.StartsWith("Ничего", StringComparison.Ordinal) ? "ничего не найдено" : $"найдено: {Count(output) - 1}",
-            "list_directory" => output.Contains("(папка пуста)") ? "папка пуста" : $"элементов: {Count(output) - 1}",
-            "get_file_info" => first.StartsWith("Не существует", StringComparison.Ordinal) ? "не существует" : "сведения получены",
-            "get_system_info" => "сведения получены",
-            "use_plugin" => "инструкция получена",
-            "generate_image" or "read_log" => Clip(first, 200),
-            _ => first.IndexOf(": ", StringComparison.Ordinal) is > 0 and var colon ? first[..colon] : Clip(first, 160),
-        };
-    }
-
-    static int Count(string output) => output.Split('\n').Count(line => line.Trim().Length > 0);
-
-    static int Size(IReadOnlyList<JsonNode> history, Unit unit)
-    {
-        int size = Estimate(history[unit.Start]);
-        for (int i = unit.Start + 1; i <= unit.End; i++) size += Estimate(history[i]);
-        return size;
-    }
-
-    static int LineTokens(List<string> lines) => lines.Sum(line => line.Length / CharsPerToken + 1);
 
     static JsonObject ParseArgs(string? json)
     {

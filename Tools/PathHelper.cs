@@ -13,6 +13,19 @@ public static class PathHelper
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern uint GetLongPathName(string shortPath, [Out] char[] longPath, uint size);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern SafeFileHandle CreateFile(string name, uint access, FileShare share, IntPtr security, FileMode mode, uint flags, IntPtr template);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern uint GetFinalPathNameByHandle(SafeFileHandle file, [Out] char[] path, uint size, uint flags);
+    [DllImport("kernel32.dll")] static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out FileBasicInfo info, uint size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileBasicInfo { public long Created, Accessed, Written, Changed; public uint Attributes; }
+
+    internal static long Revision(SafeFileHandle handle) =>
+        GetFileInformationByHandleEx(handle, 0, out var info, (uint)Marshal.SizeOf<FileBasicInfo>()) ? info.Changed : 0;
+
+    internal static long Revision(string path)
+    {
+        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return Revision(handle);
+    }
 
     static HashSet<string> Extensions(string list) => new(list.Split(' '), StringComparer.OrdinalIgnoreCase);
 

@@ -37,6 +37,8 @@ public partial class MainWindow
         public TextBlock? ProgressHint;
         public ToolCallEvent? PendingPlan;
         public bool Compacting;
+        public (string Status, long Until)? FinishedToolStatus;
+        public string? ContextStatus;
         public string[] NextActions = [];
     }
 
@@ -49,6 +51,7 @@ public partial class MainWindow
     {
         ReleaseStickyProgress();
         _modelProgressTimer?.Stop();
+        _workStatusTimer?.Stop();
         _pendingModelProgress = null;
         ClearSubagents();
         ClearDraft();
@@ -391,35 +394,67 @@ public partial class MainWindow
         }
     }
 
+    void ShowStop(string reason)
+    {
+        if (!AgentRunner.IsRunLimitPause(reason))
+        {
+            AddNotice(reason, warning: true, inProgress: false);
+            return;
+        }
+        var title = Tr("Задача на паузе", "Task paused");
+        FinishProgress(title);
+        _chatView.Progress = null;
+        _chatView.ProgressHint = null;
+        if (!_suppressAnimation) _compactChat?.SetStatus(title);
+    }
+
     void OnToolCallStarted(ToolCallEvent e)
     {
         FlushModelProgress();
-        _chatView.ActiveTools[e.Id] = e.Name switch
+        var status = e.Name switch
         {
-            "read_file" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
+            PatchTool.Name => Tr("Применяю патч…", "Applying patch…"),
+            "read_file" or "read_many" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
             "search_files" or "search_text" => Tr("Поиск по проекту…", "Searching project…"),
             "write_file" or "edit_file" => Tr("Редактирование файлов…", "Editing files…"),
             "create_directory" => Tr("Создание папки…", "Creating folder…"),
             "copy_path" => Tr("Копирование файлов…", "Copying files…"),
             "move_path" => Tr("Перемещение файлов…", "Moving files…"),
             "delete_path" => Tr("Удаление файлов…", "Deleting files…"),
-            "run_command" => Tr("Выполнение команды…", "Running command…"),
+            "exec_command" => Tr("Выполнение команды…", "Running command…"),
             "run_plugin" => Tr("Выполнение плагина…", "Running plugin…"),
+            ScriptRegistry.Name => Tr("Локальный сценарий…", "Local script…"),
+            LocalTestTools.Name => Tr("Локальные проверки…", "Local checks…"),
+            LocalResearchEngine.Name => Tr("Ищу в локальном индексе…", "Searching the local index…"),
+            "local_batch" => Tr("Выполняю локальные проверки…", "Running local checks…"),
+            ToolOutputStore.Name => Tr("Дочитываю сохранённый результат…", "Reading the saved result…"),
+            LocalContractEngine.Name => Tr("Проверяю, выполнены ли условия задачи…", "Checking whether the task meets its requirements…"),
+            AgentKnowledge.Name => Tr("Работа с базой знаний…", "Working with project knowledge…"),
+            BrowserTools.Name => Tr("Чтение страницы…", "Reading the page…"),
             "generate_image" => Tr("Создание изображения…", "Generating image…"),
             "open_path" => Tr("Открытие файла или ссылки…", "Opening file or link…"),
             "delegate_tasks" => Tr("Проверка субагентами…", "Subagents are checking…"),
+            ComputerTools.Name when ArgumentOf(e.ArgumentsJson, "action") == "ocr" => Tr("Распознавание текста…", "Recognizing screen text…"),
             ComputerTools.Name => Tr("Управление компьютером…", "Controlling computer…"),
             ComputerTools.AppName => Tr("Проверка приложения…", "Checking application…"),
-            _ => Tr("Думаю…", "Thinking…"),
+            _ => null,
         };
-        UpdateWorkStatus();
+        if (status != null)
+        {
+            _chatView.ActiveTools[e.Id] = status;
+            UpdateWorkStatus();
+        }
         if (e.Name == "update_plan") _chatView.PendingPlan = e;
         else AddToolRow(e.Id, e.Name, e.ArgumentsJson);
     }
 
-    void OnToolCallFinished(ToolResultEvent e)
+    void OnToolCallFinished(ToolResultEvent e, long finishedAt)
     {
-        if (_chatView.ActiveTools.Remove(e.Id)) UpdateWorkStatus();
+        if (_chatView.ActiveTools.Remove(e.Id, out var status))
+        {
+            if (_chatView.ActiveTools.Count == 0) _chatView.FinishedToolStatus = (status, finishedAt + ToolStatusGraceMs);
+            UpdateWorkStatus();
+        }
         if (_chatView.PendingPlan is { } plan && plan.Id == e.Id)
         {
             _chatView.PendingPlan = null;
@@ -428,6 +463,8 @@ public partial class MainWindow
         }
         if (!_chatView.ToolRows.TryGetValue(e.Id, out var row)) return;
         CompleteToolRow(row, e.Output, e.IsError, e.IsWarning, e.Diff, e.Change);
+        if (e.Changes != null)
+            foreach (var change in e.Changes) NoteProduced(change.Path, FileChanges.NetDiff(_toolContext, change), change.Created, change, false);
         if (!e.IsError && _chatView.TurnFiles.Count > 0 && !ToolRegistry.IsReadOnly(e.Name)) UpdateChangesPill();
     }
 
@@ -438,10 +475,12 @@ public partial class MainWindow
         return tool switch
         {
             "read_file" => Tr("Читаю файл ", "Reading ") + Name(),
+            "read_many" => Tr("Читаю файлы", "Reading files"),
             "list_directory" => ShortName(Get("path")) is var name and not ("" or ".") ? Tr("Смотрю папку ", "Inspecting folder ") + name : Tr("Смотрю рабочую папку", "Inspecting the working folder"),
             "get_file_info" => Tr("Смотрю сведения о ", "Checking details for ") + Name(fallback: Tr("файле", "file")),
             "search_files" => Tr("Ищу файлы ", "Searching for files ") + OneLine(Get("pattern")),
-            "search_text" => Tr($"Ищу текст «{OneLine(Get("query"))}»", $"Searching for “{OneLine(Get("query"))}”"),
+            "search_text" when OneLine(Get("query")) is { Length: > 0 } query => Tr($"Ищу текст «{query}»", $"Searching for “{query}”"),
+            "search_text" => Tr("Поиск текста", "Text search"),
             "write_file" => Tr("Записываю файл ", "Writing ") + Name(),
             "edit_file" => Tr("Правлю файл ", "Editing ") + Name(),
             "create_directory" => Tr("Создаю папку ", "Creating folder ") + Name(),
@@ -449,8 +488,16 @@ public partial class MainWindow
             "copy_path" => Tr("Копирую ", "Copying ") + Name("source"),
             "delete_path" => Tr("Удаляю ", "Deleting ") + Name(),
             "open_path" => Tr("Открываю ", "Opening ") + Name(),
-            "run_command" => Tr("Выполняю ", "Running ") + OneLine(Get("command")),
+            "exec_command" => Tr("Выполняю ", "Running ") + OneLine(Get("command")),
+            PatchTool.Name => Tr("Применяю патч", "Applying patch"),
             "run_plugin" => Tr("Запускаю плагин ", "Running plugin ") + Get("name"),
+            ScriptRegistry.Name => Tr("Локальный сценарий", "Local script"),
+            LocalTestTools.Name => Tr("Локальные проверки", "Local checks"),
+            LocalResearchEngine.Name => Tr("Локальный поиск", "Local research"),
+            "local_batch" or ToolOutputStore.Name => Describe(tool).Label,
+            LocalContractEngine.Name => Describe(tool).Label,
+            AgentKnowledge.Name => Tr("База проверенных решений", "Verified solutions"),
+            BrowserTools.Name => Get("action") == "research" ? Tr("Ищу документацию", "Finding documentation") : Tr("Проверяю страницу", "Checking the page"),
             "use_plugin" => Tr("Открываю плагин ", "Opening plugin ") + Get("name"),
             "generate_image" => Tr("Рисую изображение", "Generating an image"),
             "get_system_info" => Tr("Смотрю сведения о системе", "Checking system information"),
@@ -473,6 +520,9 @@ public partial class MainWindow
         "keys" => Tr("Нажимаю клавиши", "Pressing keys"),
         "scroll" => Tr("Прокручиваю к элементу", "Scrolling to the element"),
         "screenshot" => Tr("Делаю скриншот", "Taking a screenshot"),
+        "ocr" => Tr("Распознаю текст", "Recognizing text"),
+        "save_baseline" => Tr("Сохраняю эталон окна", "Saving the window baseline"),
+        "compare_baseline" => Tr("Сравниваю окно с эталоном", "Comparing the window with its baseline"),
         "wait" => Tr("Жду", "Waiting"),
         "close" => Tr("Закрываю окно", "Closing the window"),
         _ => Tr("Управляю программой", "Controlling the application"),
@@ -481,6 +531,14 @@ public partial class MainWindow
     static (string Glyph, string Label) Describe(string tool) => tool switch
     {
         "read_file" => (Glyphs.View, Tr("Чтение файла", "Read file")),
+        "read_many" => (Glyphs.View, Tr("Чтение файлов", "Read files")),
+        ScriptRegistry.Name => (Glyphs.Terminal, Tr("Локальный сценарий", "Local script")),
+        LocalTestTools.Name => (Glyphs.Info, Tr("Локальные проверки", "Local checks")),
+        LocalContractEngine.Name => (Glyphs.Check, Tr("Проверка условий задачи", "Task requirements check")),
+        "local_batch" => (Glyphs.Check, Tr("Пакет локальных проверок", "Batch of local checks")),
+        ToolOutputStore.Name => (Glyphs.View, Tr("Чтение сохранённого результата", "Read saved tool output")),
+        AgentKnowledge.Name => (Glyphs.Info, Tr("Проверенные решения", "Verified solutions")),
+        BrowserTools.Name => (Glyphs.View, Tr("Встроенный браузер", "Built-in browser")),
         "list_directory" => (Glyphs.Folder, Tr("Просмотр папки", "List directory")),
         "get_file_info" => (Glyphs.Info, Tr("Сведения о файле", "File information")),
         "write_file" => (Glyphs.Save, Tr("Запись файла", "Write file")),
@@ -491,7 +549,8 @@ public partial class MainWindow
         "delete_path" => (Glyphs.Delete, Tr("Удаление", "Delete")),
         "search_files" => (Glyphs.Search, Tr("Поиск файлов", "File search")),
         "search_text" => (Glyphs.Search, Tr("Поиск текста", "Text search")),
-        "run_command" => (Glyphs.Terminal, Tr("Команда", "Command")),
+        "exec_command" => (Glyphs.Terminal, Tr("Команда", "Command")),
+        PatchTool.Name => (Glyphs.Edit, Tr("Патч файлов", "File patch")),
         "read_log" => (Glyphs.Terminal, Tr("Журнал команды", "Command log")),
         "open_path" => (Glyphs.Open, Tr("Открытие", "Open")),
         "get_system_info" => (Glyphs.Info, Tr("Сведения о системе", "System information")),
@@ -581,7 +640,7 @@ public partial class MainWindow
         }.Paint(ForegroundProperty, "TextMuted");
         return tool switch
         {
-            "run_command" => Plain(OneLine(Get("command"))),
+            "exec_command" => Plain(OneLine(Get("command"))),
             "search_files" => Plain(OneLine(Get("pattern"))),
             "search_text" => Plain(OneLine(Get("query"))) ?? Plain(Tr("Запрос без текста", "Empty search query")),
             "generate_image" => Plain(OneLine(Get("prompt"))),
@@ -629,7 +688,7 @@ public partial class MainWindow
         if (row.Name == "generate_image" && !isError && ImageTools.SavedPath(output) is { } image && File.Exists(image))
             row.Root.Children.Add(ImagePreview(image));
         if (row.Name == ComputerTools.Name && !isError && output.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) &&
-            output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim() is var shot && File.Exists(shot))
+            AppPaths.Relocate(output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim()) is var shot && File.Exists(shot))
             row.Root.Children.Add(ViewedImage(shot));
         if (change != null) row.FilePath = change.Path;
         else if (row.FilePath != null && !isError && ResultPath(output) is { } exact) row.FilePath = exact;
@@ -741,9 +800,9 @@ public partial class MainWindow
                 }
                 details.Children.Add(view);
             }
-            var log = row.Name is "run_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
+            var log = row.Name is "exec_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
             if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full) output = output.Split('\n', 2)[0] + "\n" + full;
-            var command = row.Name == "run_command" ? ArgumentOf(row.ArgumentsJson, "command") : null;
+            var command = row.Name == "exec_command" ? ArgumentOf(row.ArgumentsJson, "command") : null;
             var raw = SelectableText(KeepEnds(command != null ? output : Tr($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", $"Parameters:\n{PrettyJson(row.ArgumentsJson)}\n\nResult:\n{output}"), 16_000),
                 "TextSoft", mono: true, fontSize: 12.5);
             raw.MaxHeight = 360;
@@ -852,6 +911,7 @@ public partial class MainWindow
                             if (JsonUtil.Bool(meta?["read_reused"]) == true || JsonUtil.Bool(meta?["action_reused"]) == true) continue;
                             var function = call["function"] as JsonObject;
                             var name = JsonUtil.Str(function?["name"]) ?? "?";
+                            if (name == "run_command") name = "exec_command";
                             var arguments = JsonUtil.Str(function?["arguments"]) ?? "{}";
                             var output = JsonUtil.Str(result?["content"]) ?? "";
                             bool isError = JsonUtil.Bool(meta?["command_restricted"]) == true || ToolRegistry.IsErrorOutput(output);
@@ -863,8 +923,10 @@ public partial class MainWindow
                             var row = AddToolRow(id, name, arguments);
                             if (result == null) continue;
                             CompleteToolRow(row, output, isError,
-                                row.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(output), AgentRunner.DiffOf(result),
+                                row.Name is "exec_command" or "run_plugin" && ToolRegistry.CommandFailed(output), AgentRunner.DiffOf(result),
                                 AgentRunner.FileChangeOf(result), AgentRunner.FileChangeUndone(result));
+                            foreach (var (change, undone) in AgentRunner.PatchChangesOf(result))
+                                NoteProduced(change.Path, FileChanges.NetDiff(_toolContext, change), change.Created, change, undone);
                         }
                         continue;
                     }
@@ -881,7 +943,7 @@ public partial class MainWindow
                         if (text.Length > 0) _chatView.LastAnswer?.SetValue(SearchMessageProperty, start + i);
                     }
                 }
-                if (AgentRunner.StopReasonOf(m) is { } stop) AddNotice(stop, warning: true, inProgress: false);
+                if (AgentRunner.StopReasonOf(m) is { } stop) ShowStop(stop);
             }
             if (messages.Length > 0) RenderModelChanges(messages[^1]);
             FinishTurn();

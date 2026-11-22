@@ -46,6 +46,28 @@ public partial class MainWindow
         };
         compact.Send += () => _ = SendAsync();
         compact.Stop += StopAgent;
+        compact.ChooseFiles += PickAttachmentFiles;
+        compact.ShowAttachments(_pendingAttachments, RemovePendingAttachment);
+        compact.AddHandler(CommandManager.PreviewCanExecuteEvent, new CanExecuteRoutedEventHandler(InputBox_PreviewCanExecute));
+        compact.AddHandler(CommandManager.PreviewExecutedEvent, new ExecutedRoutedEventHandler(InputBox_PreviewExecuted));
+        compact.PreviewDragOver += (_, e) =>
+        {
+            if (!HasFiles(e.Data)) return;
+            e.Handled = true;
+            bool accepted = _chatOperation == null;
+            e.Effects = accepted ? DragDropEffects.Copy : DragDropEffects.None;
+            compact.ShowAttachmentDrop(accepted);
+        };
+        compact.PreviewDragLeave += (_, _) => compact.ShowAttachmentDrop(false);
+        compact.PreviewDrop += (_, e) =>
+        {
+            compact.ShowAttachmentDrop(false);
+            if (!HasFiles(e.Data)) return;
+            e.Handled = true;
+            if (WaitForChatFile(_chatOperation != null)) return;
+            _ = AddAttachmentsAsync(AttachmentDropPaths(e.Data));
+            compact.FocusInput();
+        };
         compact.Closed += (_, _) =>
         {
             if (_compactChat != compact) return;
@@ -64,7 +86,6 @@ public partial class MainWindow
             UpdateWorkStatus();
             if (!_draftIsProgress) compact.ShowDraft(_draftText.ToString());
         }
-        else if (_pendingAttachments.Count > 0) compact.SetStatus(Tr($"Вложений к сообщению: {_pendingAttachments.Count}", $"Attachments: {_pendingAttachments.Count}"));
         compact.Show();
         // Only Computer Use needs this: its screenshots must show the desktop behind the window.
         if (_toolContext is { ComputerUse: true, SandboxRoot: null }) WindowEffects.ExcludeFromCapture(new WindowInteropHelper(compact).Handle);
@@ -93,6 +114,7 @@ public partial class MainWindow
     void UpdateCompactAction()
     {
         if (_compactChat is not { } compact) return;
+        compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content;
         compact.Draft = InputBox.Text;
         compact.UpdateAction(_cts != null, _cts is { } running ? !running.IsCancellationRequested : SendButton.IsEnabled,
             _agent.CanContinue && string.IsNullOrWhiteSpace(InputBox.Text) && _pendingAttachments.Count == 0);

@@ -82,7 +82,7 @@ public partial class MainWindow
 
     void PictureReveal_Click(object sender, RoutedEventArgs e) { if (_picturePath != null) FileActions.Reveal(_picturePath); }
 
-    void ShowPreview(string path, FileDiff? diff = null, string? title = null, ProducedFile[]? changes = null, int selected = 0)
+    void ShowPreview(string path, FileDiff? diff = null, string? title = null, ProducedFile[]? changes = null, int selected = 0, int searchLine = 0)
     {
         HideBrowser();
         CloseSubagents(focusChat: false);
@@ -94,19 +94,19 @@ public partial class MainWindow
         PreviewTitle.Text = changesView ? Tr("Изменения", "Changes") : title ?? ChatLinks.DisplayName(path);
         PreviewPath.ToolTip = PreviewPath.Text = path;
         PreviewPath.Visibility = VisibleIf(!changesView);
-        RenderPreviewBody();
+        RenderPreviewBody(searchLine);
         if (IsShown(PreviewPane)) return;
         PreviewPane.Visibility = Visibility.Visible;
         ApplyPreviewLayout();
     }
 
-    void RenderPreviewBody()
+    void RenderPreviewBody(int searchLine = 0)
     {
         if (_previewPath is not { } path) return;
         CloseOfficePreview();
         if (_previewChanges != null || _previewDiff != null) ShowDiffPreview(path);
         else if (OfficePreview.IsOfficeFile(path)) _ = ShowOfficePreviewAsync(path);
-        else PreviewBody.Content = Attachment.IsImagePath(path) ? ImagePreview(path) : FileView(path);
+        else PreviewBody.Content = Attachment.IsImagePath(path) ? ImagePreview(path) : FileView(path, searchLine);
     }
 
     void PreviewClose_Click(object sender, RoutedEventArgs e) => ClosePreview();
@@ -177,16 +177,22 @@ public partial class MainWindow
         UpdateLayoutWidths();
     }
 
-    static FrameworkElement FileView(string path) =>
+    static FrameworkElement FileView(string path, int searchLine) =>
         !File.Exists(path) ? EmptyState(Tr("Файла больше нет: его переместили или удалили.", "The file was moved or deleted."))
-        : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text)
+        : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text, searchLine)
         : EmptyState(Tr("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.", "Preview is unavailable for this file. Use the button above to open it in its app."));
 
-    static FrameworkElement CodeView(string text)
+    static FrameworkElement CodeView(string text, int searchLine)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
         if (lines.Length > 1 && lines[^1].Length == 0) lines = lines[..^1];
-        var lineNumbers = Enumerable.Range(1, lines.Length).Select(number => number.ToString()).ToArray();
+        int first = 0;
+        if (lines.Length > MaxPreviewLines && searchLine > 0)
+        {
+            first = Math.Clamp(searchLine - 1 - MaxPreviewLines / 2, 0, lines.Length - MaxPreviewLines);
+            lines = lines[first..(first + MaxPreviewLines)];
+        }
+        var lineNumbers = Enumerable.Range(first + 1, lines.Length).Select(number => number.ToString()).ToArray();
         if (lines.Length > MaxPreviewLines)
         {
             int half = MaxPreviewLines / 2;

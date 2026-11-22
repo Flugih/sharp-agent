@@ -55,7 +55,7 @@ public static class Theme
     {
         ("Bg", "#FFFFFF"), ("ChromeBg", "#F3F3F3"), ("Surface", "#F4F4F4"),
         ("ChatModeTrack", "#F3F3F3"), ("ChatModeSelected", "#FFFFFF"), ("ChatModeShadow", "#E0E0E0"), ("ChatModeText", "#5E5E5E"),
-        ("SearchGlass", "#EBFAFAFA"),
+        ("SearchGlass", "#EBFAFAFA"), ("SearchHighlight", "#D7C896"),
         ("Surface2", "#FFFFFF"), ("Surface3", "#E6E6E6"), ("BlockBg", "#F4F4F4"), ("Raised", "#FFFFFF"), ("RaisedLine", "#D9D9D9"),
         ("Fill", "#EFEFEF"), ("ControlBg", "#E9E9E9"), ("RowHover", "#0B000000"), ("ComposerBg", "#FFFFFF"), ("ComposerLine", "#E0E0E0"),
         ("ComposerStrip", "#F2F2F2"), ("Line", "#E5E5E5"), ("LineStrong", "#D9D9D9"), ("Track", "#D4D4D4"), ("TrackStrong", "#B4B4B4"),
@@ -143,6 +143,6 @@ public static class Glyphs
         Folder = "", NewFolder = "", Picture = "", Edit = "", Save = "", Delete = "", Copy = "", Move = "", Search = "",
         Terminal = "", Open = "", OpenWith = "", Reveal = "", Info = "", View = "", Check = "", Cancel = "",
         Warning = "", ChevronRight = "", ChevronDown = "", Tool = "", Lock = "", Globe = "", Refresh = "", Lightning = "",
-        Play = "", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
+        Play = "\uF5B0", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
     public const string Laptop = "\uE7F8", Wifi = "\uE701";
 }

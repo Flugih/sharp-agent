@@ -1,7 +1,8 @@
 namespace SharpAgent.Agent;
 
-sealed record SourceSymbol(string Name, int Start, int End, string Signature, string[] Dependencies);
-sealed record SourceSyntax(SourceSymbol[] Symbols, string[] Diagnostics);
+sealed record SourceSymbol(string Name, int Start, int End, string Signature, string[] Dependencies, string? Id = null,
+    string[]? References = null, bool Test = false);
+sealed record SourceSyntax(SourceSymbol[] Symbols, string[] Diagnostics, string[]? Imports = null);
 
 static class LocalDeveloperTools
 {
@@ -16,7 +17,7 @@ static class LocalDeveloperTools
         ? Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(sdk.Roslyn)))! : "";
 
     public static async Task<Dictionary<string, SourceSyntax>> ParseCSharpAsync(string cache, IReadOnlyDictionary<string, string> sources,
-        CancellationToken ct)
+        IReadOnlyDictionary<string, string> dependencies, SourceProjects projects, CancellationToken ct)
     {
         if (sources.Count == 0 || _roslynUnavailable || InstalledSdk.Value is not { } sdk) return new();
         var folder = Path.Combine(cache, "parse-" + Guid.NewGuid().ToString("N"));
@@ -25,16 +26,24 @@ static class LocalDeveloperTools
             Directory.CreateDirectory(folder);
             if (await WorkerAsync(sdk, cache, folder, ct) is { } worker)
             {
-                var paths = sources.Keys.ToArray();
-                for (int i = 0; i < paths.Length; i++) File.WriteAllText(Path.Combine(folder, i + ".source"), sources[paths[i]]);
+                var paths = sources.Concat(dependencies).ToArray();
+                var input = new List<object>();
+                for (int i = 0; i < paths.Length; i++)
+                {
+                    var project = projects.Of(paths[i].Key);
+                    var file = i + ".source";
+                    File.WriteAllText(Path.Combine(folder, file), paths[i].Value);
+                    input.Add(new { File = file, Project = project.Id, project.References, Emit = i < sources.Count });
+                }
+                File.WriteAllText(Path.Combine(folder, "index.json"), JsonSerializer.Serialize(input));
                 if ((await RunAsync(sdk.Dotnet, cache, ["exec", "--runtimeconfig", Path.Combine(sdk.Roslyn, "csc.runtimeconfig.json"),
                         worker, sdk.Roslyn, folder], 15, 2_000, ct)).ExitCode == 0)
                 {
                     var parsed = new Dictionary<string, SourceSyntax>(StringComparer.OrdinalIgnoreCase);
-                    for (int i = 0; i < paths.Length; i++)
+                    for (int i = 0; i < sources.Count; i++)
                         if (Path.Combine(folder, i + ".json") is var result && File.Exists(result) &&
                             JsonSerializer.Deserialize<SourceSyntax>(File.ReadAllText(result)) is { } syntax)
-                            parsed[paths[i]] = syntax;
+                            parsed[paths[i].Key] = syntax;
                     return parsed;
                 }
             }

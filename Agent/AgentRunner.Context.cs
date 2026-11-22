@@ -21,36 +21,62 @@ partial class AgentRunner
     }
 
     bool _projectContextReady;
-    string? _projectContext, _changedSource;
+    string? _projectContext;
     List<Plugin>? _plugins;
+    string[] _pendingLocalOperations = [];
 
     List<Plugin> AvailablePlugins() => _plugins ??= PluginTools.Load(tools.Context.PluginsFolder);
 
-    internal static string? LocalCommand(string text) =>
-        text.Trim().ToLowerInvariant() is ("git status" or "git diff" or "git diff --staged" or "dotnet build" or "dotnet test") and var command
-            ? command : null;
-
     internal string? PendingLocalCommand =>
         CanContinue && LastUser() is { } user && Attachment.ListFrom(user).Count == 0 && ExtractText(user["content"]) is { } task
-            ? LocalCommand(task) : null;
+            ? LocalActionRouter.Match(task) : null;
 
     JsonObject? LastUser() => _history.LastIndex(ChatJournal.Flags.User) is >= 0 and var at ? (JsonObject)_history[at] : null;
 
     Task RunLocalAsync(string command, CancellationToken ct) => Timed(async () =>
     {
         string text;
-        if (command.StartsWith("git ", StringComparison.Ordinal)) text = await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct);
+        if (command == "pwd") text = tools.Context.WorkingDirectory;
+        else if (command == "time") text = DateTimeOffset.Now.ToString("HH:mm (zzz)", CultureInfo.InvariantCulture);
+        else if (command.StartsWith("git ", StringComparison.Ordinal)) text = await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct);
+        else if (command.Split(' ', 2) is [("read" or "read_many" or "inspect" or "research" or "search") and var kind, var value])
+        {
+            var args = kind switch
+            {
+                "inspect" => new JsonObject { ["action"] = "inspect", ["path"] = value },
+                "research" => new JsonObject { ["action"] = "search", ["query"] = value },
+                "search" => new JsonObject { ["query"] = value },
+                "read_many" => new JsonObject { ["files"] = new JsonArray([.. value.Split('\n').Select(path => new JsonObject { ["path"] = path })]) },
+                _ => new JsonObject { ["path"] = value },
+            };
+            var operation = kind switch { "read" => "read", "read_many" => "ranges", "search" => "grep", _ => null };
+            if (operation == null) text = (await RunLocalToolAsync(LocalResearchEngine.Name, args, ct)).Output;
+            else
+            {
+                text = (await RunLocalToolAsync("local_batch", new() { ["operations"] = new JsonArray(new JsonObject
+                    { ["name"] = operation, ["arguments"] = args }) }, ct)).Output;
+            }
+        }
+        else if (command.Split(' ', 3) is [("script" or "suite" or "knowledge") and var system, var action, .. var tail])
+        {
+            var name = system switch { "script" => ScriptRegistry.Name, "suite" => LocalTestTools.Name, _ => AgentKnowledge.Name };
+            var result = await RunLocalToolAsync(name, new() { ["action"] = action, ["id"] = tail.FirstOrDefault() }, ct);
+            text = result.Output;
+            if (name == AgentKnowledge.Name && action == "apply" && result.Change is { } applied && ApplicableRecipe(applied.Path) is { } recipe)
+                text += "\n\n" + (await VerifyAsync(recipe, ct)).Report;
+        }
         else
         {
-            var call = new ToolCallEvent("call_" + Guid.NewGuid().ToString("N"), "run_command",
-                new JsonObject { ["command"] = command, ["timeout_seconds"] = 300 }.ToJsonString());
-            ToolCallStarted?.Invoke(call);
-            var result = await ExecuteCallAsync(call, ct);
-            ToolCallFinished?.Invoke(new(call.Id, call.Name, result.Output, result.IsError, result.IsWarning));
-            text = result.Restriction is { } restriction ? CommandRestriction.Prefix + restriction.Message :
-                CommandLog.ResultOf(result.Output) == null ? result.Output :
-                CommandLog.Brief(result.Output) + "\n\n" + CommandLog.Details(result.Output, 2200);
+            var recipe = command.StartsWith("project ", StringComparison.Ordinal) ? ProjectVerification.Detect(tools.Context, testsOnly: command == "project test")
+                : new ProjectVerification.Recipe(tools.Context.WorkingDirectory, [command]);
+            text = recipe == null ? PromptText("Не удалось определить команды диагностики или тестов для этой папки.",
+                "No diagnostic or test commands were found for this folder.") : (await VerifyAsync(recipe, ct)).Report;
         }
+        await FinishLocalAsync(command, text);
+    });
+
+    async Task FinishLocalAsync(string command, string text)
+    {
         var elapsed = _turnClock.Elapsed;
         var sentAt = DateTimeOffset.UtcNow;
         text = text.Trim();
@@ -61,7 +87,105 @@ partial class AgentRunner
         });
         await SaveAsync();
         AssistantText?.Invoke(text, elapsed, sentAt);
-    });
+    }
+
+    async Task<ToolOutcome> RunLocalToolAsync(string name, JsonObject args, CancellationToken ct)
+    {
+        var call = new ToolCallEvent("call_" + Guid.NewGuid().ToString("N"), name, args.ToJsonString());
+        ToolCallStarted?.Invoke(call);
+        await CheckpointAsync([name]);
+        var result = await ExecuteCallAsync(call, ct);
+        ToolCallFinished?.Invoke(new(call.Id, name, result.Output, result.IsError, result.IsWarning) { Change = result.Change });
+        if (result.Change == null && name is not ("exec_command" or LocalTestTools.Name))
+        {
+            await CheckpointAsync([]);
+            return result;
+        }
+        _history.Add(new JsonObject
+        {
+            ["role"] = "assistant",
+            ["tool_calls"] = new JsonArray(new JsonObject { ["type"] = "function", ["id"] = call.Id,
+                ["function"] = new JsonObject { ["name"] = name, ["arguments"] = call.ArgumentsJson } }),
+        });
+        var tool = ToolMessage(call.Id, result.Output, result.Diff);
+        if (name == "exec_command" && VerificationCommand(call)) EnsureMeta(tool)["verification"] = true;
+        if (result.Restriction != null) EnsureMeta(tool)["command_restricted"] = true;
+        RecordChange(call, tool, result.Change);
+        _history.Add(tool);
+        InvalidateReads(call, result.Change?.Path);
+        await SaveAsync();
+        await CheckpointAsync([]);
+        return result;
+    }
+
+    async Task<ProjectVerification.Result> VerifyAsync(ProjectVerification.Recipe recipe, CancellationToken ct)
+    {
+        if (tools.Context.SandboxRoot != null) return new(PromptText("Локальные команды отключены в песочнице.", "Local commands are disabled in the sandbox."), false, [], true);
+        var reports = new List<string>();
+        List<ProjectVerification.Diagnostic> diagnostics = [];
+        bool success = false;
+        bool blocked = false;
+        var started = DateTime.UtcNow;
+        foreach (var step in recipe.Commands)
+        {
+            var result = await RunLocalToolAsync("exec_command",
+                new() { ["command"] = step, ["working_directory"] = recipe.Directory, ["timeout_seconds"] = 120 }, ct);
+            var parsed = ProjectVerification.Diagnostics(tools.Context, result.Output);
+            diagnostics.AddRange(parsed);
+            var report = result.Restriction is { } restriction ? CommandRestriction.Prefix + restriction.Message :
+                CommandLog.ResultOf(result.Output) == null ? result.Output : ProjectVerification.Report(tools.Context, result.Output, parsed);
+            reports.Add("**" + step + "**\n\n" + report);
+            success = !result.IsError && !result.IsWarning;
+            blocked = result.Restriction != null || result.Output.StartsWith("Пользователь отклонил", StringComparison.Ordinal);
+            if (success && ProjectVerification.Tests(step) && !ProjectVerification.TestsExecuted(ProjectVerification.Transcript(tools.Context, result.Output)))
+            {
+                reports.Add(PromptText("Проверка не подтверждена: команда завершилась, но отчёта о выполненных тестах нет.",
+                    "Verification is unconfirmed: the command exited without reporting executed tests."));
+                if (recipe.Commands.All(ProjectVerification.Tests)) success = false;
+            }
+            if (!success) break;
+        }
+        var changes = CurrentActions().SelectMany(entry => ChangesOf(entry.Result)
+            .Select(change => (Change: change, Diff: DiffOf(entry.Result) ?? FileChanges.NetDiff(tools.Context, change)))).ToArray();
+        var edits = changes
+            .Where(entry => entry.Change != null && entry.Diff != null && !entry.Diff.Unified.Contains(TextDiff.Truncated, StringComparison.Ordinal))
+            .Select(entry => new ChangedCoverage.Edit(entry.Change!.Path, entry.Diff!)).ToArray();
+        if (edits.Length > 0)
+        {
+            var coverage = await Task.Run(() => ChangedCoverage.Latest(tools.Context, recipe.Directory, started, edits), ct);
+            if (coverage != null) reports.Add(coverage);
+            else if (reports.Any(report => report.StartsWith("**dotnet test", StringComparison.OrdinalIgnoreCase)))
+                reports.Add(PromptText("Для изменённых методов нет данных из свежего отчёта Cobertura.",
+                    "No recent Cobertura results were found for the changed methods."));
+        }
+        if (success && !IsTemporary && !delegated)
+        {
+            var verification = string.Join(", ", recipe.Commands);
+            var facts = changes.Select(entry => entry.Change).OfType<FileChange>().Reverse()
+                .Where(change => PathHelper.IsInside(change.Path, recipe.Directory))
+                .DistinctBy(change => change.Path, StringComparer.OrdinalIgnoreCase).Take(20)
+                .Select(change => new TaskMemory.Fact(change.Path, change.AfterHash, DateTimeOffset.UtcNow, verification)).ToArray();
+            if (facts.Length > 0) await Task.Run(() => TaskMemory.Remember(tools.Context, facts));
+        }
+        return new(string.Join("\n\n", reports), success, [.. diagnostics.Distinct()], blocked);
+    }
+
+    Task CheckpointAsync(string[] pending, bool remember = false)
+    {
+        _pendingLocalOperations = pending;
+        if (IsTemporary || delegated || ChatPath is not { } chat) return Task.CompletedTask;
+        var changes = CurrentActions().SelectMany(entry => ChangesOf(entry.Result))
+            .Where(change => PathHelper.IsInside(change.Path, tools.Context.WorkingDirectory)).ToArray();
+        var checkpoint = new TaskCheckpoint(Str(MetaOf(LastUser())?[SentAtField]), _history.Count, PlanNote(),
+            changes.Select(change => change.Path).Distinct(StringComparer.OrdinalIgnoreCase).TakeLast(20).ToArray(), pending);
+        return Task.Run(() =>
+        {
+            TaskMemory.Save(tools.Context, chat, checkpoint);
+            if (remember)
+                TaskMemory.Remember(tools.Context, changes.TakeLast(20)
+                    .Select(change => new TaskMemory.Fact(change.Path, change.AfterHash, DateTimeOffset.UtcNow)).ToArray());
+        });
+    }
 
     static string? PluginName(ToolCallEvent call) => Str(ArgsOf(call)?["name"])?.Trim();
 
@@ -71,8 +195,14 @@ partial class AgentRunner
         int start = _history.LastIndex(ChatJournal.Flags.User) + 1, at = start;
         foreach (var message in _history.Range(start, _history.Count - start).OfType<JsonObject>())
         {
-            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? []) calls[call.Id] = call;
-            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match)) yield return (match, message, at);
+            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? [])
+                calls[call.Id] = call.Name == "run_command" ? call with { Name = "exec_command" } : call;
+            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match))
+            {
+                if (match.Name == "exec_command" && Str(MetaOf(message)?["completed_command"]) is { } command)
+                    match = match with { ArgumentsJson = new JsonObject { ["command"] = command }.ToJsonString() };
+                yield return (match, message, at);
+            }
             at++;
         }
     }
@@ -88,18 +218,26 @@ partial class AgentRunner
         }
     }
 
-    string ResumeContext() => PromptText(
+    string ResumeContext()
+    {
+        var checkpoint = TaskMemory.Load(tools.Context, ChatPath, Str(MetaOf(LastUser())?[SentAtField]), _history.Count);
+        return PromptText(
         "Пользователь возобновил прерванную задачу. Продолжи текущий запрос с сохранённого места. " +
         "Успешные изменения уже внесены. Выполняй оставшиеся действия, а после отменённой команды сначала " +
         "проверь её результат на диске: она могла успеть внести изменения.\n",
         "The user resumed an interrupted task. Continue from where it stopped. Successful changes are already in place. " +
         "Complete the remaining work. If a command was cancelled, check its result on disk first because it may have made changes.\n") +
+        (checkpoint is { ChangedFiles.Length: > 0 } ? "\nИзменённые файлы:\n" + string.Join("\n", checkpoint.ChangedFiles) + "\n" : "") +
+        (checkpoint?.Plan is { Length: > 0 } plan ? "\n" + plan + "\n" : "") +
+        (checkpoint?.Pending is { Length: > 0 } pending ? PromptText(
+            "\nНеподтверждённый итог операций: ", "\nOperations with unconfirmed outcomes: ") + string.Join(", ", pending) + "\n" : "") +
         string.Join("\n", CurrentActions().Where(entry => entry.Call.Name != "use_plugin").TakeLast(18).Select(entry =>
         {
             var output = Str(entry.Result["content"]) ?? "";
             return "- " + HistoryCompressor.Describe(entry.Call.Name, entry.Call.ArgumentsJson) + " — " +
-                   (entry.Call.Name is "run_command" or "run_plugin" ? CommandLog.Brief(output) : Clip(output.Split('\n', 2)[0], 230));
+                   (entry.Call.Name is "exec_command" or "run_plugin" ? CommandLog.Brief(output) : Clip(output.Split('\n', 2)[0], 230));
         }));
+    }
 
     string? RequestTail(bool harder)
     {
@@ -107,20 +245,16 @@ partial class AgentRunner
         if (_resumeContext != null) notes.Add(Clip(_resumeContext, harder ? 1800 : 4200));
         foreach (var restriction in _blockedShells.Values) notes.Add(CommandRestriction.Prefix + restriction.Message);
         if (!_blockedShells.ContainsKey(CommandShell.PowerShell))
-            foreach (var (name, instruction) in _activePlugins.TakeLast(harder ? 1 : 3))
-                notes.Add(PromptText($"Активный плагин «{name}». Инструкция уже загружена. Используй указанный ниже скрипт через run_plugin, когда действие ещё не выполнено.\n",
-                    $"Active plugin: {name}. Its instructions are loaded. Use the script below through run_plugin if the action is still pending.\n") + Clip(instruction, harder ? 4000 : 8500));
+            foreach (var (name, instruction) in _activePlugins.TakeLast(harder ? 1 : 2))
+            {
+                var scripts = Regex.Matches(instruction, @"[\w.\/-]+\.ps1", RegexOptions.IgnoreCase)
+                    .Select(m => Path.GetFileName(m.Value)).Distinct(StringComparer.OrdinalIgnoreCase).Take(6);
+                notes.Add(PromptText($"Активный плагин «{name}». Инструкция уже получена через use_plugin. ",
+                    $"Active plugin: {name}. Instructions were loaded with use_plugin. ") +
+                    PromptText("При необходимости вызови use_plugin ещё раз; доступные сценарии: ",
+                    "Reload use_plugin if its instructions are missing; scripts: ") + string.Join(", ", scripts));
+            }
         return notes.Count > 0 ? PromptText("\n\n[Сведения программы о текущем шаге]\n", "\n\n[Application context for this step]\n") + string.Join("\n\n", notes) : null;
-    }
-
-    static void AddContext(List<JsonNode> list, string? context, params string[] roles)
-    {
-        int at = context == null ? -1 : list.FindLastIndex(node => roles.Contains(Role(node)));
-        if (at < 0) return;
-        var copy = (JsonObject)list[at].DeepClone();
-        if (copy["content"] is JsonArray parts) parts.Add(new JsonObject { ["type"] = "text", ["text"] = context });
-        else copy["content"] = (ExtractText(copy["content"]) ?? "") + context;
-        list[at] = copy;
     }
 
     async Task<string?> ProjectContextAsync(int limit, CancellationToken ct)
@@ -130,42 +264,20 @@ partial class AgentRunner
         {
             var task = ExtractText(user["content"]) ?? "";
             var attachments = Attachment.ListFrom(user);
-            _projectContext = await Task.Run(() => LocalProjectContext.CollectAsync(tools.Context, task, attachments, _changedSource, ct), ct);
+            PreparingContext?.Invoke(PromptText("Ищу контекст в проекте…", "Finding project context…"));
+            _projectContext = await Task.Run(async () =>
+            {
+                string? known = AgentKnowledge.Relevant(tools.Context, task);
+                string? project = await LocalProjectContext.CollectAsync(tools.Context, task, attachments, ct);
+                return string.Join("\n\n", new[] { Str(MetaOf(user)?["diagnostic_route"]), known, TaskMemory.Relevant(tools.Context, task), project }.OfType<string>());
+            }, ct);
             _projectContextReady = true;
         }
         return _projectContext is { } context ? Clip(context, limit) : null;
     }
 
-    void InvalidateProjectContext(ToolCallEvent? call = null)
-    {
-        _projectContextReady = false;
-        _changedSource = null;
-        if (call == null || Str(ArgsOf(call)?["path"]) is not { } path || !ProjectSourceIndex.IsSource(path)) return;
-        try { _changedSource = tools.Context.Resolve(path); }
-        catch (ToolException) { }
-    }
+    void InvalidateProjectContext() => (_projectContextReady, _projectContext) = (false, null);
 
     static bool VerificationCommand(ToolCallEvent call) =>
-        Str(ArgsOf(call)?["command"]) is { } command && Verification().IsMatch(command);
-
-    JsonNode WithVerificationSummary(JsonNode node)
-    {
-        if (MetaOf(node) is not { } meta) return node;
-        string? summary = null;
-        if (Str(meta["local_command"]) is { } local)
-            summary = local.StartsWith("git ", StringComparison.Ordinal)
-                ? PromptText($"Пользователю показан локальный вывод команды `{local}`.", $"The user was shown the local output of `{local}`.")
-                : PromptText($"Локально выполнена команда `{local}`. Сводка вывода:\n", $"Command `{local}` ran locally. Output summary:\n") + Clip(ExtractText(node["content"]) ?? "", 1900);
-        else if (Bool(meta["verification"]) == true && Bool(meta["command_restricted"]) != true &&
-                 Str(node["content"]) is { } content && CommandLog.IdOf(content) != null)
-            summary = CommandLog.Brief(content) + (CommandLog.Details(content, 2600) is { Length: > 0 } details ? "\n" + details : "") +
-                      PromptText("\nПолный доступный вывод открывается через read_log.", "\nUse read_log to access the full available output.");
-        if (summary == null) return node;
-        var copy = (JsonObject)node.DeepClone();
-        copy["content"] = summary;
-        return copy;
-    }
-
-    [GeneratedRegex(@"^\s*(?:(?:dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|test)|(?:python\s+-m\s+)?pytest|cargo\s+(?:build|test)|go\s+test)\b)[^\r\n;|&]*$", RegexOptions.IgnoreCase)]
-    private static partial Regex Verification();
+        Str(ArgsOf(call)?["command"]) is { } command && ProjectVerification.Command(command);
 }

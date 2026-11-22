@@ -26,6 +26,7 @@ public sealed class AppConfig
     public bool AutoChatTitles { get; private init; }
     public bool RussianLanguage { get; private init; }
     public bool ComputerUse { get; private init; }
+    internal LocalLanguageModel? LocalModel { get; private init; }
     internal NetworkSettings Network { get; private init; } = new();
     public int? MaxTokens { get; private init; }
     public long? DayLimit { get; private init; }
@@ -51,8 +52,11 @@ public sealed class AppConfig
         string workDir;
         try
         {
-            workDir = Path.GetFullPath(Path.Combine(AppPaths.AppFolder,
-                Get("AGENT_WORKDIR") is { } dir ? Environment.ExpandEnvironmentVariables(dir.Trim('"')) : AppPaths.DefaultWorkspace));
+            var directory = Get("AGENT_WORKDIR") is { } dir ? Environment.ExpandEnvironmentVariables(dir.Trim('"')) : AppPaths.DefaultWorkspace;
+            workDir = AppPaths.Relocate(Path.GetFullPath(Path.Combine(AppPaths.AppFolder, directory)));
+            if (!Path.IsPathRooted(directory) && !Directory.Exists(workDir) &&
+                Path.GetFullPath(Path.Combine(AppPaths.LegacyFolder, directory)) is var old && Directory.Exists(old))
+                workDir = AppPaths.Relocate(old);
         }
         catch { workDir = AppPaths.DefaultWorkspace; }
         if (sandbox && !PathHelper.IsInside(workDir, AppPaths.AppFolder)) workDir = AppPaths.DefaultWorkspace;
@@ -75,6 +79,7 @@ public sealed class AppConfig
             AutoChatTitles = !string.Equals(Get("AGENT_AUTO_CHAT_TITLES"), "false", StringComparison.OrdinalIgnoreCase),
             RussianLanguage = IsRussianLanguage(Get("AGENT_LANGUAGE")),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
+            LocalModel = LocalLanguageModel.FromSettings(Get("AGENT_LOCAL_AI_URL"), Get("AGENT_LOCAL_AI_MODEL")),
             // The saved route is unknown, so a proxy route that never connects keeps traffic from bypassing a configured VPN.
             Network = loadError == null ? NetworkSettings.Load(key => vars.GetValueOrDefault(key))
                 : new(NetworkMode.Proxy) { Blocked = "Сеть отключена: не удалось прочитать файл настроек .env." },
@@ -202,7 +207,7 @@ public sealed class AppConfig
         AGENT_PROXY_HOST=
         AGENT_PROXY_PORT=1080
         AGENT_PROXY_USER=
-        # Пароль прокси хранится здесь открытым текстом, как и ключи выше
+        # В обычной версии Sharp Agent сохраняет пароль прокси и ключи под защитой Windows.
         AGENT_PROXY_PASSWORD=
         # VPN: ссылка на подписку, путь к sing-box.exe (скачивается отдельно) и его SHA-256, выбранный сервер
         AGENT_VPN_SUBSCRIPTION=
@@ -215,6 +220,9 @@ public sealed class AppConfig
         AGENT_SANDBOX=false
         AGENT_USE_SUBAGENTS=false
         AGENT_AUTO_CHAT_TITLES=true
+        # Необязательно: уже запущенная модель с локальным OpenAI-совместимым API, например http://127.0.0.1:11434/v1
+        AGENT_LOCAL_AI_URL=
+        AGENT_LOCAL_AI_MODEL=
         AGENT_LANGUAGE=en
         # true — агент управляет программами на экране и смотрит скриншоты (скриншоты расходуют много токенов)
         AGENT_COMPUTER_USE=false

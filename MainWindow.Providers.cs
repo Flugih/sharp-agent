@@ -196,22 +196,35 @@ public partial class MainWindow
 
     private string ModelDisplayName(string model) => _modelNames.GetValueOrDefault(_config.Provider)?.GetValueOrDefault(model) ?? model;
 
+    (AgentProvider Provider, string Model, string Name) CurrentModelSelection()
+    {
+        var model = CurrentModel();
+        return (_config.Provider, model, ModelDisplayName(model));
+    }
+
+    async Task ShowModelChangeAsync((AgentProvider Provider, string Model, string Name) previous)
+    {
+        var current = CurrentModelSelection();
+        bool providerChanged = previous.Provider != current.Provider;
+        if (_agent.History.Count == 0 || !providerChanged && string.Equals(previous.Model, current.Model, StringComparison.OrdinalIgnoreCase)) return;
+        var from = providerChanged ? $"{previous.Name} ({ProviderName(previous.Provider)})" : previous.Name;
+        var to = providerChanged ? $"{current.Name} ({ProviderName(current.Provider)})" : current.Name;
+        ScrollToLatest();
+        AddModelChange(from, to);
+        await _agent.RecordModelChangeAsync(from, to);
+    }
+
     private void ModelButton_Click(object sender, RoutedEventArgs e)
     {
         var menu = ModelMenu(ModelButton, _config.Provider, async model => await RunChatOperationAsync(async () =>
         {
-            var previous = CurrentModel();
-            if (_cts != null || string.Equals(previous, model, StringComparison.OrdinalIgnoreCase)) return;
-            var previousName = ModelDisplayName(previous);
+            var previous = CurrentModelSelection();
+            if (_cts != null || string.Equals(previous.Model, model, StringComparison.OrdinalIgnoreCase)) return;
             _selectedModel = model;
             RememberModel(model);
             UpdateModelEffort();
             UpdateContextBanner();
-            if (_agent.History.Count == 0) return;
-            var currentName = ModelDisplayName(model);
-            ScrollToLatest();
-            AddModelChange(previousName, currentName);
-            await _agent.RecordModelChangeAsync(previousName, currentName);
+            await ShowModelChangeAsync(previous);
         }));
         var ready = ProvidersByName().Where(IsReady).ToList();
         if (ready.Exists(p => p != _config.Provider))
@@ -219,7 +232,7 @@ public partial class MainWindow
             menu.Items.Insert(0, new Separator());
             foreach (var provider in Enumerable.Reverse(ready))
             {
-                var item = FileActions.Item(ProviderName(provider), null, () => SwitchProvider(provider));
+                var item = FileActions.Item(ProviderName(provider), null, async () => await SwitchProviderAsync(provider));
                 item.IsChecked = provider == _config.Provider;
                 item.FontWeight = FontWeights.SemiBold;
                 AutomationProperties.SetName(item, Tr("Провайдер ", "Provider ") + ProviderName(provider));
@@ -233,6 +246,13 @@ public partial class MainWindow
             menu.Items.Add(new Separator());
             menu.Items.Add(note);
             menu.Items.Add(FileActions.Item(Tr("Управлять использованием", "Manage usage"), Glyphs.Open, () => FileActions.OpenUrl(ChatGptClient.UsageUrl)));
+        }
+        if (_models.Count > 1)
+        {
+            var current = _state.EconomyModels?.GetValueOrDefault(_config.Provider);
+            menu.Items.Add(FileActions.Item(current == null ? Tr("Модель для простых запросов…", "Model for simple requests…") :
+                Tr($"Модель для простых запросов · {ModelDisplayName(current)}", $"Simple requests · {ModelDisplayName(current)}"),
+                Glyphs.Lightning, () => Dispatcher.InvokeAsync(OpenEconomyModelMenu)));
         }
         if (EffortLevelsOf(CurrentModel()) is { Length: > 0 } levels)
         {
@@ -283,6 +303,26 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
+    void OpenEconomyModelMenu()
+    {
+        var provider = _config.Provider;
+        var menu = ModelMenu(ModelButton, provider, model =>
+        {
+            (_state.EconomyModels ??= [])[provider] = model;
+            _state.Save();
+        });
+        var saved = _state.EconomyModels?.GetValueOrDefault(provider);
+        foreach (var item in menu.Items.OfType<MenuItem>()) item.IsChecked = item.Tag is string model && model == saved;
+        var off = FileActions.Item(Tr("Использовать выбранную модель для всех запросов", "Use the selected model for all requests"), null, () =>
+        {
+            _state.EconomyModels?.Remove(provider);
+            _state.Save();
+        });
+        off.IsChecked = saved == null;
+        menu.Items.Insert(0, off);
+        menu.IsOpen = true;
+    }
+
     static void Settle(UIElement element)
     {
         if (!Theme.AnimationsEnabled) return;
@@ -300,18 +340,20 @@ public partial class MainWindow
         shift.BeginAnimation(TranslateTransform.YProperty, Ease(8, 0));
     }
 
-    private void SwitchProvider(AgentProvider provider)
+    Task SwitchProviderAsync(AgentProvider provider) => RunChatOperationAsync(async () =>
     {
         if (AnyRunning)
         {
             ShowToast(Tr("Остановите агента, чтобы переключить провайдера", "Stop active tasks before switching providers"), ToastKind.Warning);
             return;
         }
-        if (provider == _config.Provider || !SaveEnvChoice("AGENT_PROVIDER", provider.ToString().ToLowerInvariant())) return;
+        var previous = CurrentModelSelection();
+        if (provider == previous.Provider || !SaveEnvChoice("AGENT_PROVIDER", provider.ToString().ToLowerInvariant())) return;
         CloseFlyout();
         ApplyProvider();
         UpdateContextBanner();
-    }
+        await ShowModelChangeAsync(previous);
+    });
 
     private bool SaveEnvChoice(string key, string value)
     {
@@ -328,6 +370,7 @@ public partial class MainWindow
         foreach (var model in picker.Tag as IEnumerable<string> ?? [])
         {
             var item = FileActions.Item((names?.GetValueOrDefault(model) ?? model).Replace("_", "__"), null, () => choose(model));
+            item.Tag = model;
             item.IsChecked = model == current;
             menu.Items.Add(item);
         }

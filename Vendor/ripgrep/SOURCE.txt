@@ -1,0 +1,4 @@
+ripgrep 15.2.0, x86_64-pc-windows-msvc
+https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0
+Upstream ZIP SHA-256: 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5
+The executable and license files are unmodified upstream release files.

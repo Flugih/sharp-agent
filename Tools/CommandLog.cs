@@ -18,14 +18,15 @@ public static partial class CommandLog
         new AgentTool
         {
             Name = "read_log",
-            Description = "Дочитать вывод уже выполненной команды (run_command, run_plugin) по номеру журнала из строки " +
-                "«Журнал: …» её результата — без повторного запуска. Журнал хранит первые и последние 256 КБ каждого " +
-                "потока вывода. Возвращает пронумерованные строки и offset, с которого читать дальше; обрезанную строку " +
+            Description = "Дочитать вывод уже выполненной команды (exec_command, run_plugin) по номеру журнала из строки " +
+                "«Журнал: …» её результата — без повторного запуска. Журнал хранит полный вывод до 8 МиБ на поток. " +
+                "При превышении лимита сохраняет начало и конец. Возвращает пронумерованные строки и offset, с которого читать дальше; обрезанную строку " +
                 $"целиком (до {MaxPageChars} символов) покажут её offset и limit=1.",
             Parameters = Schema.Object(
                 new Prop("log_id", "string", "Номер журнала из результата команды.", Required: true),
                 new Prop("offset", "integer", "С какой строки читать (нумерация с 1). По умолчанию 1."),
-                new Prop("limit", "integer", $"Сколько строк прочитать (по умолчанию {DefaultPage}, максимум {MaxPage}).")),
+                new Prop("limit", "integer", $"Сколько строк прочитать (по умолчанию {DefaultPage}, максимум {MaxPage})."),
+                new Prop("column", "integer", "Смещение в символах внутри длинной строки при limit=1, начиная с 0.")),
             Handler = AgentTool.Sync(ReadLog),
         },
     ];
@@ -96,25 +97,15 @@ public static partial class CommandLog
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    public static void Prune(string folder)
-    {
-        try
-        {
-            var expired = DateTime.Now.AddDays(-KeepDays);
-            foreach (var file in new DirectoryInfo(folder).EnumerateFiles().Where(f => f.Extension == ".log" || f.Name.StartsWith("screen_")))
-                try { if (file.LastWriteTime < expired) file.Delete(); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-    }
-
     static string? Save(string folder, string text)
     {
         try
         {
             Directory.CreateDirectory(folder);
             var id = $"{DateTime.Now:yyMMdd-HHmmss}-{Random.Shared.Next(0x10000):x4}";
-            File.WriteAllText(Path.Combine(folder, id + ".log"), text, new UTF8Encoding(false));
+            using var stream = new FileStream(Path.Combine(folder, id + ".log"), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            writer.Write(text);
             return id;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
@@ -123,12 +114,28 @@ public static partial class CommandLog
     static string ReadLog(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var id = a.Required("log_id").Trim();
+        if (c.LogsFolder != null && PathOf(c.LogsFolder, id) is { } candidate)
+        {
+            var path = c.Resolve(candidate);
+            c.GuardSecrets(path);
+            if (!PathHelper.SamePath(path, PathHelper.FinalPath(path))) throw new ToolException("Недопустимый путь журнала.");
+        }
         var text = (c.LogsFolder != null ? Read(c.LogsFolder, id) : null) ??
             throw new ToolException($"Журнал «{id}» не найден: журналы хранятся {KeepDays} дней. Если вывод ещё нужен, выполни команду заново.");
         var lines = text.Split('\n');
         int offset = Math.Max(1, a.Int("offset", 1));
         if (offset > lines.Length) throw new ToolException($"offset={offset} больше числа строк в журнале ({lines.Length}).");
-        int last = Math.Min(lines.Length, offset + Math.Clamp(a.Int("limit", DefaultPage), 1, MaxPage) - 1), end = offset - 1;
+        int limit = Math.Clamp(a.Int("limit", DefaultPage), 1, MaxPage);
+        if (limit == 1 && (lines[offset - 1].Length > MaxPageChars || a.Int("column", 0) > 0))
+        {
+            var textLine = lines[offset - 1];
+            int column = Math.Max(0, a.Int("column", 0));
+            if (column >= textLine.Length) throw new ToolException("Смещение за концом строки.");
+            int next = column + Math.Min(textLine.Length - column, MaxPageChars);
+            return $"Журнал {id}: строка {offset}, символы {column}–{next - 1}\n" + textLine[column..next] +
+                (next < textLine.Length ? $"\nДальше: offset={offset}, limit=1, column={next}" : "");
+        }
+        int last = offset + Math.Min(lines.Length - offset, limit - 1), end = offset - 1;
         var body = new StringBuilder();
         for (int i = offset; i <= last; i++)
         {

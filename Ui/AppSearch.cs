@@ -25,6 +25,10 @@ sealed record SearchMatch(SearchArea Area, string Title, string Detail, string P
 static class AppSearch
 {
     const int MaxResults = 60, MaxEntries = 20_000;
+    static readonly Regex SentenceBoundary = new("""[.!?…]+[»”’"')\]}]*(?=\s|$)|[。！？]+[」』】»”"]*|\r?\n[^\S\r\n]*\r?\n|\u2029""",
+        RegexOptions.Compiled);
+    static readonly Regex Abbreviation = new(@"(?:\b(?:Mr|Mrs|Ms|Dr|Prof|St|vs|г|гг|им|ул|рис|стр|см|т)|(?-i:\b\p{Lu})|\b(?:e\.g|i\.e|т\.\s*[едпн]))\.$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     static readonly HashSet<string> SkippedFolders = new(StringComparer.OrdinalIgnoreCase)
         { "bin", "obj", "node_modules", "dist", "build", "target", "vendor", "packages", "__pycache__", "auth", "history", "temp", "attachments", "publish" };
 
@@ -128,7 +132,7 @@ static class AppSearch
                         int at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
                         if (at < 0) continue;
                         int line = text.AsSpan(0, at).Count('\n') + 1;
-                        matches.Add(new(SearchArea.Text, entry.Name, relative + $":{line}", path, Excerpt(text, query), line));
+                        matches.Add(new(SearchArea.Text, entry.Name, relative + $":{line}", path, Excerpt(text, query), line, Query: query));
                     }
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -144,6 +148,26 @@ static class AppSearch
         {
             if (Matches(title)) matches.Add(new(SearchArea.Actions, title, shortcut, id));
         }
+    }
+
+    internal static (int Start, int Length) SentenceRange(string text, int at, int length)
+    {
+        int start = 0, end = text.Length, matchEnd = at + length;
+        foreach (var boundary in SentenceBoundary.EnumerateMatches(text))
+        {
+            int index = boundary.Index, next = index + boundary.Length;
+            if (text[index] == '.' && (boundary.Length == 1 || text[index + 1] != '.') && next < text.Length &&
+                Abbreviation.IsMatch(text.AsSpan(Math.Max(0, index - 12)..(index + 1)))) continue;
+            if (next <= at) start = next;
+            else if (next >= matchEnd)
+            {
+                end = text[index] is '\r' or '\n' or '\u2029' ? Math.Max(index, matchEnd) : next;
+                break;
+            }
+        }
+        while (start < at && char.IsWhiteSpace(text[start])) start++;
+        while (end > matchEnd && char.IsWhiteSpace(text[end - 1])) end--;
+        return (start, end - start);
     }
 
     static string Excerpt(string text, string query)
