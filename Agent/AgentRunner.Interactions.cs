@@ -16,17 +16,6 @@ partial class AgentRunner
 {
     const int SubagentInputTokens = 12_000, SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 4, MaxSubagentSteps = 4;
     const string SubagentStepStop = "Достигнут лимит шагов субагента.";
-    const string SubagentPrompt = """
-        Ты — субагент Sharp Agent. Выполни порученную часть задачи. Пользуйся только доступными инструментами чтения и поиска.
-        Не меняй файлы. Отвечай основному агенту на языке пользователя. Кратко сообщи результаты, основания и полные пути
-        проверенных файлов. Если данных недостаточно, укажи, каких именно.
-        """;
-    const string EnglishSubagentPrompt = """
-        You are a Sharp Agent subagent. Complete your assignment using only the available read and search tools.
-        Do not change files. Reply in the user's language and briefly give your findings, evidence, and full paths
-        to files you checked. If evidence is missing, say what you need.
-        """;
-
     static readonly JsonNode AskDefinition = JsonNode.Parse("""{"type":"function","function":{"name":"ask_user","description":"Уточнить существенную неоднозначность прямо у пользователя и дождаться ответа.","parameters":{"type":"object","properties":{"question":{"type":"string"},"choices":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":5}},"required":["question","choices"]}}}""")!;
 
     static readonly JsonNode DelegateDefinition = JsonNode.Parse("""
@@ -46,45 +35,36 @@ partial class AgentRunner
     JsonArray Definitions()
     {
         if (delegated) return tools.Definitions;
-        var definitions = (JsonArray)tools.Definitions.DeepClone();
         bool readOnly = CurrentDiagnosis() is { Repair: false };
-        bool scoped = WorkMode && !readOnly && LastUser() is { } taskUser &&
-            ToolDefinitionSelection.Reduce(definitions, ExtractText(taskUser["content"]) ?? "");
-        _scopedDefinitions = definitions;
-        if (scoped)
-        {
-            definitions.Add(ToolDefinitionSelection.EnableDefinition());
-            foreach (var (call, result, _) in CurrentActions())
-                if (call.Name == "enable_tools" && !ToolRegistry.IsErrorOutput(Str(result["content"]) ?? "") && ArgsOf(call) is { } group)
-                    EnableToolGroup(group);
-        }
+        var request = ExtractText(LastUser()?["content"]) ?? "";
         bool simple = !WorkMode && LastUser() is { } current && Attachment.ListFrom(current).Count == 0 &&
-            AdaptiveModelRouter.IsSimple(ExtractText(current["content"]) ?? "");
+            AdaptiveModelRouter.IsSimple(request);
+        var initial = !readOnly && !simple ? ToolDefinitionSelection.Initial(request) : null;
         bool plugins = !simple && AvailablePlugins().Count > 0;
-        foreach (var tool in definitions.Where(tool => simple || Str(tool?["function"]?["name"]) switch
+        var catalog = _toolCatalog = tools.Definitions.OfType<JsonObject>()
+            .Where(tool => !simple && (Str(tool["function"]?["name"]) switch
         {
-            "use_plugin" or "run_plugin" => readOnly || !plugins,
-            BrowserTools.Name => tools.Context.ReadBrowser == null,
-            { } name => readOnly && !ToolRegistry.IsReadOnly(name),
-            null => readOnly,
-        }).ToArray()) definitions.Remove(tool);
-        if (!WorkMode || readOnly)
-        {
-            if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
-            return definitions;
-        }
+            "use_plugin" or "run_plugin" => !readOnly && plugins,
+            BrowserTools.Name => tools.Context.ReadBrowser != null,
+            { } name => !readOnly || ToolRegistry.IsReadOnly(name),
+            null => false,
+        })).ToDictionary(tool => Str(tool["function"]?["name"])!, tool => (JsonNode)tool, StringComparer.Ordinal);
         if (_activePlugins.Count > 0 &&
-            definitions.OfType<JsonObject>().FirstOrDefault(tool => JsonUtil.Str(tool["function"]?["name"]) == "use_plugin") is { } activate)
+            catalog.TryGetValue("use_plugin", out var activate))
         {
             var available = AvailablePlugins().Select(plugin => plugin.Name)
                 .Where(name => !_activePlugins.ContainsKey(name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (available.Length == 0) definitions.Remove(activate);
+            activate = (JsonObject)activate.DeepClone();
+            if (available.Length == 0) catalog.Remove("use_plugin");
             else if (activate["function"]?["parameters"]?["properties"]?["name"] is JsonObject name)
+            {
                 name["enum"] = new JsonArray([.. available.Select(value => JsonValue.Create(value))]);
+                catalog["use_plugin"] = activate;
+            }
         }
-        definitions.Add(PlanDefinition.DeepClone());
-        if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
-        if (UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
+        if (WorkMode && !readOnly) catalog.Add("update_plan", PlanDefinition);
+        if (ClarifyAsync != null) catalog.Add("ask_user", AskDefinition);
+        if (WorkMode && !readOnly && UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
         {
             var definition = DelegateDefinition.DeepClone();
             var tasks = definition["function"]!["parameters"]!["properties"]!["tasks"]!;
@@ -92,44 +72,17 @@ partial class AgentRunner
             var steps = tasks["items"]!["properties"]!["steps"]!;
             steps["maximum"] = SubagentStepsPerTask;
             if (!FastMode) steps["description"] = "Дай 2 шага для точечной проверки и 3, если нужно больше чтения.";
-            definitions.Add(definition);
+            catalog.Add("delegate_tasks", definition);
         }
-        return definitions;
-    }
-
-    string InteractionPrompt() => !RussianLanguage ? EnglishInteractionPrompt() : delegated ? $"\nРабочая папка: {tools.Context.WorkingDirectory}" :
-        (ClarifyAsync == null ? "" :
-            "\nВызывай ask_user только при существенной неоднозначности, которую нельзя разрешить по контексту " +
-            "и без которой нельзя правильно продолжить. Давай короткий вопрос и различимые варианты. " +
-            "Не спрашивай о мелочах и не используй этот инструмент для подтверждения действий.") +
-        (UseSubagents
-            ? (FastMode
-                ? "\nВ быстром режиме делегируй независимые проверки одним параллельным вызовом, если они заметно ускорят задачу. " +
-                  "Переиспользуй результаты субагентов и не повторяй уже выполненный поиск. Простые задачи делай сам. "
-                : "\nКогда доступен delegate_tasks, используй субагентов для отдельных проверок, которые заметно помогают задаче. " +
-                  "Обычно поручай одну точечную проверку за 2–3 шага. Не дублируй собственный поиск. ") +
-              "Формулируй самодостаточные поручения, включая нужные требования, " +
-              "и выбирай только относящиеся к поручению вложения по точным путям через attachments. " +
-              $"За запрос можно дать до {SubagentTaskLimit} поручений, до {SubagentStepsPerTask} шагов на каждое. " +
-              "Субагенты читают файлы, а изменения выполняешь ты с обычными подтверждениями."
-            : "") +
-        (FastMode
-            ? "\nВ быстром режиме объединяй независимые поиски и чтения в один пакет вызовов. Зависимые шаги выполняй по результатам предыдущих. " +
-              "Применяй обычные критерии проверки и завершения задачи."
-            : "");
-
-    string EnglishInteractionPrompt()
-    {
-        if (delegated) return $"\nWorking directory: {tools.Context.WorkingDirectory}";
-        var clarification = ClarifyAsync == null ? "" :
-            "\nUse ask_user only to resolve ambiguity that blocks the task. Give a short question and distinct options. Do not use it for action confirmations.";
-        var delegation = !UseSubagents ? "" :
-            (FastMode
-                ? "\nIn fast mode, batch independent checks in parallel when that will substantially accelerate the task. Reuse the findings and avoid repeating searches. Handle simple tasks yourself. "
-                : "\nWhen delegate_tasks is available, delegate focused checks that materially help. Usually assign one check in 2–3 steps and avoid duplicating your own search. ") +
-            $"Give each worker a self-contained brief and only relevant attachment paths. Up to {SubagentTaskLimit} assignments per request, with up to {SubagentStepsPerTask} steps each. Subagents are read-only. Apply changes yourself with the usual confirmations.";
-        return clarification + delegation + (FastMode
-            ? "\nBatch independent searches and reads. Run dependent steps after their prerequisites, and verify the result as usual." : "");
+        var selected = catalog.Where(item => initial == null || initial(item.Key) || item.Key == "ask_user" ||
+            (item.Key is "update_plan" or "delegate_tasks") && Regex.IsMatch(request, @"(?i)\b(?:plan|subagents?)\b|план|субагент")).ToArray();
+        var definitions = _scopedDefinitions = new JsonArray([.. selected.Select(item => item.Value.DeepClone())]);
+        if (selected.Length == catalog.Count) return definitions;
+        definitions.Add(ToolDefinitionSelection.EnableDefinition());
+        foreach (var (call, result, _) in CurrentActions())
+            if (call.Name == "enable_tools" && !ToolRegistry.IsErrorOutput(Str(result["content"]) ?? "") && ArgsOf(call) is { } args)
+                EnableToolGroup(args);
+        return _scopedDefinitions;
     }
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
@@ -150,7 +103,7 @@ partial class AgentRunner
             var shell = call.Name switch
             {
                 "run_plugin" => CommandShell.PowerShell,
-                "run_command" when ArgsOf(call) is { } command => ShellTools.ShellOf(new ToolArgs(command)),
+                "exec_command" when ArgsOf(call) is { } command => ShellTools.ShellOf(new ToolArgs(command)),
                 _ => (CommandShell?)null,
             };
             if (shell is { } known && _blockedShells.TryGetValue(known, out var restriction))

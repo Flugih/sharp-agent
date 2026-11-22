@@ -41,7 +41,8 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
     public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
-        var body = Request(model, messages, tools, maxTokens, effort, callTools).ToJsonString();
+        var schemas = ToolSchemas.Get(tools);
+        var body = ToolSchemaWire.Serialize(Request(model, messages, schemas != null, maxTokens, effort, callTools), schemas);
         void Reset()
         {
             reportText(null, false);
@@ -59,7 +60,14 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
         }, _ => false, Reset, retrying, ct);
     }
 
-    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort, bool callTools)
+    static readonly ToolSchemaWire ToolSchemas = new(static tools => new JsonArray([..
+        tools.OfType<JsonObject>().Select(tool => tool["function"]).OfType<JsonObject>().Select(function => new JsonObject
+        {
+            ["name"] = function["name"]?.DeepClone(), ["description"] = function["description"]?.DeepClone(),
+            ["input_schema"] = function["parameters"]?.DeepClone(),
+        })]));
+
+    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, bool hasTools, int? maxTokens, string? effort, bool callTools)
     {
         var (limit, adaptive) = _modelLimits.GetValueOrDefault(model);
         var turns = new JsonArray();
@@ -94,14 +102,9 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             ["text"] = string.Join("\n\n", system),
             ["cache_control"] = new JsonObject { ["type"] = "ephemeral" },
         });
-        JsonArray definitions = [.. (tools ?? []).OfType<JsonObject>().Select(tool => tool["function"]).OfType<JsonObject>().Select(function => new JsonObject
+        if (hasTools)
         {
-            ["name"] = function["name"]?.DeepClone(), ["description"] = function["description"]?.DeepClone(),
-            ["input_schema"] = function["parameters"]?.DeepClone(),
-        })];
-        if (definitions.Count > 0)
-        {
-            body["tools"] = definitions;
+            body["tools"] = null;
             if (!callTools) body["tool_choice"] = new JsonObject { ["type"] = "none" };
         }
         if (adaptive) body["thinking"] = new JsonObject { ["type"] = "adaptive", ["display"] = "summarized" };

@@ -21,6 +21,9 @@
     <None Include="plugins\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="Agent\CodeIndexWorker.cs" />
     <EmbeddedResource Include="Agent\CodeIndexWorker.cs" LogicalName="SharpAgent.CodeIndexWorker.cs" />
+    <EmbeddedResource Include="Agent\Prompts\*.txt" LogicalName="SharpAgent.Prompts.%(Filename)%(Extension)" />
+    <None Update="Vendor\ripgrep\*" Link="tools\ripgrep\%(Filename)%(Extension)" TargetPath="tools\ripgrep\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 
 </Project>

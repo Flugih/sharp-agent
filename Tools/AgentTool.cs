@@ -115,6 +115,8 @@ public sealed class AgentTool
 
 public sealed class ToolArgs(JsonObject obj)
 {
+    internal PatchTool.Change[]? PatchChanges { get; set; }
+    internal string? CompletedCommand { get; set; }
     internal string? ConfirmedRevision { get; set; }
     internal JsonArray Array(string name) => obj[name] as JsonArray ?? [];
     public string Required(string name, bool allowEmpty = false) =>

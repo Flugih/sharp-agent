@@ -114,6 +114,7 @@ public partial class MainWindow
     void UpdateCompactAction()
     {
         if (_compactChat is not { } compact) return;
+        compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content;
         compact.Draft = InputBox.Text;
         compact.UpdateAction(_cts != null, _cts is { } running ? !running.IsCancellationRequested : SendButton.IsEnabled,
             _agent.CanContinue && string.IsNullOrWhiteSpace(InputBox.Text) && _pendingAttachments.Count == 0);

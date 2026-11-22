@@ -27,29 +27,6 @@ public static partial class FileTools
         return $"{(existed ? "Файл перезаписан" : "Файл создан")}: {path} ({FormatSize(new FileInfo(path).Length)}){note}";
     }
 
-    static string EditFile(ToolArgs a, ToolContext c, CancellationToken ct)
-    {
-        var path = GuardedPath(a, c);
-        var oldText = a.Required("old_text");
-        var newText = a.Required("new_text", allowEmpty: true);
-        if (!File.Exists(path)) throw new ToolException($"Файл не найден: {path}");
-        c.FileAccess.Reserve(path);
-        var (text, encoding) = TextFileIO.Read(path);
-        int count = text.AsSpan().Count(oldText);
-        if (count == 0 && text.Contains("\r\n") && !oldText.Contains("\r\n"))
-        {
-            oldText = oldText.Replace("\n", "\r\n");
-            newText = newText.Replace("\r\n", "\n").Replace("\n", "\r\n");
-            count = text.AsSpan().Count(oldText);
-        }
-        if (count == 0)
-            throw new ToolException("Фрагмент old_text не найден в файле. Прочитайте файл (read_file) и скопируйте фрагмент точно, со всеми пробелами и отступами.");
-        if (count > 1 && !a.Bool("replace_all"))
-            throw new ToolException($"Фрагмент old_text встречается {count} раз. Добавьте окружающий текст, чтобы он стал уникальным, или укажите replace_all=true.");
-        TextFileIO.Write(path, text.Replace(oldText, newText, StringComparison.Ordinal), encoding);
-        return $"Файл изменён: {path} (замен: {count})";
-    }
-
     static string CreateDirectory(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var path = c.Resolve(a.Required("path"));
@@ -281,12 +258,6 @@ public static partial class FileTools
     }
 
     static ConfirmRequest CreateScript(string path) => new("Создать исполняемый файл или скрипт?", path, "Создать", Note: ScriptNote);
-
-    static ConfirmRequest? ConfirmEdit(ToolArgs a, ToolContext c)
-    {
-        var path = GuardedPath(a, c);
-        return IsExecutable(path) && File.Exists(path) ? new("Изменить исполняемый файл или скрипт?", path, "Изменить", Note: ScriptNote) : null;
-    }
 
     static ConfirmRequest? ConfirmMoveOrCopy(ToolArgs a, ToolContext c)
     {

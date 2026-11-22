@@ -16,6 +16,12 @@ if (args is ["--benchmark", var report])
 Migration(root);
 await ReadsAndIndexAsync(root);
 await AgentBudgetAsync(root);
+await ChatTitlesAsync(root);
+RequestComponents();
+await ToolExpansionAsync(root);
+await SavedOutputsAsync(root);
+await CodexWorkflowAsync(root);
+await BackgroundCompactionAsync(root);
 await ContextBenchmarkAsync(root);
 await LocalWorkflowsAsync(root);
 await WatcherAsync(root);
@@ -78,7 +84,7 @@ static async Task ReadsAndIndexAsync(string root)
         new JsonObject { ["path"] = path, ["offset"] = 2, ["limit"] = 2 },
         new JsonObject { ["path"] = Path.Combine(data, ".env") });
     var args = new JsonObject { ["files"] = files }.ToJsonString();
-    var first = await tools.ExecuteAsync("read_many", args, null, default);
+    var first = await tools.ExecuteAsync("local_batch", LocalBatch("ranges", args), null, default);
     Check(first.Output.Contains("=> 1;") && !first.Output.Contains("PRIVATE") && first.Output.Contains("Ошибка"), "batch execution and secret guard");
     Check(first.Output.Split("=> 1;").Length == 2, "overlapping line ranges are returned once");
     bool roslynInstalled = LocalDeveloperTools.ParserVersion.Length > 0;
@@ -93,7 +99,7 @@ static async Task ReadsAndIndexAsync(string root)
     var secondIndex = await ProjectSourceIndex.UpdateAsync(context, working, context.CodeIndexFolder, ["Проект.cs"], true, default);
     Check(index["Проект.cs"].Hash == secondIndex["Проект.cs"].Hash, "read persisted index");
     Put(path, "class Example\n{\n    public int ExampleMethod() => 22;\n}");
-    var second = await tools.ExecuteAsync("read_many", args, null, default);
+    var second = await tools.ExecuteAsync("local_batch", LocalBatch("ranges", args), null, default);
     Check(second.Output.Contains("=> 22;"), "batch reads refresh file snapshots");
     var removed = await ProjectSourceIndex.UpdateAsync(context, working, context.CodeIndexFolder, [], true, default);
     Check(removed.Count == 0, "deleted entries removed");
@@ -138,10 +144,224 @@ static async Task ContextBenchmarkAsync(string root)
     Console.WriteLine($"Context replay: {provider.Calls} requests, {provider.TotalInput:N0} estimated input, {provider.PeakInput:N0} peak, {timer.ElapsedMilliseconds} ms.");
 }
 
+static async Task ChatTitlesAsync(string root)
+{
+    const string question = "Почему у листьев меняется цвет осенью?", title = "Осенняя окраска листьев";
+    var context = new ToolContext { WorkingDirectory = root, AppFolder = Path.Combine(root, "private", "data") };
+    var store = new ChatStore(Path.Combine(root, "titles"), Path.Combine(root, "logs"));
+    var result = new ChatResult(new JsonObject { ["content"] = $"«{title}»" }, "stop", new UsageInfo(8, 3), null);
+    using var provider = new TitleProvider(Task.FromResult(result));
+    var agent = new AgentRunner(new ToolRegistry(context), store) { Api = provider };
+    int changes = 0;
+    agent.ChatTitleChanged += () => changes++;
+    await agent.RunAsync(question, [], "fake", default);
+    Check(agent.Title == title && store.Load(agent.ChatPath!).Title == title && provider.Subject == question && changes == 1 &&
+        agent.Totals().Requests == 1, "generated title is saved and its usage is recorded");
+    await agent.RunAsync(question, [], "fake", default);
+    agent.NewChat();
+    agent.AutoChatTitles = false;
+    await agent.RunAsync(question, [], "fake", default);
+    Check(agent.DisplayTitle == question && provider.TitleCalls == 1, "only a new chat with automatic titles enabled requests a title");
+    var pending = new TaskCompletionSource<ChatResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var delayed = new TitleProvider(pending.Task);
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    agent.NewChat();
+    agent.AutoChatTitles = true;
+    agent.Api = delayed;
+    var answered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    agent.AssistantText += (_, _, _) => answered.TrySetResult();
+    var run = agent.RunAsync(question, [], "fake", timeout.Token);
+    await answered.Task.WaitAsync(timeout.Token);
+    await agent.RenameAsync("Моё название");
+    pending.SetResult(result);
+    await run;
+    Check(delayed.TitleCalls == 1 && agent.Title == "Моё название" && store.Load(agent.ChatPath!).Title == agent.Title && changes == 1,
+        "a pending automatic title allows the answer and preserves a manual rename");
+}
+
 static void Put(string path, string value)
 {
     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
     File.WriteAllText(path, value);
+}
+
+static string LocalBatch(string operation, string arguments) => new JsonObject
+{
+    ["operations"] = new JsonArray(new JsonObject { ["name"] = operation, ["arguments"] = JsonNode.Parse(arguments) }),
+}.ToJsonString();
+
+static async Task CodexWorkflowAsync(string root)
+{
+    var work = Path.Combine(root, "codex-workflow");
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = Path.Combine(root, "codex-data"), LogsFolder = Path.Combine(root, "codex-logs") };
+    var registry = new ToolRegistry(context);
+    var names = registry.Definitions.Select(item => item?["function"]?["name"]?.ToString()).ToArray();
+    Check(names.Contains("exec_command") && names.Contains("apply_patch") &&
+        !names.Intersect(["search_text", "read_file", "read_many", "edit_file", "run_command"]).Any(), "old tool schemas removed");
+    Check(SystemPrompt.Base(true).Contains("apply_patch") && !SystemPrompt.Base(false).Contains("apply_patch") &&
+        SystemPrompt.Base(false).Length < SystemPrompt.Base(true).Length, "Work and Chat own embedded prompts");
+    var source = Path.Combine(work, "source.txt");
+    Put(source, "alpha\r\nneedle\r\nomega\r\n");
+    Put(Path.Combine(work, "move.txt"), "move");
+    Put(Path.Combine(work, "old.txt"), "delete");
+    async Task<ToolOutcome> Patch(string patch, bool allow = true) => await registry.ExecuteAsync("apply_patch",
+        new JsonObject { ["patch"] = patch }.ToJsonString(), _ => Task.FromResult(allow), default);
+    var invalid = await Patch("""
+        *** Begin Patch
+        *** Add File: should-not-exist
+        +text
+        *** Update File: source.txt
+        @@
+        -missing
+        +updated
+        *** End Patch
+        """);
+    Check(invalid.IsError && !File.Exists(Path.Combine(work, "should-not-exist")), "invalid multi-file patch leaves the entire workspace unchanged");
+    var patch = """
+        *** Begin Patch
+        *** Update File: source.txt
+        @@
+         alpha
+        -needle
+        +marker
+         omega
+        *** Add File: created.txt
+        +created
+        *** Update File: move.txt
+        *** Move to: nested/moved.txt
+        *** Delete File: old.txt
+        *** End Patch
+        """;
+    Check((await Patch(patch, false)).Output.StartsWith("Пользователь отклонил") && File.Exists(Path.Combine(work, "old.txt")), "patch confirms deletions");
+    var applied = await Patch(patch);
+    Check(applied.Changes?.Length == 5 && File.ReadAllText(source) == "alpha\r\nmarker\r\nomega\r\n" &&
+        File.Exists(Path.Combine(work, "nested", "moved.txt")) && !File.Exists(Path.Combine(work, "old.txt")), "multi-file patch preserves CRLF and records every path");
+    foreach (var change in applied.Changes!.Reverse()) FileChanges.Restore(context, change);
+    Check(File.ReadAllText(source).Contains("needle") && File.Exists(Path.Combine(work, "old.txt")) &&
+        File.Exists(Path.Combine(work, "move.txt")) && !File.Exists(Path.Combine(work, "created.txt")), "multi-file changes can be undone");
+    var bundled = await registry.ExecuteAsync("exec_command", """{"command":"rg -n -C 1 needle ."}""", _ => Task.FromResult(true), default);
+    Check(CommandLog.ResultOf(bundled.Output) == "код 0" && bundled.Output.Contains("source.txt") && bundled.Output.Contains("omega"), "packaged search returns matching lines and context");
+    var resolved = await registry.ExecuteAsync("exec_command", """{"command":"(Get-Command rg).Source"}""", _ => Task.FromResult(true), default);
+    Check(resolved.Output.Contains(Path.Combine(AppContext.BaseDirectory, "tools", "ripgrep", "rg.exe"), StringComparison.OrdinalIgnoreCase),
+        "the shell finds published ripgrep ahead of any host installation");
+    Check(LocalGrep.Run("rg -n -C 1 needle .", work, context, default) is { Code: 0, Output: var fallback } && fallback.Contains("omega"),
+        "managed search preserves context");
+    var pending = await registry.ExecuteAsync("exec_command", """{"command":"Start-Sleep -Milliseconds 800; Write-Output finished","yield_ms":100}""",
+        _ => Task.FromResult(true), default);
+    var id = pending.Output.Split("session_id=")[1].Split('.')[0];
+    var finished = await registry.ExecuteAsync("exec_command", new JsonObject { ["session_id"] = id, ["yield_ms"] = 5000 }.ToJsonString(),
+        _ => throw new InvalidOperationException("Polling must not ask for command approval"), default);
+    Check(CommandLog.ResultOf(finished.Output) == "код 0" && finished.Output.Contains("finished"), "execution session can be polled");
+    var sandbox = new ToolRegistry(new ToolContext { WorkingDirectory = work, AppFolder = context.AppFolder, SandboxRoot = work });
+    Check((await sandbox.ExecuteAsync("exec_command", """{"command":"rg --files"}""", null, default)).IsError, "sandbox forbids execution and its fallback");
+}
+
+static void RequestComponents()
+{
+    var meter = new RequestInputMeter();
+    JsonArray tools = new(new JsonObject { ["function"] = "test" });
+    JsonNode[] messages =
+    [
+        new JsonObject { ["role"] = "system", ["content"] = "system instructions" },
+        new JsonObject { ["role"] = "user", ["content"] = "request and project data" },
+        new JsonObject { ["role"] = "tool", ["content"] = "saved output", ["tool_call_id"] = "call" },
+    ];
+    var first = meter.Measure(AgentProvider.ChatGpt, "fake", messages, tools, 4, 0);
+    var next = meter.Measure(AgentProvider.ChatGpt, "fake", [.. messages, new JsonObject { ["role"] = "user", ["content"] = "later" }], tools, 4, 0);
+    Check(first.Total == HistoryCompressor.EstimateAll(messages) + HistoryCompressor.Estimate(tools) && next.Project == 4 &&
+        next.StablePrefix == first.Total && next.RepeatedResults == first.Results && next.History > first.History,
+        "component estimates reconcile and matching prefixes exclude new messages");
+    Check(LocalActionRouter.Match("""read files "one.cs" and "two.cs" """) == "read_many one.cs\ntwo.cs" &&
+        LocalActionRouter.Match("""read files "one.cs" and "two.cs" and explain them""") == null,
+        "only explicit batches bypass the model");
+}
+
+static async Task ToolExpansionAsync(string root)
+{
+    var work = Path.Combine(root, "tool-expansion");
+    Directory.CreateDirectory(work);
+    using var provider = new ExpansionProvider();
+    var agent = new AgentRunner(new ToolRegistry(new ToolContext { AppFolder = work, WorkingDirectory = work }),
+        new ChatStore(Path.Combine(work, "chats"), work)) { Api = provider, AutoChatTitles = false };
+    await agent.RunAsync("Edit the methods in Code.cs and Caller.cs. No tests.", [], "fake", default);
+    Check(provider.Definitions.Count == 3, "tool expansion uses one round and keeps subsequent schema stable");
+    var initial = provider.Definitions[0];
+    var expanded = provider.Definitions[1];
+    Check(initial.Any(item => item?["function"]?["name"]?.ToString() == "apply_patch") &&
+        !initial.Any(item => item?["function"]?["name"]?.ToString() == "get_system_info") &&
+        expanded.Count == initial.Count + 1 && expanded[^1]?["function"]?["name"]?.ToString() == "get_system_info" &&
+        expanded.Take(initial.Count).Zip(initial).All(pair => JsonNode.DeepEquals(pair.First, pair.Second)) &&
+        ReferenceEquals(expanded, provider.Definitions[2]), "opening one tool appends only that tool and leaves prior definitions unchanged");
+    int projections = 0;
+    var wire = new ToolSchemaWire(schema => { projections++; return schema; });
+    var cached = wire.Get(expanded);
+    Check(ReferenceEquals(cached, wire.Get(expanded)) && projections == 1 &&
+        JsonNode.DeepEquals(JsonNode.Parse(ToolSchemaWire.Serialize(new JsonObject { ["tools"] = null }, cached))?["tools"], expanded),
+        "wire schema is encoded once and retains definition order");
+}
+
+static async Task SavedOutputsAsync(string root)
+{
+    var work = Path.Combine(root, "saved-output");
+    var file = Path.Combine(work, "sample.txt");
+    Put(file, string.Join("\n", Enumerable.Range(0, 170).Select(i => $"row {i:D3} " + new string('x', 90))));
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = Path.Combine(root, "saved-output-data") };
+    var tools = new ToolRegistry(context);
+    var args = new JsonObject { ["path"] = file }.ToJsonString();
+    var preview = await tools.ExecuteAsync("local_batch", LocalBatch("read", args), null, default);
+    var duplicate = await tools.ExecuteAsync("local_batch", LocalBatch("read", args), null, default);
+    Check(preview.Output.StartsWith(ToolOutputStore.ReferencePrefix) && duplicate.Output == preview.Output &&
+        preview.Output.Length < 6000 && !preview.Output.Contains("row 080"), "large reads use a stable compact reference");
+    var id = preview.Output[ToolOutputStore.ReferencePrefix.Length..].Split(',')[0];
+    var page = new JsonObject { ["id"] = id, ["offset"] = 6500, ["limit"] = 4000 }.ToJsonString();
+    var result = await tools.ExecuteAsync(ToolOutputStore.Name, page, null, default);
+    Check(!result.IsError && result.Output.Contains("row 080"), "read an omitted range without reopening the source");
+    File.AppendAllText(file, "\nchanged content");
+    Check((await tools.ExecuteAsync("local_batch", LocalBatch("read", args), null, default)).Output != preview.Output &&
+        (await tools.ExecuteAsync(ToolOutputStore.Name, page, null, default)).Output == result.Output, "immutable result survives source change");
+    var allowed = new ToolRegistry(new ToolContext { WorkingDirectory = work, AppFolder = context.AppFolder, SandboxRoot = root });
+    Check((await allowed.ExecuteAsync(ToolOutputStore.Name, page, null, default)).IsError, "sandbox cannot read results created outside it");
+    var batch = await tools.ExecuteAsync("local_batch", """
+        {"operations":[{"name":"search_files","arguments":{"pattern":"sample.txt"}},{"name":"diagnostics"}]}
+        """, null, default);
+    Check(!batch.IsError && batch.Output.Contains("sample.txt") && batch.Output.Contains("diagnostics"), "mixed local operations return ordered independent results");
+    var logs = Path.Combine(root, "saved-command-output");
+    context.LogsFolder = logs;
+    var command = new JsonObject
+    {
+        ["command"] = "1..1600 | ForEach-Object { if ($_ -eq 800) { 'midpoint-800' } else { 'z' * 800 } }",
+        ["shell"] = "powershell", ["working_directory"] = work,
+    };
+    var logged = await tools.ExecuteAsync("exec_command", command.ToJsonString(), _ => Task.FromResult(true), default);
+    var log = CommandLog.IdOf(logged.Output);
+    Check(log != null && !logged.Output.Contains("midpoint-800"), "command preview omits ordinary middle lines");
+    var logPage = await tools.ExecuteAsync("read_log", new JsonObject { ["log_id"] = log, ["offset"] = 800, ["limit"] = 1 }.ToJsonString(), null, default);
+    Check(!logPage.IsError && logPage.Output.Contains("midpoint-800"), "read_log can retrieve a line formerly lost by capture limits");
+}
+
+static async Task BackgroundCompactionAsync(string root)
+{
+    var work = Path.Combine(root, "background-summary");
+    Directory.CreateDirectory(work);
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = Path.Combine(root, "background-data") };
+    var store = new ChatStore(Path.Combine(work, "chats"), work);
+    var history = new ChatHistory();
+    for (int i = 0; i < 21; i++)
+    {
+        history.Add(new JsonObject { ["role"] = "user", ["content"] = $"requirement-{i}: retain exact wording" });
+        history.Add(new JsonObject { ["role"] = "assistant", ["content"] = $"Decision {i}: " + new string((char)('a' + i % 20), 2100) });
+    }
+    var path = store.NewPath();
+    await history.SaveAsync(path, "fake", null, true);
+    using var provider = new CompactionProvider();
+    var agent = new AgentRunner(new ToolRegistry(context), store) { Api = provider, AutoChatTitles = false };
+    await agent.OpenAsync(path);
+    await agent.RunAsync("Keep the current request verbatim.", [], "fake", default);
+    var persisted = store.Load(path).Messages;
+    int boundary = persisted.LastIndex(ChatJournal.Flags.Summary);
+    Check(provider.Overlapped && boundary > 0 && persisted[42]["content"]?.ToString() == "Keep the current request verbatim." &&
+        persisted[boundary]["meta"]?["summary_requirements"]?.ToString().Contains("requirement-0: retain exact wording") == true,
+        "background summary overlaps the response and retains verbatim requirements");
 }
 
 static async Task WatcherAsync(string root)
@@ -387,13 +607,10 @@ static async Task LocalIntelligenceChecksAsync(string root)
         ["checks"] = new JsonArray(new JsonObject { ["kind"] = "contains", ["path"] = path, ["expected"] = "not present" })
     }.ToJsonString(), null, default);
     Check(fail.IsError && fail.Output.Contains("0/1"), "mandatory contract failure is an error");
-    var definitions = (JsonArray)tools.Definitions.DeepClone();
-    Check(ToolDefinitionSelection.Reduce(definitions, "Исправь метод класса в C# проекте") &&
-          definitions.Count < tools.Definitions.Count &&
-          definitions.OfType<JsonObject>().Any(d => (string?)d["function"]?["name"] == LocalContractEngine.Name),
-          "code-task tool schemas are reduced without losing verification");
-    var ambiguous = (JsonArray)tools.Definitions.DeepClone();
-    Check(!ToolDefinitionSelection.Reduce(ambiguous, "Помоги разобраться") && ambiguous.Count == tools.Definitions.Count,
+    var selection = ToolDefinitionSelection.Initial("Исправь метод класса в C# проекте. Выполни критерии приёмки.");
+    Check(selection != null && selection("apply_patch") && selection(LocalContractEngine.Name) && !selection(LocalTestTools.Name),
+          "edit tasks with explicit acceptance criteria retain the contract tool");
+    Check(ToolDefinitionSelection.Initial("Помоги разобраться") == null,
           "ambiguous tasks retain the full tool set");
 }
 
@@ -409,8 +626,8 @@ static void MemoryAndCache(string root)
     Check(TaskMemory.Relevant(context, "Verified.cs")?.Contains("код выхода 0: dotnet build") == true, "verified unchanged file and check remembered");
     Put(source, "class Changed {}");
     Check(TaskMemory.Relevant(context, "Verified.cs") == null, "stale evidence is discarded");
-    TaskMemory.Save(context, "pending.json", new("request", 3, null, [], ["run_command"]));
-    Check(TaskMemory.Load(context, "pending.json", "request", 4)?.Pending is ["run_command"] &&
+    TaskMemory.Save(context, "pending.json", new("request", 3, null, [], ["exec_command"]));
+    Check(TaskMemory.Load(context, "pending.json", "request", 4)?.Pending is ["exec_command"] &&
         TaskMemory.Load(context, "pending.json", "next", 4) == null, "pending operations survive restart for the original request");
     var cache = Path.Combine(context.AppFolder!, "cache");
     var expired = Path.Combine(cache, "expired.txt");
@@ -454,11 +671,70 @@ sealed class FakeProvider(long? fixedInput) : IChatProvider
                 ["id"] = "test_" + Calls,
                 ["function"] = new JsonObject
                 {
-                    ["name"] = fixedInput == null ? "read_file" : "get_file_info",
-                    ["arguments"] = new JsonObject { ["path"] = fixedInput == null ? $"source_{Calls}.txt" : "missing_" + Calls },
+                    ["name"] = fixedInput == null ? "local_batch" : "get_file_info",
+                    ["arguments"] = fixedInput == null ? new JsonObject { ["operations"] = new JsonArray(new JsonObject
+                        { ["name"] = "read", ["arguments"] = new JsonObject { ["path"] = $"source_{Calls}.txt" } }) } :
+                        new JsonObject { ["path"] = "missing_" + Calls },
                 },
             }),
         }, "tool_calls", new UsageInfo(input, 10, input > 1_000 ? 1_000 : 0, 10), null));
+    }
+    public void Dispose() { }
+}
+
+sealed class TitleProvider(Task<ChatResult> title) : IChatProvider
+{
+    public int TitleCalls { get; private set; }
+    public string? Subject { get; private set; }
+    public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
+    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
+    {
+        if (callTools) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Ответ" }, "stop", null, null));
+        TitleCalls++;
+        Subject = messages[1]["content"]?.ToString();
+        return title.WaitAsync(ct);
+    }
+    public void Dispose() { }
+}
+
+sealed class CompactionProvider : IChatProvider
+{
+    readonly TaskCompletionSource _summary = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    bool _started;
+    public bool Overlapped { get; private set; }
+    public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
+    public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
+    {
+        if (!callTools)
+        {
+            _started = true;
+            await _summary.Task.WaitAsync(ct);
+            return new(new JsonObject { ["content"] = "Archived decisions and pending work." }, "stop", new UsageInfo(100, 10), null);
+        }
+        Overlapped |= _started && !_summary.Task.IsCompleted;
+        _summary.TrySetResult();
+        await Task.Delay(40, ct);
+        return new(new JsonObject { ["content"] = "Done." }, "stop", null, null);
+    }
+    public void Dispose() { }
+}
+
+sealed class ExpansionProvider : IChatProvider
+{
+    public List<JsonArray> Definitions { get; } = [];
+    public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
+    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
+    {
+        Definitions.Add(tools!);
+        if (Definitions.Count >= 3) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Done." }, "stop", null, null));
+        return Task.FromResult(new ChatResult(new JsonObject
+        {
+            ["tool_calls"] = new JsonArray(new JsonObject { ["id"] = "expand" + Definitions.Count,
+                ["function"] = new JsonObject { ["name"] = "enable_tools", ["arguments"] = """{"tool":"get_system_info"}""" } }),
+        }, "tool_calls", null, null));
     }
     public void Dispose() { }
 }

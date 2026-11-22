@@ -18,41 +18,16 @@ public static partial class FileTools
             Flag("recursive", "Показать и содержимое вложенных папок (по умолчанию false)."),
             Flag("show_hidden", "Показывать скрытые и системные файлы (по умолчанию false)."),
             Number("max_entries", "Максимум элементов в ответе (по умолчанию 300).")]),
-        Tool("read_file", $"Прочитать текстовый файл (кодировка UTF-8/UTF-16/Windows-1251 определяется автоматически) или извлечь текст из документа .docx, .xlsx, .pptx. За раз — до {MaxReadChars} символов; строки длиннее {MaxLineChars} символов обрезаются с пометкой, кроме чтения одной строки (limit=1). Если показано не всё, в заголовке сказано, с какого offset читать дальше. Чтобы увидеть, например, функцию целиком, укажи offset и limit побольше.", ReadFile, [
-            FilePath,
-            Number("offset", "С какой строки читать (нумерация с 1). По умолчанию 1."),
-            Number("limit", $"Сколько строк прочитать (по умолчанию {DefaultReadLines}, максимум {MaxReadLines}).")]),
-        new()
-        {
-            Name = "read_many", Description = "Прочитать несколько независимых диапазонов файлов за один шаг. Укажи только нужные строки.",
-            Parameters = new() { ["type"] = "object", ["required"] = new JsonArray("files"), ["properties"] = new JsonObject
-            {
-                ["files"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 8,
-                    ["items"] = Schema.Object(FilePath, Number("offset", "Первая строка, по умолчанию 1."), Number("limit", "Число строк, по умолчанию 60.")) },
-            } },
-            Handler = AgentTool.Sync(ReadMany),
-        },
         Tool("get_file_info", "Подробности о файле или папке: существует ли, размер, даты создания/изменения, атрибуты.", GetFileInfo, [Text("path", "Путь к файлу или папке.", true)]),
         Tool("search_files", "Найти файлы и папки по маске имени (например *.txt, отчет*.docx) в папке и её подпапках.", SearchFiles, [
             Text("pattern", "Маска имени: * — любые символы, ? — один символ. Пример: *.pdf", true),
             Text("directory", "Где искать. По умолчанию — рабочая папка."),
             Flag("recursive", "Искать во вложенных папках (по умолчанию true)."),
             Number("max_results", $"Максимум результатов (по умолчанию {DefaultResults}).")]),
-        Tool("search_text", "Найти текст внутри текстовых файлов (как grep). Возвращает путь, номер строки и саму строку.", SearchText, [
-            Text("query", "Искомый текст.", true),
-            Text("directory", "Где искать (рекурсивно). По умолчанию — рабочая папка."),
-            Text("file_pattern", "Маска файлов, например *.cs или *.txt. По умолчанию все файлы."),
-            Flag("case_sensitive", "Учитывать регистр (по умолчанию false)."),
-            Number("max_results", $"Максимум совпадений (по умолчанию {DefaultResults}).")]),
         Tool("write_file", "Создать текстовый файл или полностью перезаписать существующий (UTF-8). Недостающие папки создаются автоматически. append=true — дописать в конец.", WriteFile, [
             FilePath,
             Text("content", "Полное содержимое файла (или добавляемый текст при append=true).", true),
             Flag("append", "Дописать в конец, а не перезаписывать (по умолчанию false).")], ConfirmWrite),
-        Tool("edit_file", "Точечно изменить текстовый файл: заменить фрагмент old_text на new_text. old_text должен совпадать с текстом файла посимвольно (сначала прочитай файл). Кодировка файла сохраняется.", EditFile, [
-            FilePath,
-            Text("old_text", "Точный фрагмент, который нужно заменить (должен встречаться в файле один раз).", true),
-            Text("new_text", "Новый текст на место old_text (может быть пустым — тогда фрагмент удаляется).", true),
-            Flag("replace_all", "Заменить все вхождения (по умолчанию false).")], ConfirmEdit),
         Tool("create_directory", "Создать папку (вместе со всеми недостающими родительскими папками).", CreateDirectory, [Text("path", "Путь к новой папке.", true)]),
         Tool("move_path", "Переместить или переименовать файл либо папку. Если destination — существующая папка, источник кладётся внутрь неё.", MovePath, [
             Text("source", "Что перемещаем.", true),
@@ -132,7 +107,7 @@ public static partial class FileTools
         return sb.ToString();
     }
 
-    static string ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
+    internal static string ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
     {
         var files = args.Array("files");
         if (files.Count is < 1 or > 8 || files.Any(file => file is not JsonObject))
@@ -172,9 +147,9 @@ public static partial class FileTools
         return string.Join("\n\n", pages);
     }
 
-    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct) => ReadFile(a, c, ct, MaxReadChars, DefaultReadLines);
+    internal static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct) => ReadFile(a, c, ct, MaxReadChars, DefaultReadLines);
 
-    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct, int maxChars, int defaultLines)
+    internal static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct, int maxChars, int defaultLines)
     {
         var path = c.Resolve(a.Required("path"));
         var sourcePath = PathHelper.FinalPath(path);
@@ -320,16 +295,16 @@ public static partial class FileTools
             : $"Найдено по маске '{pattern}' в {dir}:\n{sb}";
     }
 
-    static string SearchText(ToolArgs a, ToolContext c, CancellationToken ct)
+    internal static string SearchText(ToolArgs a, ToolContext c, CancellationToken ct)
     {
-        const int scanLimit = 20_000, cloudOnly = 0x00400000 | 0x00040000 | 0x00001000;
+        const int scanLimit = 20_000, outputLimit = 8_000_000, cloudOnly = 0x00400000 | 0x00040000 | 0x00001000;
         var (dir, max) = SearchScope(a, c);
         var query = a.Required("query");
         var pattern = a.Optional("file_pattern") ?? "*";
         var comparison = a.Bool("case_sensitive") ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         var sb = new StringBuilder();
         int hits = 0, scanned = 0, cloudSkipped = 0;
-        bool more = false;
+        bool more = false, outputFull = false;
         foreach (var file in new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true }))
         {
             ct.ThrowIfCancellationRequested();
@@ -348,12 +323,14 @@ public static partial class FileTools
                 if (!line.Contains(query, comparison)) continue;
                 if (hits == max) { more = true; break; }
                 var shown = line.Trim();
-                sb.AppendLine($"{file.FullName}:{lineNo}: {(shown.Length > 200 ? shown[..200] + "…" : shown)}");
+                if (sb.Length + shown.Length + file.FullName.Length + 20 > outputLimit) { more = outputFull = true; break; }
+                sb.AppendLine($"{file.FullName}:{lineNo}: {shown}");
                 hits++;
             }
         }
         var summary = $"Просмотрено текстовых файлов: {scanned}, совпадений: {hits}" +
-                      (more ? $" (показаны первые {max} — есть ещё; уточни запрос, маску или папку{MoreHint(max)})" : "") +
+                      (outputFull ? " (достигнут предел размера результата — уточни запрос, маску или папку)" :
+                        more ? $" (показаны первые {max} — есть ещё; уточни запрос, маску или папку{MoreHint(max)})" : "") +
                       (scanned >= scanLimit ? $"; поиск остановлен на лимите {scanLimit} файлов — сузьте папку или маску" : "") +
                       (cloudSkipped > 0 ? $"; пропущено нескачанных файлов OneDrive: {cloudSkipped}" : "");
         return hits == 0 ? $"Текст «{query}» не найден в {dir}. {summary}" : sb + summary;

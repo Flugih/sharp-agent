@@ -12,9 +12,9 @@ public sealed class Shimmer : TextBlock
 
     public Shimmer()
     {
-        _sweep = new([_start, _band, _end]) { MappingMode = BrushMappingMode.Absolute, StartPoint = new(0, 0), EndPoint = new(60, 0), Transform = _shift };
+        _sweep = new([_start, _band, _end]) { StartPoint = new(0, 0), EndPoint = new(0.5, 0), RelativeTransform = _shift };
         Base = "TextMuted";
-        this.Paint(BandColorProperty, "TextSoft");
+        this.Paint(BandColorProperty, "Text");
         Loaded += (_, _) => Update();
         Unloaded += (_, _) => Update();
     }
@@ -67,7 +67,7 @@ public sealed class Shimmer : TextBlock
         _running = run;
         if (run) Foreground = _sweep;
         else this.Paint(ForegroundProperty, _base);
-        _shift.BeginAnimation(TranslateTransform.XProperty, run ? new DoubleAnimation(-60, 1300, TimeSpan.FromSeconds(5)) { RepeatBehavior = RepeatBehavior.Forever } : null);
+        _shift.BeginAnimation(TranslateTransform.XProperty, run ? new DoubleAnimation(-0.5, 1, TimeSpan.FromSeconds(3.5)) { RepeatBehavior = RepeatBehavior.Forever } : null);
     }
 
     // Palette brushes arrive through resource references, so a theme switch recolours the sweep too.

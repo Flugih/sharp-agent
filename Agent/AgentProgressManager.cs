@@ -4,7 +4,7 @@ sealed class AgentProgressManager
 {
     internal sealed record Operation(string Id, string Name, string Executor, string State, DateTimeOffset Started, DateTimeOffset? Ended = null,
         int Step = 0, string? Parent = null, string? Model = null, UsageInfo? Usage = null, int EstimatedInput = 0, int Images = 0,
-        int Retries = 0, string? Error = null);
+        int Retries = 0, string? Error = null, RequestInput? Input = null);
     internal sealed record Run(string Id, string? Chat, string Provider, string State, DateTimeOffset Started, DateTimeOffset Ended,
         int Retries, Dictionary<string, UsageInfo> Usage, Operation[] Operations);
 
@@ -26,7 +26,8 @@ sealed class AgentProgressManager
         }
     }
 
-    internal void Begin(string id, string name, string executor, string? parent = null, string? model = null, int estimated = 0, int images = 0)
+    internal void Begin(string id, string name, string executor, string? parent = null, string? model = null, int estimated = 0, int images = 0,
+        RequestInput? input = null)
     {
         lock (_gate)
         {
@@ -36,7 +37,7 @@ sealed class AgentProgressManager
                 _phase = null;
             }
             _operations[id] = new(id, name, executor, "running", DateTimeOffset.UtcNow, Step: ++_step,
-                Parent: parent, Model: model, EstimatedInput: estimated, Images: images);
+                Parent: parent, Model: model, EstimatedInput: estimated, Images: images, Input: input);
         }
     }
 

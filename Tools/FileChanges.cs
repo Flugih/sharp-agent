@@ -19,7 +19,7 @@ internal static class FileChanges
         {
             var target = tool switch
             {
-                "write_file" or "edit_file" => context.Resolve(args.Required("path")),
+                "write_file" => context.Resolve(args.Required("path")),
                 "run_plugin" => PluginTools.TargetOf(args, context),
                 AgentKnowledge.Name => AgentKnowledge.TargetOf(args, context),
                 "copy_path" => FileTools.ResolveSourceAndTarget(args, context) is var (source, copy) && File.Exists(source) ? copy : null,
@@ -53,6 +53,10 @@ internal static class FileChanges
         }
         catch (Exception ex) when (Expected(ex)) { return default; }
     }
+
+    internal static FileChange RecordPatch(ToolContext context, PatchTool.Change change) =>
+        new(change.Path, change.Before == null ? null : Hash(change.Before), change.After == null ? "" : Hash(change.After),
+            change.Before == null ? null : SaveBackup(context.LogsFolder, change.Before));
 
     public static string? BackupPath(string? logsFolder, string? backup) =>
         logsFolder != null && Guid.TryParseExact(backup, "N", out var id)
@@ -93,7 +97,8 @@ internal static class FileChanges
         {
             using (var write = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None)) write.Write(before);
             EnsureRestorable(context, change);
-            File.Replace(staging, change.Path, null);
+            if (change.AfterHash.Length == 0) File.Move(staging, change.Path);
+            else File.Replace(staging, change.Path, null);
         }
         finally
         {
@@ -102,8 +107,12 @@ internal static class FileChanges
         }
     }
 
-    static byte[]? Current(ToolContext context, FileChange change) =>
-        Unmoved(context, change.Path) && ReadSnapshot(change.Path) is { } bytes && Hash(bytes) == change.AfterHash ? bytes : null;
+    static byte[]? Current(ToolContext context, FileChange change)
+    {
+        if (!Unmoved(context, change.Path)) return null;
+        if (change.AfterHash.Length == 0) return Path.Exists(change.Path) ? null : [];
+        return ReadSnapshot(change.Path) is { } bytes && Hash(bytes) == change.AfterHash ? bytes : null;
+    }
 
     static bool Unmoved(ToolContext context, string path) => PathHelper.SamePath(SafePath(context, path), path);
 

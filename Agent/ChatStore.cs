@@ -192,11 +192,8 @@ public sealed class ChatStore(string folder, string logsFolder)
         {
             return ReadMessages(path).Select(item => item.Message)
                 .Where(message => JsonUtil.Str(message["role"]) == "tool")
-                .SelectMany(message => new[]
-                {
-                    CommandLog.IdOf(JsonUtil.Str(message["content"]) ?? "") is { } id ? CommandLog.PathOf(logsFolder, id) : null,
-                    FileChanges.BackupPath(logsFolder, AgentRunner.FileChangeOf(message)?.Backup),
-                })
+                .SelectMany(message => AgentRunner.ChangesOf(message).Select(change => FileChanges.BackupPath(logsFolder, change.Backup))
+                    .Append(CommandLog.IdOf(JsonUtil.Str(message["content"]) ?? "") is { } id ? CommandLog.PathOf(logsFolder, id) : null))
                 .OfType<string>().ToList();
         }
         catch { return []; }

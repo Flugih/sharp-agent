@@ -78,7 +78,7 @@ public partial class MainWindow
             if (_agent == agent) UpdateContextBanner();
         };
         agent.Warning += text => Publish(agent, () => AddNotice(text, true));
-        agent.Stopped += text => Publish(agent, () => AddNotice(text, true, false));
+        agent.Stopped += text => Publish(agent, () => ShowStop(text));
         agent.Notice += text => Publish(agent, () => AddNotice(text));
         agent.Retrying += (attempt, total) => Publish(agent, () => ShowReconnect(attempt, total));
         agent.ChatTitleChanged += () => SyncChat(agent, touched: false);

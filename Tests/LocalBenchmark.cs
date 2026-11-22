@@ -79,7 +79,7 @@ static class LocalBenchmark
     static Case[] Cases() =>
     [
         new("01-file", "read file \"one.txt\"", [Read("one.txt")], (_, agent) => Saw(agent, "FileBenchmark")),
-        new("02-project", "Search the project for SearchBenchmark without editing.", [new("search_text", new() { ["query"] = "SearchBenchmark", ["pattern"] = "SearchBenchmark" })],
+        new("02-project", "Search the project for SearchBenchmark without editing.", [Command("rg -n SearchBenchmark .")],
             (_, agent) => Saw(agent, "Needle032.cs")),
         new("03-method", "Edit Value method in Code.cs from 1 to 2. No tests.", [Read("Code.cs"), Edit("Code.cs", "=> 1;", "=> 2;")],
             (path, _) => File.ReadAllText(Path.Combine(path, "Code.cs")).Contains("=> 2;")),
@@ -105,9 +105,18 @@ static class LocalBenchmark
                          File.ReadAllText(Path.Combine(path, "Caller.cs")).Contains("=> 3;"), Resume: true),
     ];
 
-    static Step Read(string path, int count = 20) => new("read_file", new() { ["path"] = path, ["limit"] = count });
-    static Step Edit(string path, string from, string to) => new("edit_file", new() { ["path"] = path, ["old_text"] = from, ["new_text"] = to });
-    static Step Command(string command) => new("run_command", new() { ["command"] = command, ["timeout_seconds"] = 90 });
+    static Step Read(string path, int count = 20) => Command($"Get-Content -LiteralPath '{path}' -TotalCount {count}");
+    static Step Edit(string path, string from, string to)
+    {
+        if (path is "Code.cs" or "Caller.cs")
+        {
+            var prefix = $"class {Path.GetFileNameWithoutExtension(path)} {{ public int Value() ";
+            from = prefix + from + " }";
+            to = prefix + to + " }";
+        }
+        return new("apply_patch", new() { ["patch"] = $"*** Begin Patch\n*** Update File: {path}\n@@\n-{from.TrimEnd()}\n+{to.TrimEnd()}\n*** End Patch" });
+    }
+    static Step Command(string command) => new("exec_command", new() { ["command"] = command, ["timeout_seconds"] = 90 });
     static bool Saw(AgentRunner agent, string text) => agent.History.Any(item =>
         (item["role"]?.ToString() is "tool" or "assistant") && item["content"]?.ToString().Contains(text, StringComparison.OrdinalIgnoreCase) == true);
     static bool[] ExitCodes(AgentRunner agent) => agent.History.Where(item =>

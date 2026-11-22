@@ -349,6 +349,12 @@
             <Setter Property="FontSize" Value="16"/>
             <Setter Property="Tag" Value="accent"/>
             <Style.Triggers>
+                <Trigger Property="Content" Value="{x:Static ui:Glyphs.Send}">
+                    <Setter Property="FontSize" Value="14"/>
+                </Trigger>
+                <Trigger Property="Content" Value="{x:Static ui:Glyphs.Play}">
+                    <Setter Property="FontSize" Value="14"/>
+                </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Opacity" Value="1"/>
                     <Setter Property="Background" Value="{DynamicResource Track}"/>
@@ -688,8 +694,16 @@
         <ControlTemplate x:Key="MeterTemplate" TargetType="ProgressBar">
             <Grid>
                 <Border x:Name="PART_Track" Background="{TemplateBinding Background}" CornerRadius="2"/>
-                <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left"/>
+                <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="2" HorizontalAlignment="Left" ClipToBounds="True">
+                    <Border x:Name="PART_GlowRect" Width="44" HorizontalAlignment="Left" Visibility="Collapsed" Background="{TemplateBinding Foreground}" CornerRadius="2"/>
+                </Border>
             </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsIndeterminate" Value="True">
+                    <Setter TargetName="PART_Indicator" Property="Background" Value="Transparent"/>
+                    <Setter TargetName="PART_GlowRect" Property="Visibility" Value="Visible"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
         </ControlTemplate>
         <Style x:Key="Meter" TargetType="ProgressBar">
             <Setter Property="Height" Value="4"/>
@@ -697,6 +711,29 @@
             <Setter Property="Background" Value="{DynamicResource Track}"/>
             <Setter Property="IsTabStop" Value="False"/>
             <Setter Property="Template" Value="{StaticResource MeterTemplate}"/>
+        </Style>
+
+        <DataTemplate x:Key="ComposerLoadingTemplate">
+            <StackPanel>
+                <DockPanel Height="14" TextElement.Foreground="{DynamicResource TextMuted}" TextElement.FontSize="11">
+                    <TextBlock DockPanel.Dock="Right" Text="{Binding Remaining}" Margin="6,0,0,0"/>
+                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite"/>
+                </DockPanel>
+                <ProgressBar Style="{StaticResource Meter}" Height="2" Foreground="{DynamicResource Accent}" Value="{Binding Percent}"
+                             IsIndeterminate="{Binding IsIndeterminate}" AutomationProperties.Name="{Binding Label}"/>
+            </StackPanel>
+        </DataTemplate>
+        <Style x:Key="ComposerLoading" TargetType="ContentControl">
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="ContentTemplate" Value="{StaticResource ComposerLoadingTemplate}"/>
+            <Style.Triggers>
+                <Trigger Property="Content" Value="{x:Null}">
+                    <Setter Property="Visibility" Value="Hidden"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <ControlTemplate x:Key="ToolTipTemplate" TargetType="ToolTip">

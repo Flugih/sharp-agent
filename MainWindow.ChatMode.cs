@@ -81,8 +81,8 @@ public partial class MainWindow
         TemporaryChatButton.Visibility = VisibleIf(empty && _agent.ChatPath == null);
         SaveTemporaryChatButton.Visibility = VisibleIf(_agent.IsTemporary && !empty);
         ComposerIntro.Visibility = VisibleIf(empty);
-        Grid.SetRow(ComposerPanel, empty ? 1 : 2);
-        Grid.SetRowSpan(ComposerPanel, empty ? 2 : 1);
+        Grid.SetRow(ComposerHost, empty ? 1 : 2);
+        Grid.SetRowSpan(ComposerHost, empty ? 2 : 1);
         ComposerPanel.VerticalAlignment = empty ? VerticalAlignment.Center : VerticalAlignment.Bottom;
     }
 }

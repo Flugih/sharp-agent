@@ -64,6 +64,25 @@ static partial class LocalProjectContext
         catch (Exception ex) when (ex is IOException or ToolException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
     }
 
+    internal static async Task<string> DiagnosticsAsync(ToolContext context, CancellationToken ct)
+    {
+        var folder = PathHelper.FinalPath(context.Resolve(null));
+        if (context.AppFolder == null || PathHelper.SamePath(folder, Path.GetPathRoot(folder)!) ||
+            PathHelper.SamePath(folder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
+            return "Индекс проекта недоступен для этой папки.";
+        var snapshot = await context.ProjectWatcher.SnapshotAsync(folder, ct);
+        if (snapshot == null)
+        {
+            Directory.CreateDirectory(context.CodeIndexFolder);
+            snapshot = await ProjectSourceIndex.UpdateAsync(context, folder, context.CodeIndexFolder,
+                await IndexFilesAsync(context, folder, ct), context.SandboxRoot == null, ct);
+        }
+        var diagnostics = snapshot.Where(entry => ProjectSourceIndex.SafeSource(context, folder, entry.Key, out var file) &&
+                entry.Value.Revision == PathHelper.Revision(file.FullName))
+            .SelectMany(entry => entry.Value.Syntax.Diagnostics.Select(line => $"{entry.Key}: {Clip(line, 280)}")).Take(25).ToArray();
+        return diagnostics.Length > 0 ? string.Join("\n", diagnostics) : "В индексированных файлах синтаксических ошибок не найдено.";
+    }
+
     public static async Task<string> RunGitRequestAsync(ToolContext context, string command, CancellationToken ct)
     {
         if (context.SandboxRoot != null) return "Команды Git недоступны в режиме песочницы.";
@@ -169,6 +188,8 @@ static partial class LocalProjectContext
             int frequency = documents.Values.Count(document => document.ContainsKey(term));
             return Math.Log(1 + (index.Count - frequency + .5) / (frequency + .5));
         }, StringComparer.OrdinalIgnoreCase);
+        var incoming = index.Values.SelectMany(file => file.Syntax.Symbols).SelectMany(symbol => symbol.References ?? [])
+            .GroupBy(reference => reference, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.Count());
         return index.SelectMany(file =>
         {
             var name = Path.GetFileName(file.Key);
@@ -186,7 +207,8 @@ static partial class LocalProjectContext
                     s.Dependencies.Where(terms.Contains).Distinct(StringComparer.OrdinalIgnoreCase).Sum(term => Math.Min(3, weights[term]) * .35)))
                 .Where(c => c.Score > 0).OrderByDescending(c => c.Score).Take(3).ToArray();
             return symbols.Length > 0 || score == 0 ? symbols : [new Candidate(file.Key, new SourceSymbol(stem, 1, 24, stem, []), score)];
-        }).OrderByDescending(c => c.Score).ThenBy(c => c.File, StringComparer.OrdinalIgnoreCase).Take(6).ToArray();
+        }).OrderByDescending(c => c.Score + (c.Symbol.Id is { } id ? Math.Min(2, Math.Log(1 + incoming.GetValueOrDefault(id))) : 0))
+            .ThenBy(c => c.File, StringComparer.OrdinalIgnoreCase).Take(8).ToArray();
     }
 
     static void FormatCode(StringBuilder report, ToolContext context, Dictionary<string, IndexedSource> index, string root,
@@ -204,6 +226,24 @@ static partial class LocalProjectContext
         var uses = new List<string>();
         var definitions = new List<string>();
         var tests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int chars = 3000;
+        void Add(string line)
+        {
+            if (line.Length + 1 > chars) return;
+            report.AppendLine(line);
+            chars -= line.Length + 1;
+        }
+        Add("Карта символов проекта. Читай нужные строки через exec_command (Get-Content) или доступное локальное чтение.");
+        foreach (var (path, symbol, _) in candidates)
+        {
+            if (!ProjectSourceIndex.SafeSource(context, root, path, out var file)) continue;
+            var source = index[path];
+            if (source.Status != "ready" || source.Ticks != file.LastWriteTimeUtc.Ticks || source.Size != file.Length ||
+                source.Revision != PathHelper.Revision(file.FullName)) continue;
+            var signature = source.Roslyn ? symbol.Signature : symbol.Signature.Split(["{", "=>"], 2, StringSplitOptions.None)[0].TrimEnd();
+            Add($"{path}:{symbol.Start}–{symbol.End} — {Clip(signature, 190)}");
+            foreach (var diagnostic in source.Syntax.Diagnostics.Take(2)) Add($"Ошибка синтаксиса {path}: {Clip(diagnostic, 240)}");
+        }
         foreach (var (path, source) in index)
         {
             foreach (var symbol in source.Syntax.Symbols)
@@ -218,27 +258,9 @@ static partial class LocalProjectContext
                     definitions.Add($"{path}:{symbol.Start} — {Clip(symbol.Signature, 160)}");
             }
         }
-        if (uses.Count > 0) report.AppendLine("Места использования:\n" + string.Join("\n", uses));
-        if (definitions.Count > 0) report.AppendLine("Возможные определения зависимостей:\n" + string.Join("\n", definitions));
-        if (tests.Count > 0) report.AppendLine("Связанные тесты:\n" + string.Join("\n", tests));
-        foreach (var group in candidates.GroupBy(c => c.File, StringComparer.OrdinalIgnoreCase))
-        {
-            if (!ProjectSourceIndex.SafeSource(context, root, group.Key, out var file)) continue;
-            var source = index[group.Key];
-            if (source.Status != "ready" || source.Ticks != file.LastWriteTimeUtc.Ticks || source.Size != file.Length ||
-                source.Revision != PathHelper.Revision(file.FullName)) continue;
-            var lines = TextFileIO.Read(file.FullName).Text.ReplaceLineEndings("\n").Split('\n');
-            foreach (var symbol in group.Select(c => c.Symbol))
-            {
-                int count = Math.Min(36, Math.Min(symbol.End, lines.Length) - symbol.Start + 1);
-                if (symbol.Start < 1 || symbol.Start > lines.Length || count <= 0) continue;
-                report.AppendLine($"{group.Key}:{symbol.Start} — {symbol.Signature}");
-                report.AppendLine(Clip(string.Join("\n", lines.Skip(symbol.Start - 1).Take(count).Select(line => Clip(line, 280))), 1350));
-                if (symbol.End >= symbol.Start + count) report.AppendLine("Остальные строки доступны через read_file.");
-            }
-            foreach (var diagnostic in source.Syntax.Diagnostics.Take(6))
-                report.AppendLine("Ошибка синтаксиса " + group.Key + ":" + Clip(diagnostic, 240));
-        }
+        if (tests.Count > 0) Add("Связанные тесты:\n" + string.Join("\n", tests));
+        foreach (var use in uses) Add("Использование " + use);
+        foreach (var definition in definitions) Add("Зависимость " + definition);
     }
 
     static async Task<string> GitContext(ToolContext context, Repository repo, string[] paths, HashSet<string> terms, bool includePatch, CancellationToken ct)

@@ -1,8 +1,8 @@
 namespace SharpAgent.Tools;
 
-public static class ShellTools
+public static partial class ShellTools
 {
-    const int KeptBytes = 256 * 1024;
+    const int PreviewBytes = 256 * 1024, LogBytes = 8 * 1024 * 1024;
     static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     [DllImport("kernel32.dll")]
@@ -14,26 +14,17 @@ public static class ShellTools
         catch { return Encoding.GetEncoding(866); }
     }
 
-    public static IEnumerable<AgentTool> All() =>
+    internal static IEnumerable<AgentTool> All(Sessions sessions) =>
     [
         new AgentTool
         {
-            Name = "run_command",
-            Description = "Выполнить команду PowerShell (по умолчанию) или cmd от имени текущего пользователя, БЕЗ прав администратора. " +
-                "Возвращает код выхода, важные строки (ошибки, предупреждения, итоги тестов и сборки) и начало с концом " +
-                "вывода; сам вывод сохраняется в журнал (у очень длинного — начало и конец). Дочитывай его через " +
-                "read_log, не запуская команду снова. " +
-                "Используй для того, что не покрывают файловые инструменты: архивы, git, python, сведения о процессах и т.п. " +
-                "Интерактивный ввод недоступен — команды должны работать без вопросов.",
-            Parameters = Schema.Object(
-                new Prop("command", "string", "Команда или небольшой скрипт.", Required: true),
-                new Prop("shell", "string", "Оболочка: powershell (по умолчанию) или cmd.", Enum: ["powershell", "cmd"]),
-                new Prop("working_directory", "string", "Папка, в которой выполнить команду. По умолчанию — рабочая папка."),
-                new Prop("timeout_seconds", "integer", "Таймаут в секундах (по умолчанию 120, максимум 1800).")),
-            Handler = RunCommandAsync,
-            Confirmation = (a, c) => new ConfirmRequest(
+            Name = "exec_command",
+            Description = "Run PowerShell or cmd to search, read files, use Git, build and test. Use rg to search. Batch independent commands. Poll long-running sessions and retrieve saved output with read_log.",
+            Parameters = Parameters(),
+            Handler = sessions.RunAsync,
+            Confirmation = (a, c) => a.Optional("session_id") != null ? null : new ConfirmRequest(
                 ShellOf(a) == CommandShell.Cmd ? "Выполнить команду cmd?" : "Выполнить команду PowerShell?",
-                a.Required("command"), "Выполнить", Danger: true,
+                string.Join("\n", Commands(a)), "Выполнить", Danger: true,
                 Note: "Папка: " + c.Resolve(a.Optional("working_directory"))),
         },
     ];
@@ -44,21 +35,32 @@ public static class ShellTools
     internal static CommandShell ShellOf(ToolArgs a) => string.Equals(a.Optional("shell"), "cmd", StringComparison.OrdinalIgnoreCase)
         ? CommandShell.Cmd : CommandShell.PowerShell;
 
-    static Task<string> RunCommandAsync(ToolArgs a, ToolContext c, CancellationToken ct) => RunCommandAsync(a, c, ct, true);
-
     static async Task<string> RunCommandAsync(ToolArgs a, ToolContext c, CancellationToken ct, bool saveLog)
     {
         var command = a.Required("command");
         var workDir = c.Resolve(a.Optional("working_directory"));
         if (!Directory.Exists(workDir)) throw new ToolException($"Папка не найдена: {workDir}");
+        var rgDir = Path.Combine(AppContext.BaseDirectory, "tools", "ripgrep");
+        var rgPath = Path.Combine(rgDir, "rg.exe");
+        bool bundled = File.Exists(rgPath);
+        string original = command;
+        var rg = Regex.Match(command, @"^\s*rg(?:\.exe)?(?=\s|$)", RegexOptions.IgnoreCase);
+        if (!bundled && saveLog && rg.Success && Fallback("Встроенный rg.exe отсутствует.") is { } missing) return missing;
         int timeout = Math.Clamp(a.Int("timeout_seconds", 120), 1, 1800);
         var shell = ShellOf(a);
+        if (bundled && rg.Success)
+            command = (shell == CommandShell.Cmd ? $"\"{rgPath}\"" : "& '" + rgPath.Replace("'", "''") + "'") + command[rg.Length..];
         var psi = new ProcessStartInfo
         {
             WorkingDirectory = workDir, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         var proxy = AppNetwork.ConfigureCommand(psi);
+        if (bundled)
+        {
+            psi.Environment.TryGetValue("PATH", out var path);
+            psi.Environment["PATH"] = rgDir + Path.PathSeparator + path;
+        }
         var proxyCredential = AppNetwork.ProxyCredential;
         string? scriptPath = null;
         async Task<string> WriteScriptAsync(string extension, byte[] script)
@@ -85,11 +87,11 @@ public static class ShellTools
             }
             else
             {
-                psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + await WriteScriptAsync(".ps1",
-                    Encoding.UTF8.GetBytes("\uFEFF$ProgressPreference = 'SilentlyContinue'\r\n" +
+                var script = "$ProgressPreference = 'SilentlyContinue'\r\n" +
                     "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [Console]::OutputEncoding } catch {}\r\n" +
                     (proxy == null ? "" : "[Net.WebRequest]::DefaultWebProxy = New-Object Net.WebProxy" + (proxy.Length > 0 ? $" '{proxy}'" : "") + "\r\n") +
-                    command + "\r\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\r\n"));
+                    command + "\r\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }; if ($LASTEXITCODE) { exit $LASTEXITCODE }\r\n";
+                psi.Arguments = "-NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
                 psi.FileName = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
             }
             ct.ThrowIfCancellationRequested();
@@ -101,8 +103,9 @@ public static class ShellTools
                 throw new CommandRestrictedException("Ошибка запуска. " + CommandRestriction.Prefix + denied.Message, denied);
             }
             process.StandardInput.Close();
-            var stdout = new HeadTailBuffer(KeptBytes);
-            var stderr = new HeadTailBuffer(KeptBytes);
+            int capacity = saveLog && c.LogsFolder != null ? LogBytes : PreviewBytes;
+            var stdout = new HeadTailBuffer(capacity);
+            var stderr = new HeadTailBuffer(capacity);
             var reading = Task.WhenAll(stdout.FillFromAsync(process.StandardOutput.BaseStream),
                 stderr.FillFromAsync(process.StandardError.BaseStream));
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -126,6 +129,10 @@ public static class ShellTools
             }
             int? exitCode = timedOut ? null : process.ExitCode;
             var restriction = CommandRestriction.FromOutput(shell, output, errors, scriptPath, exitCode);
+            if (bundled && rg.Success && restriction == null && exitCode != 0 && saveLog &&
+                (errors.Contains("not a valid Win32 application", StringComparison.OrdinalIgnoreCase) ||
+                 errors.Contains("не является приложением Win32", StringComparison.OrdinalIgnoreCase)) &&
+                Fallback("Встроенный rg.exe несовместим с этой Windows.") is { } incompatible) return incompatible;
             if (errors.Length > 0) output += (output.Length > 0 ? "\n" : "") + "[stderr]\n" + errors;
             if (restriction != null) output = CommandRestriction.Prefix + restriction.Message + "\n\n" + output;
             var result = CommandLog.Summarize(timedOut ? $"{CommandLog.TimeoutPrefix} ({timeout} с)" : CommandLog.ExitPrefix + exitCode,
@@ -136,6 +143,10 @@ public static class ShellTools
         {
             try { if (scriptPath != null) File.Delete(scriptPath); } catch { }
         }
+
+        string? Fallback(string reason) => LocalGrep.Run(original, workDir, c, ct) is { } fallback
+            ? CommandLog.Summarize(CommandLog.ExitPrefix + fallback.Code, reason + " Использован локальный поиск.\n" + fallback.Output, c.LogsFolder)
+            : null;
     }
 
     static byte[] CmdScript(string command)
@@ -171,7 +182,7 @@ public static class ShellTools
     sealed class HeadTailBuffer(int capacity)
     {
         readonly MemoryStream _head = new();
-        readonly byte[] _tail = new byte[capacity];
+        readonly byte[] _tail = new byte[PreviewBytes];
         long _tailBytes;
 
         public async Task FillFromAsync(Stream stream)
@@ -185,7 +196,7 @@ public static class ShellTools
                     {
                         int toHead = (int)Math.Min(read, capacity - _head.Length);
                         _head.Write(buffer, 0, toHead);
-                        for (int i = toHead; i < read; i++) _tail[_tailBytes++ % capacity] = buffer[i];
+                        for (int i = toHead; i < read; i++) _tail[_tailBytes++ % _tail.Length] = buffer[i];
                     }
             }
             catch { }
@@ -195,14 +206,14 @@ public static class ShellTools
         {
             lock (_head)
             {
-                if (_tailBytes <= capacity) return Decode([.. _head.ToArray(), .. _tail.AsSpan(0, (int)_tailBytes)]);
-                int start = (int)(_tailBytes % capacity);
+                if (_tailBytes <= _tail.Length) return Decode([.. _head.ToArray(), .. _tail.AsSpan(0, (int)_tailBytes)]);
+                int start = (int)(_tailBytes % _tail.Length);
                 byte[] head = _head.ToArray(), tail = [.. _tail.AsSpan(start), .. _tail.AsSpan(0, start)];
                 int end = head.Length, cut = Array.IndexOf(tail, (byte)'\n', 0, tail.Length - 1) + 1;
                 while (end > 0 && IsContinuation(head[end - 1])) end--;
                 if (end > 0 && head[end - 1] >= 0xC0) end--;
                 if (cut == 0) while (cut < tail.Length && IsContinuation(tail[cut])) cut++;
-                return Decode(head[..end]) + $"\n{CommandLog.GapPrefix}{_tailBytes - capacity + cut + head.Length - end} байт вывода …\n" +
+                return Decode(head[..end]) + $"\n{CommandLog.GapPrefix}{_tailBytes - _tail.Length + cut + head.Length - end} байт вывода …\n" +
                     Decode(tail[cut..]);
             }
         }

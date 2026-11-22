@@ -1,0 +1,1 @@
+Use local_research for indexed documents, tables, and PDFs. Report missing text or incomplete extraction. Use the paths supplied with attachments.

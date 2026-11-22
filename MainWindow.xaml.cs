@@ -59,11 +59,13 @@ public partial class MainWindow
         _toolContext.ReadBrowser = ReadBrowserAsync;
         _markdown = new(_links.Markdown);
         _usage = new(_state);
+        _toolContext.ProjectWatcher.ProgressChanged += OnIndexProgressChanged;
         ChatScroll.PreviewMouseWheel += ChatScroll_PreviewMouseWheel;
         Action<string, bool> notice = (text, error) => ShowToast(text, error ? ToastKind.Error : ToastKind.Info);
         FileActions.Notify += notice;
         Closed += (_, _) =>
         {
+            _toolContext.ProjectWatcher.ProgressChanged -= OnIndexProgressChanged;
             _toolContext.ProjectWatcher.Dispose();
             _cacheTimer.Stop();
             _recorder?.Cancel();
@@ -184,6 +186,7 @@ public partial class MainWindow
     {
         var folder = _toolContext.WorkingDirectory = _config.WorkingDirectory;
         _toolContext.ProjectWatcher.Watch(_toolContext);
+        UpdateSendButton();
         var dir = Path.TrimEndingDirectorySeparator(folder);
         FolderText.Text = Path.GetFileName(dir) is { Length: > 0 } name ? name : dir;
         FolderButton.ToolTip = folder + Tr("\nОткрыть в Проводнике (Ctrl+Shift+O)", "\nOpen in File Explorer (Ctrl+Shift+O)");
@@ -312,10 +315,11 @@ public partial class MainWindow
 
     void UpdateSendButton()
     {
+        var loading = UpdateComposerLoading();
         bool hasDraft = !string.IsNullOrWhiteSpace(InputBox.Text) || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
-        SendButton.IsEnabled = !ChatFileBusy && (hasDraft || resume);
+        SendButton.IsEnabled = loading == null && (hasDraft || resume);
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
-        SendButton.ToolTip = _attachmentImports > 0 ? Tr("Подготавливаю вложения…", "Preparing attachments…") : resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter");
+        SendButton.ToolTip = loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
         AutomationProperties.SetName(SendButton, resume ? Tr("Продолжить задачу", "Resume task") : Tr("Отправить", "Send"));
         NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _cts == null && !hasDraft && !VoiceShown && NextActionPanel.Children.Count > 0);
         UpdateCompactAction();
@@ -333,7 +337,7 @@ public partial class MainWindow
 
     async Task SendAsync()
     {
-        if (ChatFileBusy) return;
+        if (ChatSubmitBusy) return;
         if (_cts != null)
         {
             ShowToast(Tr("Агент ещё работает. Дождитесь ответа или остановите его (Esc)", "The agent is still working. Wait for the response or stop it (Esc)."), ToastKind.Warning);
@@ -381,7 +385,7 @@ public partial class MainWindow
 
     async Task RetryAsync()
     {
-        if (ChatFileBusy || _cts != null || !_agent.CanContinue ||
+        if (ChatSubmitBusy || _cts != null || !_agent.CanContinue ||
             (_agent.PendingLocalCommand != null || _agent.PendingDiagnosis != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
         ScrollToLatest();
         await RunAgentAsync((agent, ct) => agent.ContinueAsync(model, ct), () =>

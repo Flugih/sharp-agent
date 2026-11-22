@@ -12,7 +12,7 @@ internal static class LocalContractEngine
     internal static AgentTool Tool() => new()
     {
         Name = Name,
-        Description = Tr("Локальная проверка результата. run_command, сборка и тесты проверяются по фактическому результату текущей задачи.",
+        Description = Tr("Локальная проверка результата. exec_command, сборка и тесты проверяются по фактическому результату текущей задачи.",
             "Verify outcomes locally. Commands, builds and tests require observed results from the current task."),
         Parameters = ParameterSchema(),
         Handler = AgentTool.Sync((arguments, context, ct) => Verify(arguments, context, ct)),

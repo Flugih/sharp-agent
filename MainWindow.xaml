@@ -115,7 +115,8 @@
                     <Button x:Name="ScrollDownButton" Style="{StaticResource FloatButton}" Content="&#xE74B;" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'К последнему сообщению', 'Jump to latest message'}" Click="ScrollDown_Click"/>
                 </Grid>
 
-                <StackPanel x:Name="ComposerPanel" Grid.Row="2" MaxWidth="736" Margin="24,0,24,19" SizeChanged="ComposerPanel_SizeChanged">
+                <Grid x:Name="ComposerHost" Grid.Row="2" ClipToBounds="True">
+                <StackPanel x:Name="ComposerPanel" MaxWidth="736" Margin="24,0,24,19" SizeChanged="ComposerPanel_SizeChanged">
                     <TextBlock x:Name="ComposerIntro" HorizontalAlignment="Center" Foreground="{DynamicResource TextSoft}" FontSize="25" FontWeight="Normal" TextWrapping="Wrap" TextAlignment="Center">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
@@ -233,8 +234,10 @@
                                 </Grid>
                             </Grid>
                         </Border>
+                        <ContentControl x:Name="ComposerLoadingStatus" Style="{StaticResource ComposerLoading}" VerticalAlignment="Bottom" Margin="8,0,8,-17"/>
                     </Grid>
                 </StackPanel>
+                </Grid>
 
                 <DockPanel x:Name="RightPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed">
                     <Border x:Name="PreviewPane" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
@@ -252,7 +255,7 @@
                     </DockPanel>
                     </Border>
                 </DockPanel>
-                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
+                <GridSplitter x:Name="PreviewSplitter" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="11" Width="6" HorizontalAlignment="Left" Background="Transparent" ResizeBehavior="PreviousAndCurrent" Visibility="Collapsed" ToolTip="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" AutomationProperties.Name="{ui:Localized 'Изменить ширину панели', 'Resize panel'}" DragCompleted="PreviewSplitter_DragCompleted" KeyUp="PreviewSplitter_KeyUp"/>
                 <Border x:Name="BrowserPane" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed"
                         Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" BorderThickness="1,0,0,0">
                     <Border.Resources>
@@ -321,7 +324,7 @@
                         </StackPanel>
                     </Grid>
                 </Border>
-                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="2" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="{ui:Localized 'Панель субагентов', 'Subagents panel'}">
+                <Border x:Name="SubagentsWorkspace" Grid.RowSpan="3" Grid.Column="1" Panel.ZIndex="10" Visibility="Collapsed" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Line}" AutomationProperties.Name="{ui:Localized 'Панель субагентов', 'Subagents panel'}">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Height="44" Margin="16,0,8,0">
                             <Button x:Name="SubagentsCloseButton" DockPanel.Dock="Right" Style="{StaticResource IconButton}" Content="{x:Static ui:Glyphs.Cancel}" Click="SubagentsClose_Click" ToolTip="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}" AutomationProperties.Name="{ui:Localized 'Закрыть панель субагентов', 'Close subagents panel'}"/>

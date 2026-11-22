@@ -1,0 +1,1 @@
+For desktop interactions, inspect the target window or tree before acting. Recheck the current state after an action. Use app for GUI verification and exec_command for ordinary command-line tests.

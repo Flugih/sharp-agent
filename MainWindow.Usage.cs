@@ -116,7 +116,7 @@ public partial class MainWindow
         int calls = run.Operations.Count(step => step.Model != null);
         double seconds = (run.Ended - run.Started).TotalSeconds;
         var details = new StackPanel();
-        foreach (var step in run.Operations.TakeLast(36))
+        foreach (var step in run.Operations.Where(step => step.Model != null || step.Step > run.Operations.Length - 36))
         {
             var name = step.Name switch
             {
@@ -139,8 +139,8 @@ public partial class MainWindow
             };
             var duration = step.Ended is { } ended ? $" · {(ended - step.Started).TotalSeconds:F1} с" : "";
             var usage = step.Usage is { } actual ? Tr(
-                $" · вход {Tokens.Format(actual.PromptTokens)}, выход {Tokens.Format(actual.CompletionTokens)}, кэш {Tokens.Format(actual.CachedTokens)}, рассуждение {Tokens.Format(actual.ReasoningTokens)}",
-                $" · input {Tokens.Format(actual.PromptTokens)}, output {Tokens.Format(actual.CompletionTokens)}, cached {Tokens.Format(actual.CachedTokens)}, reasoning {Tokens.Format(actual.ReasoningTokens)}") :
+                $" · вход {Tokens.Format(actual.PromptTokens)}, без кэша {Tokens.Format(Math.Max(0, actual.PromptTokens - actual.CachedTokens))}, кэш {Tokens.Format(actual.CachedTokens)}, выход {Tokens.Format(actual.CompletionTokens)}, рассуждение {Tokens.Format(actual.ReasoningTokens)}",
+                $" · input {Tokens.Format(actual.PromptTokens)}, uncached {Tokens.Format(Math.Max(0, actual.PromptTokens - actual.CachedTokens))}, cached {Tokens.Format(actual.CachedTokens)}, output {Tokens.Format(actual.CompletionTokens)}, reasoning {Tokens.Format(actual.ReasoningTokens)}") :
                 step.EstimatedInput > 0 ? Tr($" · вход ≈{Tokens.Format(step.EstimatedInput)}", $" · input ≈{Tokens.Format(step.EstimatedInput)}") : "";
             var retries = step.Retries > 0 ? Tr($" · повторов {step.Retries}", $" · retries {step.Retries}") : "";
             var images = step.Images > 0 ? Tr($" · изображений {step.Images}", $" · images {step.Images}") : "";
@@ -148,6 +148,13 @@ public partial class MainWindow
             var line = Caption($"{step.Step}. {name}{model} · {status}{duration}{usage}{images}{retries}", 4);
             line.ToolTip = step.Error;
             details.Children.Add(line);
+            if (step.Input is { } input)
+            {
+                var parts = Tr(
+                    $"Оценка входа ≈{input.Total:N0}: системный промпт {input.System:N0}, схемы {input.Tools:N0}, история {input.History:N0}, проект {input.Project:N0}, результаты {input.Results:N0}, изображения {input.Attachments:N0}. Совпавший префикс {input.StablePrefix:N0}, повторные результаты {input.RepeatedResults:N0}.",
+                    $"Estimated input ≈{input.Total:N0}: system prompt {input.System:N0}, tool schemas {input.Tools:N0}, history {input.History:N0}, project {input.Project:N0}, tool results {input.Results:N0}, images {input.Attachments:N0}. Matching prefix {input.StablePrefix:N0}, repeated results {input.RepeatedResults:N0}.");
+                details.Children.Add(Caption(parts, 0));
+            }
         }
         var title = Tr($"Последний запуск · запросов к моделям {calls} · повторов {run.Retries} · {seconds:F0} с",
             $"Last run · {calls} model requests · {run.Retries} retries · {seconds:F0} s");

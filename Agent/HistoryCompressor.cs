@@ -113,7 +113,11 @@ public static class HistoryCompressor
         return latest;
     }
 
-    internal static int CompactionBoundary(IReadOnlyList<JsonNode> history) => ProtectedStart(history, Split(history));
+    internal static int CompactionBoundary(IReadOnlyList<JsonNode> history)
+    {
+        var units = Split(history);
+        return units.Count <= 4 ? 0 : Math.Min(ProtectedStart(history, units), units[^4].Start);
+    }
 
     static int ProtectedStart(IReadOnlyList<JsonNode> history, List<Unit> units) =>
         units.FirstOrDefault(unit => HasPendingCall(history, unit))?.Start ?? units.LastOrDefault()?.Start ?? 0;
@@ -251,7 +255,7 @@ public static class HistoryCompressor
         foreach (var (step, call) in latest.Values)
             if (step > failure.Step && Failed(call)) failure = (step, call);
         if (failure.Call is not { } failed || failure.Step >= keepFrom) return;
-        var details = failed.Name is "run_command" or "run_plugin" && !ToolRegistry.IsErrorOutput(failed.Output)
+        var details = failed.Name is "exec_command" or "run_plugin" && !ToolRegistry.IsErrorOutput(failed.Output)
             ? CommandLog.Details(failed.Output, FailureChars)
             : Clip(string.Join("\n", failed.Output.Split('\n').Take(3)), ErrorChars);
         int at = failure.Step;
@@ -263,7 +267,7 @@ public static class HistoryCompressor
 
     static bool Failed(Call call) =>
         call.Output.StartsWith("Ошибка", StringComparison.Ordinal) ||
-        call.Name is "run_command" or "run_plugin" && ToolRegistry.CommandFailed(call.Output);
+        call.Name is "exec_command" or "run_plugin" && ToolRegistry.CommandFailed(call.Output);
 
     static IEnumerable<Call> Calls(IReadOnlyList<JsonNode> history, Unit step)
     {
@@ -285,7 +289,7 @@ public static class HistoryCompressor
         string? Get(string key) => Str(args[key]) is { Length: > 0 } value ? value : null;
         var subject = tool switch
         {
-            "run_command" => Get("command") is { } command ? "`" + Clip(OneLine(command), 120) + "`" : null,
+            "exec_command" => Get("command") is { } command ? "`" + Clip(OneLine(command), 120) + "`" : null,
             "search_text" => $"«{Clip(OneLine(Get("query")), 60)}» в {Get("directory") ?? "рабочей папке"}" +
                              (Get("file_pattern") is { } mask ? $" ({mask})" : ""),
             "search_files" => $"{Get("pattern")} в {Get("directory") ?? "рабочей папке"}",
@@ -306,7 +310,7 @@ public static class HistoryCompressor
     {
         var output = call.Output;
         var first = output.Split('\n', 2)[0].Trim();
-        if (call.Name is "run_command" or "run_plugin") return CommandLog.Brief(output);
+        if (call.Name is "exec_command" or "run_plugin") return CommandLog.Brief(output);
         if (ToolRegistry.IsErrorOutput(output)) return Clip(first, 200);
         return call.Name switch
         {

@@ -39,15 +39,23 @@ partial class AgentRunner
         if (command == "pwd") text = tools.Context.WorkingDirectory;
         else if (command == "time") text = DateTimeOffset.Now.ToString("HH:mm (zzz)", CultureInfo.InvariantCulture);
         else if (command.StartsWith("git ", StringComparison.Ordinal)) text = await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct);
-        else if (command.Split(' ', 2) is [("read" or "inspect" or "research") and var kind, var value])
+        else if (command.Split(' ', 2) is [("read" or "read_many" or "inspect" or "research" or "search") and var kind, var value])
         {
             var args = kind switch
             {
                 "inspect" => new JsonObject { ["action"] = "inspect", ["path"] = value },
                 "research" => new JsonObject { ["action"] = "search", ["query"] = value },
+                "search" => new JsonObject { ["query"] = value },
+                "read_many" => new JsonObject { ["files"] = new JsonArray([.. value.Split('\n').Select(path => new JsonObject { ["path"] = path })]) },
                 _ => new JsonObject { ["path"] = value },
             };
-            text = (await RunLocalToolAsync(kind == "read" ? "read_file" : LocalResearchEngine.Name, args, ct)).Output;
+            var operation = kind switch { "read" => "read", "read_many" => "ranges", "search" => "grep", _ => null };
+            if (operation == null) text = (await RunLocalToolAsync(LocalResearchEngine.Name, args, ct)).Output;
+            else
+            {
+                text = (await RunLocalToolAsync("local_batch", new() { ["operations"] = new JsonArray(new JsonObject
+                    { ["name"] = operation, ["arguments"] = args }) }, ct)).Output;
+            }
         }
         else if (command.Split(' ', 3) is [("script" or "suite" or "knowledge") and var system, var action, .. var tail])
         {
@@ -88,7 +96,7 @@ partial class AgentRunner
         await CheckpointAsync([name]);
         var result = await ExecuteCallAsync(call, ct);
         ToolCallFinished?.Invoke(new(call.Id, name, result.Output, result.IsError, result.IsWarning) { Change = result.Change });
-        if (result.Change == null && name is not ("run_command" or LocalTestTools.Name))
+        if (result.Change == null && name is not ("exec_command" or LocalTestTools.Name))
         {
             await CheckpointAsync([]);
             return result;
@@ -100,7 +108,7 @@ partial class AgentRunner
                 ["function"] = new JsonObject { ["name"] = name, ["arguments"] = call.ArgumentsJson } }),
         });
         var tool = ToolMessage(call.Id, result.Output, result.Diff);
-        if (name == "run_command" && VerificationCommand(call)) EnsureMeta(tool)["verification"] = true;
+        if (name == "exec_command" && VerificationCommand(call)) EnsureMeta(tool)["verification"] = true;
         if (result.Restriction != null) EnsureMeta(tool)["command_restricted"] = true;
         RecordChange(call, tool, result.Change);
         _history.Add(tool);
@@ -120,7 +128,7 @@ partial class AgentRunner
         var started = DateTime.UtcNow;
         foreach (var step in recipe.Commands)
         {
-            var result = await RunLocalToolAsync("run_command",
+            var result = await RunLocalToolAsync("exec_command",
                 new() { ["command"] = step, ["working_directory"] = recipe.Directory, ["timeout_seconds"] = 120 }, ct);
             var parsed = ProjectVerification.Diagnostics(tools.Context, result.Output);
             diagnostics.AddRange(parsed);
@@ -137,7 +145,8 @@ partial class AgentRunner
             }
             if (!success) break;
         }
-        var changes = CurrentActions().Select(entry => (Change: FileChangeOf(entry.Result), Diff: DiffOf(entry.Result))).ToArray();
+        var changes = CurrentActions().SelectMany(entry => ChangesOf(entry.Result)
+            .Select(change => (Change: change, Diff: DiffOf(entry.Result) ?? FileChanges.NetDiff(tools.Context, change)))).ToArray();
         var edits = changes
             .Where(entry => entry.Change != null && entry.Diff != null && !entry.Diff.Unified.Contains(TextDiff.Truncated, StringComparison.Ordinal))
             .Select(entry => new ChangedCoverage.Edit(entry.Change!.Path, entry.Diff!)).ToArray();
@@ -165,7 +174,7 @@ partial class AgentRunner
     {
         _pendingLocalOperations = pending;
         if (IsTemporary || delegated || ChatPath is not { } chat) return Task.CompletedTask;
-        var changes = CurrentActions().Select(entry => FileChangeOf(entry.Result)).OfType<FileChange>()
+        var changes = CurrentActions().SelectMany(entry => ChangesOf(entry.Result))
             .Where(change => PathHelper.IsInside(change.Path, tools.Context.WorkingDirectory)).ToArray();
         var checkpoint = new TaskCheckpoint(Str(MetaOf(LastUser())?[SentAtField]), _history.Count, PlanNote(),
             changes.Select(change => change.Path).Distinct(StringComparer.OrdinalIgnoreCase).TakeLast(20).ToArray(), pending);
@@ -186,8 +195,14 @@ partial class AgentRunner
         int start = _history.LastIndex(ChatJournal.Flags.User) + 1, at = start;
         foreach (var message in _history.Range(start, _history.Count - start).OfType<JsonObject>())
         {
-            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? []) calls[call.Id] = call;
-            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match)) yield return (match, message, at);
+            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? [])
+                calls[call.Id] = call.Name == "run_command" ? call with { Name = "exec_command" } : call;
+            if (Str(message["tool_call_id"]) is { } id && calls.TryGetValue(id, out var match))
+            {
+                if (match.Name == "exec_command" && Str(MetaOf(message)?["completed_command"]) is { } command)
+                    match = match with { ArgumentsJson = new JsonObject { ["command"] = command }.ToJsonString() };
+                yield return (match, message, at);
+            }
             at++;
         }
     }
@@ -220,7 +235,7 @@ partial class AgentRunner
         {
             var output = Str(entry.Result["content"]) ?? "";
             return "- " + HistoryCompressor.Describe(entry.Call.Name, entry.Call.ArgumentsJson) + " — " +
-                   (entry.Call.Name is "run_command" or "run_plugin" ? CommandLog.Brief(output) : Clip(output.Split('\n', 2)[0], 230));
+                   (entry.Call.Name is "exec_command" or "run_plugin" ? CommandLog.Brief(output) : Clip(output.Split('\n', 2)[0], 230));
         }));
     }
 
@@ -274,6 +289,25 @@ partial class AgentRunner
 
     static bool VerificationCommand(ToolCallEvent call) =>
         Str(ArgsOf(call)?["command"]) is { } command && ProjectVerification.Command(command);
+
+    static JsonNode ProjectLegacyTools(JsonNode node, HashSet<string> legacy)
+    {
+        if (Role(node) == "tool" && Str(node["tool_call_id"]) is { } id && legacy.Remove(id))
+            return new JsonObject { ["role"] = "assistant", ["content"] = "[Previous tool result]\n" + Clip(ExtractText(node["content"]) ?? "", 2400) };
+        if (node["tool_calls"] is not JsonArray calls) return node;
+        var removed = calls.OfType<JsonObject>().Select(ParseCall).Where(call =>
+            call.Name is "run_command" or "read_file" or "read_many" or "search_text" or "edit_file").ToArray();
+        if (removed.Length == 0) return node;
+        var ids = removed.Select(call => call.Id).ToHashSet();
+        legacy.UnionWith(ids);
+        var copy = (JsonObject)node.DeepClone();
+        var remaining = new JsonArray([.. calls.Where(call => !ids.Contains(Str(call?["id"]) ?? "")).Select(call => call?.DeepClone())]);
+        if (remaining.Count == 0) copy.Remove("tool_calls");
+        else copy["tool_calls"] = remaining;
+        copy["content"] = ExtractText(node["content"]) + "\n[Previous actions]\n" +
+            string.Join("\n", removed.Select(call => HistoryCompressor.Describe(call.Name, call.ArgumentsJson)));
+        return copy;
+    }
 
     JsonNode WithVerificationSummary(JsonNode node)
     {

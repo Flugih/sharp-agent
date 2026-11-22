@@ -8,10 +8,7 @@ partial class AgentRunner
     void RecordChange(ToolCallEvent call, JsonObject message, FileChange? change)
     {
         if (change != null)
-            EnsureMeta(message)["file_change"] = new JsonObject
-            {
-                ["path"] = change.Path, ["before"] = change.BeforeHash, ["after"] = change.AfterHash, ["backup"] = change.Backup,
-            };
+            EnsureMeta(message)["file_change"] = ChangeJson(change);
         if (call.Name is not ("write_file" or "edit_file" or "run_plugin" or AgentKnowledge.Name) || (change?.Path ?? WriteTarget(call)) is not { } path ||
             (change?.AfterHash ?? FileChanges.CurrentHash(path)) is not { } hash) return;
         var meta = EnsureMeta(message);
@@ -66,10 +63,25 @@ partial class AgentRunner
 
     static JsonObject? FileChangeMeta(JsonNode message) => MetaOf(message)?["file_change"] as JsonObject;
 
-    internal static FileChange? FileChangeOf(JsonNode message) =>
-        FileChangeMeta(message) is { } info && Str(info["path"]) is { } path && Str(info["after"]) is { } after
+    static JsonObject ChangeJson(FileChange change) => new()
+    {
+        ["path"] = change.Path, ["before"] = change.BeforeHash, ["after"] = change.AfterHash, ["backup"] = change.Backup,
+    };
+
+    static FileChange? ParseChange(JsonNode? info) =>
+        info is JsonObject && Str(info["path"]) is { } path && Str(info["after"]) is { } after
             ? new FileChange(AppPaths.Relocate(path), Str(info["before"]), after, Str(info["backup"]))
             : null;
+
+    internal static FileChange? FileChangeOf(JsonNode message) => ParseChange(FileChangeMeta(message));
+
+    internal static IEnumerable<(FileChange Change, bool Undone)> PatchChangesOf(JsonNode message) =>
+        (MetaOf(message)?["patch_changes"] as JsonArray ?? []).OfType<JsonObject>()
+            .Select(info => (Change: ParseChange(info), Undone: Bool(info["undone"]) == true))
+            .Where(item => item.Change != null).Select(item => (item.Change!, item.Undone));
+
+    internal static IEnumerable<FileChange> ChangesOf(JsonNode message) =>
+        FileChangeOf(message) is { } change ? [change] : PatchChangesOf(message).Select(item => item.Change);
 
     internal static bool FileChangeUndone(JsonNode message) => Bool(FileChangeMeta(message)?["undone"]) == true;
 
@@ -79,6 +91,17 @@ partial class AgentRunner
         {
             string? after = change.AfterHash;
             for (int i = _history.Count - 1, left = steps; i >= 0 && left > 0; i--)
+            {
+                if (PatchChangesOf(_history[i]).Any(item => !item.Undone && item.Change.AfterHash == after && PathHelper.SamePath(item.Change.Path, change.Path)) &&
+                    MetaOf(_history.Edit(i))?["patch_changes"] is JsonArray patch)
+                {
+                    var entry = patch.OfType<JsonObject>().First(info => ParseChange(info) is { } item && item.AfterHash == after &&
+                        PathHelper.SamePath(item.Path, change.Path) && Bool(info["undone"]) != true);
+                    entry["undone"] = true;
+                    after = Str(entry["before"]);
+                    left--;
+                    continue;
+                }
                 if (FileChangeOf(_history[i]) is { } step && step.AfterHash == after && !FileChangeUndone(_history[i]) &&
                     PathHelper.SamePath(step.Path, change.Path))
                 {
@@ -86,6 +109,7 @@ partial class AgentRunner
                     after = step.BeforeHash;
                     left--;
                 }
+            }
         }
         InvalidateProjectContext();
         await SaveAsync();

@@ -2,10 +2,12 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    const string SummaryField = "summary", SummaryUsageField = "summary_usage";
+    const string SummaryField = "summary", SummaryUsageField = "summary_usage", SummaryRequirements = "summary_requirements";
     const int DefaultContextTokens = 128_000, MaxInputTokens = 160_000, SummaryTokens = 6_000, TranscriptLineChars = 300;
 
-    sealed class ContextRun(int historyCount, JsonArray definitions)
+    sealed record CompactionResult(int Start, int Cut, string? Summary, string Requirements, UsageInfo? Usage);
+
+    sealed class ContextRun(int historyCount, JsonArray definitions, CancellationToken compactionToken)
     {
         public JsonArray Definitions { get; } = definitions;
         int _seen = historyCount;
@@ -15,6 +17,13 @@ partial class AgentRunner
         public int LastVerifiedChange { get; set; } = -1;
         public int VerificationAttempts { get; set; }
         public int AttemptedBoundary { get; set; } = -1;
+        public int ArchiveBefore { get; private set; }
+        public Task<CompactionResult?>? Compaction { get; set; }
+        public int CompactionReserve { get; set; }
+        public CancellationToken CompactionToken => compactionToken;
+        long _cacheHit;
+        public double CachedFraction { get; private set; }
+        public bool CacheWarm => CachedFraction > 0 && Environment.TickCount64 - _cacheHit < TimeSpan.FromMinutes(5).TotalMilliseconds;
         public double InputScale { get; private set; } = 1;
         public long OutputReserve { get; private set; } = 8_000;
 
@@ -27,12 +36,22 @@ partial class AgentRunner
             }
             _seen = history.Count;
             Steps++;
+            if (Steps % 3 != 0) return;
+            int rounds = 0;
+            for (int i = history.Count - 1; i >= 0; i--)
+                if (history.EntryAt(i).Flags.HasFlag(ChatJournal.Flags.Assistant) && history[i]["tool_calls"] is JsonArray { Count: > 0 } && ++rounds == 3)
+                {
+                    ArchiveBefore = i;
+                    break;
+                }
         }
 
         public void Observe(int estimatedInput, UsageInfo? usage)
         {
             Spent += usage == null ? estimatedInput : usage.PromptTokens + usage.CompletionTokens;
             if (usage == null) return;
+            CachedFraction = usage.PromptTokens == 0 ? 0 : Math.Clamp((double)usage.CachedTokens / usage.PromptTokens, 0, 1);
+            if (CachedFraction > 0) _cacheHit = Environment.TickCount64;
             if (estimatedInput > 0 && usage.PromptTokens > 0)
             {
                 double measured = Math.Clamp((double)usage.PromptTokens / estimatedInput, 0.5, 4);
@@ -72,29 +91,40 @@ partial class AgentRunner
 
     int SummaryStart() => Math.Max(0, _history.LastIndex(ChatJournal.Flags.Summary));
 
-    async Task<bool> CompactAsync(string model, ContextRun context, int from, int cut, int currentUser, int retained,
+    async Task<CompactionResult?> CompactAsync(string model, ContextRun context, int from, int cut, int retained,
         int localSize, int room, int target, HashSet<int> stoppedRequests, CancellationToken ct)
     {
-        if (cut <= from || cut <= context.AttemptedBoundary) return false;
+        if (cut <= from || cut <= context.AttemptedBoundary) return null;
         int saving = localSize - retained;
-        int maxSummary = Math.Min(SummaryTokens, Math.Min(room - retained, saving / 2));
-        if (maxSummary < 256) return false;
+        var requirements = new StringBuilder(from > 0 ? Str(MetaOf(_history[from])?[SummaryRequirements]) : null);
+        for (int at = from; at < cut; at++)
+        {
+            if (!_history.EntryAt(at).Flags.HasFlag(ChatJournal.Flags.User)) continue;
+            var user = (JsonObject)_history[at];
+            requirements.AppendLine().Append(PromptText("Пользователь: ", "User: ")).Append(ExtractText(user["content"]));
+            foreach (var attachment in Attachment.ListFrom(user))
+                requirements.AppendLine().Append(PromptText("Вложение: ", "Attachment: ")).Append(attachment.Path);
+            if (stoppedRequests.Contains(at)) requirements.AppendLine().Append(StoppedRequest);
+        }
+        int requiredTokens = requirements.Length / 3;
+        int maxSummary = Math.Min(SummaryTokens, Math.Min(room - retained - requiredTokens, (saving - requiredTokens) / 2));
+        if (maxSummary < 256) return null;
         var previous = from > 0 ? PromptText("Прежняя сводка:\n", "Previous summary:\n") + Str(MetaOf(_history[from])?[SummaryField]) + "\n" : "";
         var prompt = PromptText(CompactPrompt, EnglishCompactPrompt);
-        int remaining = (InputBudget(model, context, WorkingInputTokens) - prompt.Length / 3 - maxSummary) * 3 - previous.Length;
-        if (remaining <= 0) return false;
+        int remaining = (InputBudget(model, context, WorkingInputTokens) - prompt.Length / 3 - maxSummary) * 3 - previous.Length - requirements.Length;
+        if (remaining <= 0) return null;
         List<string> transcript = [];
         int i = cut - 1;
         int chars = 0;
         for (; i >= from && remaining > 0; i--)
         {
+            if (_history.EntryAt(i).Flags.HasFlag(ChatJournal.Flags.User)) continue;
             var message = _history[i];
             var entry = Role(message) switch
             {
-                "user" => PromptText("Пользователь: ", "User: ") + (i == currentUser ? Clip(ExtractText(message["content"]) ?? "", 1_500) : ExtractText(message["content"])) +
-                          string.Concat(Attachment.ListFrom((JsonObject)message).Select(a => PromptText("\n  вложение: ", "\n  attachment: ") + a.Path)),
-                "tool" => PromptText("Результат:\n| ", "Result:\n| ") + Str(HistoryCompressor.Shorten(message)["content"])?.ReplaceLineEndings("\n| "),
-                _ => PromptText("Агент: ", "Agent: ") + ExtractText(message["content"])?.ReplaceLineEndings("\n  ") + string.Concat((message["tool_calls"] as JsonArray)?.OfType<JsonObject>()
+                "tool" => PromptText("Результат:\n| ", "Result:\n| ") +
+                    HistoryCompressor.Excerpt(Str(message["content"]) ?? "", 1300).ReplaceLineEndings("\n| "),
+                _ => PromptText("Агент: ", "Agent: ") + HistoryCompressor.Excerpt(ExtractText(message["content"]) ?? "", 1750).ReplaceLineEndings("\n  ") + string.Concat((message["tool_calls"] as JsonArray)?.OfType<JsonObject>()
                     .Select(ParseCall).Select(call => $"\n  → {call.Name} {Clip(call.ArgumentsJson, TranscriptLineChars)}") ?? []),
             };
             if (stoppedRequests.Contains(i)) entry += "\n" + StoppedRequest;
@@ -103,41 +133,62 @@ partial class AgentRunner
             chars += entry.Length + 1;
             remaining -= entry.Length + 1;
         }
-        if (transcript.Count == 0) return false;
-        int futureCalls = Math.Clamp(context.Steps, 1, 3);
-        int summaryCost = (prompt.Length + previous.Length + chars) / 3 + maxSummary;
-        if (localSize <= target && (saving - maxSummary) * futureCalls <= summaryCost) return false;
-        transcript.Reverse();
-        var text = previous + (i >= from ? "…\n" : "") + string.Join("\n", transcript);
+        if (transcript.Count == 0 || i >= from) return null;
+        int futureCalls = Math.Clamp(context.Steps + (WorkMode ? 1 : 0), 1, 3);
+        int expectedSummary = Math.Min(maxSummary, 2200);
+        int transcriptCost = (prompt.Length + previous.Length + chars + requirements.Length) / 3;
+        double reusable = context.CacheWarm ? context.CachedFraction : 0;
+        if (context.Spent + transcriptCost + maxSummary >= RunTokenLimit ||
+            localSize <= target && (saving - expectedSummary - requiredTokens) * futureCalls * (1 - reusable) <= transcriptCost + expectedSummary) return null;
         context.AttemptedBoundary = cut;
-        CompactionStarted?.Invoke();
+        context.CompactionReserve = transcriptCost + maxSummary;
+        transcript.Reverse();
+        var text = previous + requirements + "\n" + string.Join("\n", transcript);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
         ChatResult result;
         try
         {
-            result = await TrackModelAsync("compaction", model, (prompt.Length + text.Length) / 3, 0, retry =>
-                Api!.CompleteAsync(model, [new JsonObject { ["role"] = "system", ["content"] = prompt },
-                    new JsonObject { ["role"] = "user", ["content"] = text }], [], maxSummary, null, (_, _) => { }, _ => { }, ct, retrying: retry));
+            JsonNode[] messages = [new JsonObject { ["role"] = "system", ["content"] = prompt }, new JsonObject { ["role"] = "user", ["content"] = text }];
+            var input = new RequestInputMeter().Measure(Provider, model, messages, null, 0, 0);
+            result = await TrackModelAsync("compaction", model, input.Total, 0, retry =>
+                Api!.CompleteAsync(model, messages, [], maxSummary, null, (_, _) => { }, _ => { },
+                    timeout.Token, callTools: false, retrying: retry), reportRetries: false, input: input);
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or IOException ||
-                                   ex is TaskCanceledException && !ct.IsCancellationRequested)
+                                   ex is OperationCanceledException or InvalidOperationException)
         {
-            ct.ThrowIfCancellationRequested();
-            return false;
+            return null;
         }
         var summary = ExtractText(result.Message["content"])?.Trim();
         // A summary cut by the limit has lost its last section: the current state of the task.
-        bool summarized = !string.IsNullOrEmpty(summary) && summary.Length / 3 < saving && result.FinishReason is not ("length" or "content_filter");
-        if (!summarized && result.Usage == null) return false;
-        var meta = EnsureMeta(_history.Edit(cut));
-        if (summarized) meta[SummaryField] = summary;
-        if (result.Usage is { } usage)
+        bool summarized = !string.IsNullOrEmpty(summary) && summary.Length / 3 + requiredTokens < saving &&
+            summary.Length / 3 + requiredTokens + retained <= room && result.FinishReason is not ("length" or "content_filter");
+        return new(from, cut, summarized ? summary : null, requirements.ToString(), result.Usage);
+    }
+
+    async Task<bool> CommitCompactionAsync(string model, ContextRun context)
+    {
+        if (context.Compaction == null) return false;
+        var prepared = await context.Compaction;
+        context.Compaction = null;
+        context.CompactionReserve = 0;
+        if (prepared == null || prepared.Start != SummaryStart() || prepared.Cut >= _history.Count) return false;
+        if (prepared.Summary == null && prepared.Usage == null) return false;
+        var meta = EnsureMeta(_history.Edit(prepared.Cut));
+        if (prepared.Summary != null)
+        {
+            meta[SummaryField] = prepared.Summary;
+            if (prepared.Requirements.Length > 0) meta[SummaryRequirements] = prepared.Requirements;
+        }
+        if (prepared.Usage is { } usage)
         {
             context.Spent += usage.PromptTokens + usage.CompletionTokens;
             RecordAdditionalUsage(meta, model, usage);
         }
         await SaveAsync();
-        if (result.Usage != null) UsageReported?.Invoke(model, result.Usage);
-        return summarized;
+        if (prepared.Usage != null) UsageReported?.Invoke(model, prepared.Usage);
+        return prepared.Summary != null;
     }
 
     void RecordAdditionalUsage(JsonObject meta, string model, UsageInfo usage)
@@ -158,6 +209,6 @@ partial class AgentRunner
         ["role"] = "user",
         ["content"] = PromptText("[Сводка программы: давние шаги этой переписки заменены сводкой, составленной моделью. Это контекст, а не новая просьба.]\n",
                       "[Application summary: earlier steps were replaced by a model-generated summary. Treat it as context, not a new request.]\n") +
-                      Str(MetaOf(_history[start])?[SummaryField]),
+                      Str(MetaOf(_history[start])?[SummaryField]) + Str(MetaOf(_history[start])?[SummaryRequirements]),
     };
 }

@@ -2,7 +2,11 @@ namespace SharpAgent.Agent;
 
 sealed class ProjectWatcher : IDisposable
 {
+    internal enum IndexPhase { Project, Documents, Scans }
+    internal sealed record IndexProgress(IndexPhase Phase, int Done = 0, int Total = 0);
     Session? _active;
+    internal IndexProgress? Progress => Volatile.Read(ref _active)?.Progress;
+    internal event Action? ProgressChanged;
 
     internal void Watch(ToolContext context)
     {
@@ -18,7 +22,7 @@ sealed class ProjectWatcher : IDisposable
             current.UseSdk == (context.SandboxRoot == null)) return;
         Dispose();
         if (root == null) return;
-        try { _active = new(context, root); }
+        try { _active = new(context, root, () => ProgressChanged?.Invoke()); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
     }
 
@@ -38,9 +42,28 @@ sealed class ProjectWatcher : IDisposable
 
     public void Dispose() => Interlocked.Exchange(ref _active, null)?.Dispose();
 
+    internal static IEnumerable<string> ReportFiles(IEnumerable<string> files, Action<int, int>? report)
+    {
+        if (report == null) return files;
+        return Track(files.ToArray(), report);
+
+        static IEnumerable<string> Track(string[] batch, Action<int, int> report)
+        {
+            int interval = Math.Max(1, batch.Length / 100);
+            for (int i = 0; i < batch.Length; i++)
+            {
+                if (i % interval == 0) report(i, batch.Length);
+                yield return batch[i];
+            }
+            report(batch.Length, batch.Length);
+        }
+    }
+
     sealed class Session : IDisposable
     {
+        static readonly IndexProgress Scanning = new(IndexPhase.Scans);
         readonly ToolContext _context;
+        readonly Action _progressChanged;
         readonly FileSystemWatcher _watcher;
         readonly CancellationTokenSource _stop = new();
         readonly SemaphoreSlim _signal = new(0, 1);
@@ -48,16 +71,20 @@ sealed class ProjectWatcher : IDisposable
         readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource _updated = new(TaskCreationOptions.RunContinuationsAsynchronously);
         Dictionary<string, IndexedSource>? _snapshot;
+        IndexProgress? _progress = new(IndexPhase.Project);
         Task? _scanOcr;
         bool _rescan;
         volatile bool _documentsReady;
         internal string Root { get; }
         internal bool UseSdk => _context.SandboxRoot == null;
         internal bool DocumentsReady => _documentsReady;
+        internal IndexProgress? Progress => Volatile.Read(ref _progress) ??
+            (Volatile.Read(ref _scanOcr) is { IsCompleted: false } ? Scanning : null);
 
-        internal Session(ToolContext context, string root)
+        internal Session(ToolContext context, string root, Action progressChanged)
         {
             Root = root;
+            _progressChanged = progressChanged;
             _context = new() { AppFolder = context.AppFolder, WorkingDirectory = context.WorkingDirectory, SandboxRoot = context.SandboxRoot };
             _watcher = new(root) { IncludeSubdirectories = true, InternalBufferSize = 32_768,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size };
@@ -107,6 +134,13 @@ sealed class ProjectWatcher : IDisposable
             catch (ObjectDisposedException) { }
         }
 
+        void SetProgress(IndexProgress? progress)
+        {
+            if (_progress == progress) return;
+            Volatile.Write(ref _progress, progress);
+            _progressChanged();
+        }
+
         async Task RunAsync()
         {
             var ct = _stop.Token;
@@ -122,6 +156,7 @@ sealed class ProjectWatcher : IDisposable
                         {
                             Directory.CreateDirectory(folder);
                             current = await ScanAsync(folder, ct);
+                            SetProgress(null);
                             _ready.TrySetResult();
                         }
                         // Reconciliation still runs if the OS watcher silently drops events.
@@ -139,6 +174,7 @@ sealed class ProjectWatcher : IDisposable
                         if (rescan) current = await ScanAsync(folder, ct);
                         else if (changes.Length > 0)
                         {
+                            SetProgress(new(IndexPhase.Project));
                             var files = ChangedSources(current, changes, ct);
                             var related = Related(current, files);
                             foreach (var manifest in changes.Where(SourceProjects.Manifest))
@@ -152,12 +188,14 @@ sealed class ProjectWatcher : IDisposable
                             }
                             files.UnionWith(related);
                             if (files.Count > 0)
-                                current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related);
+                                current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related,
+                                    (done, total) => SetProgress(new(IndexPhase.Project, done, total)));
                             Publish(current);
                             await RefreshDocumentsAsync(changes.SelectMany(ExpandDocuments), false, ct,
                                 changes.Select(name => Path.Combine(Root, name)).Where(path => !Path.Exists(path)).ToArray());
                         }
                         Publish(current);
+                        SetProgress(null);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException or ArgumentException or InvalidOperationException)
@@ -166,12 +204,13 @@ sealed class ProjectWatcher : IDisposable
                         current = null;
                         Volatile.Write(ref _snapshot, null);
                         _ready.TrySetResult();
+                        SetProgress(null);
                         await Task.Delay(TimeSpan.FromSeconds(2), ct);
                     }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            finally { _ready.TrySetResult(); }
+            finally { SetProgress(null); _ready.TrySetResult(); }
         }
 
         void Publish(Dictionary<string, IndexedSource> current)
@@ -186,8 +225,10 @@ sealed class ProjectWatcher : IDisposable
 
         async Task<Dictionary<string, IndexedSource>> ScanAsync(string folder, CancellationToken ct)
         {
+            SetProgress(new(IndexPhase.Project));
             var files = ProjectSourceIndex.Walk(Root, ct, includeDocuments: true).ToArray();
-            var source = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct);
+            var source = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct,
+                report: (done, total) => SetProgress(new(IndexPhase.Project, done, total)));
             Publish(source);
             _ready.TrySetResult();
             await RefreshDocumentsAsync(files, true, ct);
@@ -204,11 +245,18 @@ sealed class ProjectWatcher : IDisposable
 
         async Task RefreshDocumentsAsync(IEnumerable<string> files, bool reconcile, CancellationToken ct, string[]? removed = null)
         {
+            SetProgress(new(IndexPhase.Documents));
             try
             {
-                bool ready = await LocalResearchEngine.RefreshAsync(_context, Root, files, reconcile, ct, removed);
+                bool ready = await LocalResearchEngine.RefreshAsync(_context, Root, files, reconcile, ct, removed,
+                    (done, total) => SetProgress(new(IndexPhase.Documents, done, total)));
                 lock (_pending) _documentsReady = ready && _pending.Count == 0 && !_rescan;
-                if (_scanOcr is not { IsCompleted: false }) _scanOcr = LocalResearchEngine.IndexScanAsync(_context, Root, ct);
+                if (_scanOcr is not { IsCompleted: false })
+                {
+                    var scan = LocalResearchEngine.IndexScanAsync(_context, Root, ct);
+                    Volatile.Write(ref _scanOcr, scan);
+                    if (!scan.IsCompleted) _ = scan.ContinueWith(_ => _progressChanged(), TaskScheduler.Default);
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException) { _documentsReady = false; }
         }

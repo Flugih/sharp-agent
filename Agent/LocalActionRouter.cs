@@ -29,11 +29,21 @@ static partial class LocalActionRouter
 
     static string? Explicit(string text)
     {
+        var multi = MultipleReads().Match(text);
+        if (multi.Success) return "read_many " + string.Join("\n", multi.Groups["path"].Captures.Select(capture => capture.Value));
         var match = LocalRead().Match(text);
         if (match.Groups["document"].Success) return "inspect " + match.Groups["document"].Value;
         if (match.Groups["file"].Success) return "read " + match.Groups["file"].Value;
-        return match.Groups["query"].Success ? "research " + match.Groups["query"].Value : null;
+        if (match.Groups["query"].Success) return "research " + match.Groups["query"].Value;
+        var search = LiteralSearch().Match(text);
+        return search.Success ? "search " + search.Groups["text"].Value : null;
     }
+
+    [GeneratedRegex("^(?:прочитай файлы|read files) +\"(?<path>[^\"\\r\\n]{1,700})\"(?:(?: *, *| +(?:и|and) +)\"(?<path>[^\"\\r\\n]{1,700})\"){1,7}$", RegexOptions.IgnoreCase)]
+    private static partial Regex MultipleReads();
+
+    [GeneratedRegex("^(?:(?:найди текст|search for text) +\"(?<text>[^\"\\r\\n]{1,160})\"|(?:найди в проекте|search the project for) +(?<text>[\\p{L}_][\\p{L}\\p{Nd}_]{1,159})(?: без правок| without editing)?)[.!]?$", RegexOptions.IgnoreCase)]
+    private static partial Regex LiteralSearch();
 
     [GeneratedRegex("^(?:(?:прочитай файл|read file) \"(?<file>[^\"\\r\\n]{1,700})\"|(?:прочитай документ|read document) \"(?<document>[^\"\\r\\n]{1,700})\"|(?:найди в документах|search documents for)[: ]+\"(?<query>[^\"\\r\\n]{2,160})\")$", RegexOptions.IgnoreCase)]
     private static partial Regex LocalRead();

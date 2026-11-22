@@ -46,6 +46,10 @@ partial class AgentRunner
         int start = _history.LastIndex(ChatJournal.Flags.User);
         if (delegated || start < 0) return (null, null, null);
         int reviews = _history.Range(start + 1, _history.Count - start - 1).Count(message => ReviewOf(message) != null);
+        if (tools.CommandsPending)
+            return reviews < 2 ? (PromptText("Команда ещё выполняется. Получи её итог по session_id.",
+                "A command is still running. Poll its session_id before completing the task."), null, null) :
+                (null, null, PromptText("Команда не завершена к концу задачи.", "The task ended before the command completed."));
         int lastChange = -1, lastCheck = -1;
         var changed = new List<string>();
         var failed = new Dictionary<string, ToolCallEvent>();
@@ -57,16 +61,19 @@ partial class AgentRunner
         }).Distinct().Take(48).ToArray();
         foreach (var (call, result, at) in actions)
         {
-            if (Str(MetaOf(result)?["written_path"]) is { } path && ProjectSourceIndex.IsSource(path) &&
-                !Scripts.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+            var sourceChanges = ChangesOf(result).Select(change => change.Path)
+                .Concat([Str(MetaOf(result)?["written_path"])]).OfType<string>()
+                .Where(path => ProjectSourceIndex.IsSource(path) && !Scripts.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)).ToArray();
+            if (sourceChanges.Length > 0)
             {
                 lastChange = at;
-                if (!changed.Contains(path, StringComparer.OrdinalIgnoreCase)) changed.Add(path);
+                foreach (var path in sourceChanges)
+                    if (!changed.Contains(path, StringComparer.OrdinalIgnoreCase)) changed.Add(path);
             }
-            else if (call.Name == "run_command" && VerificationCommand(call) || ComputerTools.IsControl(call.Name) && Str(ArgsOf(call)?["action"]) == "launch")
+            else if (call.Name == "exec_command" && VerificationCommand(call) || ComputerTools.IsControl(call.Name) && Str(ArgsOf(call)?["action"]) == "launch")
             {
                 lastCheck = at;
-                var key = call.Name == "run_command" ? Str(ArgsOf(call)?["command"])!.Trim() : call.ArgumentsJson;
+                var key = call.Name == "exec_command" ? Str(ArgsOf(call)?["command"])!.Trim() : call.ArgumentsJson;
                 var output = Str(result["content"]) ?? "";
                 if (ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output)) failed[key] = call;
                 else foreach (var covered in failed.Keys.Where(earlier => Covers(key, earlier)).ToList()) failed.Remove(covered);
@@ -82,7 +89,7 @@ partial class AgentRunner
             !Regex.IsMatch(task, @"(?i)(?:\bбез (?:сборки|тестов|проверок)|\bне (?:запускай|выполняй|проверяй|собирай)|\bdo not (?:run|build|test)|\bno tests)\b");
         if (WorkMode && Regex.IsMatch(task, @"(?i)(?:запусти|выполни|прогони)\s+(?:(?:unit|авто|модульные)\s*)?тест[ыа]|\brun\s+(?:the\s+)?(?:unit\s+)?tests\b") &&
             !checks.Any(check => check.Kind == "unit_tests")) checks = [.. checks, new("unit_tests", "", "", "", false)];
-        bool missingTest = !actions.Any(action => action.At > lastChange && action.Call.Name == "run_command" &&
+        bool missingTest = !actions.Any(action => action.At > lastChange && action.Call.Name == "exec_command" &&
             Str(ArgsOf(action.Call)?["command"]) is { } command && ProjectVerification.Tests(command));
         if (automatic && lastChange >= 0 && (lastCheck < lastChange || missingTest))
         {
@@ -154,7 +161,7 @@ partial class AgentRunner
     {
         var path = check.Path.Length == 0 ? null : tools.Context.Resolve(check.Path);
         if (path != null) tools.Context.GuardSecrets(path);
-        int changed = actions.Where(action => FileChangeOf(action.Result) != null || Str(MetaOf(action.Result)?["written_path"]) != null)
+        int changed = actions.Where(action => ChangesOf(action.Result).Any() || Str(MetaOf(action.Result)?["written_path"]) != null)
             .Select(action => action.At).DefaultIfEmpty(-1).Max();
         foreach (var (call, result, at) in actions.Reverse())
         {
@@ -163,15 +170,15 @@ partial class AgentRunner
             var id = Str(args["id"]) ?? "";
             bool matches = check.Kind switch
             {
-                "build" => call.Name == "run_command" && Regex.IsMatch(command, @"(?i)^\s*(?:dotnet|cargo|go)\s+build\b") &&
+                "build" => call.Name == "exec_command" && Regex.IsMatch(command, @"(?i)^\s*(?:dotnet|cargo|go)\s+build\b") &&
                     ProjectVerification.Command(command),
-                "unit_tests" => call.Name == "run_command" && ProjectVerification.Tests(command) ||
+                "unit_tests" => call.Name == "exec_command" && ProjectVerification.Tests(command) ||
                     call.Name == LocalTestTools.Name && Str(args["action"]) == "run" && check.Key == id && !LocalTestTools.IsUiResult(output),
                 "ui_tests" => call.Name == LocalTestTools.Name && Str(args["action"]) == "run" && check.Key == id,
-                _ => call.Name == "run_command" && check.Key.Length > 0 && command.Trim() == check.Key.Trim(),
+                _ => call.Name == "exec_command" && check.Key.Length > 0 && command.Trim() == check.Key.Trim(),
             };
             if (!matches) continue;
-            if (path != null && call.Name == "run_command" &&
+            if (path != null && call.Name == "exec_command" &&
                 !PathHelper.SamePath(path, tools.Context.Resolve(Str(args["working_directory"])))) continue;
             var state = MetaOf(result)?["command_restricted"] != null || output.StartsWith("Пользователь отклонил", StringComparison.Ordinal) ||
                 result["content"]?.ToString().Contains(CommandRestriction.Prefix, StringComparison.Ordinal) == true
@@ -210,15 +217,18 @@ partial class AgentRunner
     HashSet<string> SupersededResults(int currentUser)
     {
         var keys = new Dictionary<string, string>();
-        var latest = new Dictionary<string, string>();
+        var latest = new Dictionary<string, (string Id, bool Failed)>();
         var superseded = new HashSet<string>();
         foreach (var message in _history.Range(currentUser + 1, _history.Count - currentUser - 1))
         {
-            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? []) keys[call.Id] = CallKey(call);
+            foreach (var call in (message["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall) ?? [])
+                if (call.Name is ("read_file" or "read_many" or "search_text" or "search_files" or "list_directory") ||
+                    call.Name == "exec_command" && VerificationCommand(call)) keys[call.Id] = CallKey(call);
             if (Role(message) != "tool" || Str(message["tool_call_id"]) is not { } id || !keys.TryGetValue(id, out var key) ||
                 Str(message["content"]) is not { } content || content.StartsWith(AlreadySent, StringComparison.Ordinal)) continue;
-            if (latest.TryGetValue(key, out var earlier)) superseded.Add(earlier);
-            latest[key] = id;
+            bool failed = ToolRegistry.IsErrorOutput(content) || ToolRegistry.CommandFailed(content);
+            if (!failed && latest.TryGetValue(key, out var earlier) && !earlier.Failed) superseded.Add(earlier.Id);
+            latest[key] = (id, failed);
         }
         return superseded;
     }

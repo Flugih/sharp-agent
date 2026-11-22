@@ -22,7 +22,7 @@ static partial class ProjectSourceIndex
 
     public static async Task<Dictionary<string, IndexedSource>> UpdateAsync(ToolContext context, string root, string folder,
         IEnumerable<string> files, bool canUseSdk, CancellationToken ct, Dictionary<string, IndexedSource>? baseline = null,
-        HashSet<string>? rebind = null)
+        HashSet<string>? rebind = null, Action<int, int>? report = null)
     {
         var index = baseline == null ? new Dictionary<string, IndexedSource>(StringComparer.OrdinalIgnoreCase) : new(baseline, StringComparer.OrdinalIgnoreCase);
         var version = canUseSdk ? LocalDeveloperTools.ParserVersion : "";
@@ -37,7 +37,7 @@ static partial class ProjectSourceIndex
         var affected = baseline == null ? null : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int changedBytes = 0;
         bool changed = false;
-        foreach (var name in files.Distinct(StringComparer.OrdinalIgnoreCase).Where(IsSource))
+        foreach (var name in ProjectWatcher.ReportFiles(files.Distinct(StringComparer.OrdinalIgnoreCase).Where(IsSource), report))
         {
             ct.ThrowIfCancellationRequested();
             affected?.Add(name);

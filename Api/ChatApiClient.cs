@@ -151,6 +151,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         headers.Accept.Add(new("application/json"));
     });
     readonly HashSet<string> _noStreaming = new(StringComparer.OrdinalIgnoreCase), _noStreamOptions = new(StringComparer.OrdinalIgnoreCase);
+    static readonly ToolSchemaWire ToolSchemas = new(static definitions => definitions);
 
     public event Action? LimitsChanged;
     public GroqLimits? Limits { get; private set; }
@@ -162,9 +163,10 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         {
             ["model"] = model, ["messages"] = RequestMessages(messages),
         };
-        if (tools is { Count: > 0 })
+        var schemas = ToolSchemas.Get(tools);
+        if (schemas != null)
         {
-            body["tools"] = tools.DeepClone();
+            body["tools"] = null;
             body["tool_choice"] = callTools ? "auto" : "none";
         }
         if (maxTokens is > 0) body["max_tokens"] = maxTokens.Value;
@@ -189,7 +191,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
         return ApiException.RetryAsync((attemptToken, reportActivity) =>
         {
             body["stream"] = stream;
-            return SendCompletionAsync(body.ToJsonString(), stream, reportText, reportProgress, attemptToken, reportActivity);
+            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas), stream, reportText, reportProgress, attemptToken, reportActivity);
         }, ex =>
         {
             if (options && ex.RejectsStream(options: true))

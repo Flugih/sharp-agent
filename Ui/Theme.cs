@@ -143,6 +143,6 @@ public static class Glyphs
         Folder = "", NewFolder = "", Picture = "", Edit = "", Save = "", Delete = "", Copy = "", Move = "", Search = "",
         Terminal = "", Open = "", OpenWith = "", Reveal = "", Info = "", View = "", Check = "", Cancel = "",
         Warning = "", ChevronRight = "", ChevronDown = "", Tool = "", Lock = "", Globe = "", Refresh = "", Lightning = "",
-        Play = "", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
+        Play = "\uF5B0", Send = "", Maximize = "", Restore = "", FullScreen = "\uE740", BackToWindow = "\uE73F";
     public const string Laptop = "\uE7F8", Wifi = "\uE701";
 }

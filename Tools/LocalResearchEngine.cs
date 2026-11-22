@@ -118,7 +118,7 @@ internal static class LocalResearchEngine
         .Select(match => match.Value).Distinct(StringComparer.OrdinalIgnoreCase).Take(12).ToArray();
 
     internal static async Task<bool> RefreshAsync(ToolContext context, string root, IEnumerable<string> paths, bool reconcile, CancellationToken ct,
-        string[]? removedDirectories = null)
+        string[]? removedDirectories = null, Action<int, int>? report = null)
     {
         await Writer.WaitAsync(ct);
         try
@@ -136,7 +136,7 @@ internal static class LocalResearchEngine
             db.Execute("BEGIN IMMEDIATE");
             try
             {
-                foreach (var relative in paths.Where(Supports).Distinct(StringComparer.OrdinalIgnoreCase))
+                foreach (var relative in ProjectWatcher.ReportFiles(paths.Where(Supports).Distinct(StringComparer.OrdinalIgnoreCase), report))
                 {
                     ct.ThrowIfCancellationRequested();
                     previous.Remove(relative, out var before);
