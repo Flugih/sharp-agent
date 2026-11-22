@@ -4,12 +4,15 @@ namespace SharpAgent.Tools;
 
 public sealed class ToolException(string message) : Exception(message);
 
-public sealed record ConfirmRequest(string Title, string Subject, string Action, bool Danger = false, string? Note = null);
+public sealed record ConfirmRequest(string Title, string Subject, string Action, bool Danger = false, string? Note = null, bool AlwaysAsk = false,
+    string? Revision = null);
 
 public sealed class ToolContext
 {
     // The data folder of the installed version is guarded in both modes: a portable copy must not reach its secrets.
     static readonly string InstalledData = FinalPath(AppPaths.InstalledDataFolder);
+    static readonly string LegacyData = FinalPath(AppPaths.LegacyFolder);
+    static readonly string MigrationData = FinalPath(AppPaths.MigrationFolder);
     string? _appFolder, _installationFolder;
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public string? AppFolder { get => _appFolder; set => _appFolder = value != null ? FinalPath(value) : null; }
@@ -18,15 +21,20 @@ public sealed class ToolContext
     public string? InstallationFolder { get => _installationFolder; set => _installationFolder = value != null ? FinalPath(value) : null; }
     public bool ComputerUse { get; set; }
     internal ChatFileAccess FileAccess { get; } = new();
+    internal SnapshotStore Snapshots { get; } = new();
+    internal ProjectWatcher ProjectWatcher { get; } = new();
     public Func<string, string, CancellationToken, Task<byte[]>>? GenerateImage { get; set; }
     public Action<string>? OpenUrl { get; set; }
     public Func<IntPtr>? BrowserWindow { get; set; }
+    internal Func<string?, string?, string?, CancellationToken, Task<BrowserTools.Snapshot>>? ReadBrowser { get; set; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
     public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
+    internal string CodeIndexFolder => App(@"cache\code-index");
+    internal string DatabaseFolder => App("database");
 
     string App(string name) => Path.Combine(AppFolder!, name);
 
-    string[] DataFolders => [AppFolder!, InstalledData];
+    string[] DataFolders => [AppFolder!, LegacyData, MigrationData, InstalledData, Path.Combine(InstalledData, "data"), Path.Combine(InstalledData, "data.migrating")];
 
     static readonly AsyncLocal<bool> NetworkAllowed = new();
 
@@ -49,12 +57,14 @@ public sealed class ToolContext
     {
         if (AppFolder == null) return false;
         fullPath = FinalPath(fullPath);
-        return DataFolders.Any(folder => HoldsSecrets(folder, fullPath));
+        return IsInside(fullPath, MigrationData) || IsInside(fullPath, Path.Combine(InstalledData, "data.migrating")) ||
+            DataFolders.Any(folder => HoldsSecrets(folder, fullPath));
     }
 
     static bool HoldsSecrets(string folder, string path) =>
         IsInside(Path.Combine(folder, ".env"), path) || SamePath(path, Path.Combine(folder, ".env.tmp")) ||
-        IsInside(Path.Combine(folder, "auth"), path) || IsInside(path, Path.Combine(folder, "auth")) || IsInside(path, Path.Combine(folder, @"history\changes")) ||
+        IsInside(Path.Combine(folder, "auth"), path) || IsInside(path, Path.Combine(folder, "auth")) || IsInside(path, Path.Combine(folder, "Browser")) ||
+        IsInside(path, Path.Combine(folder, @"history\changes")) || IsInside(path, Path.Combine(folder, "checkpoints")) ||
         IsInside(path, folder) && Path.GetFileName(path).Equals(".env", StringComparison.OrdinalIgnoreCase);
 
     public void GuardSecrets(string fullPath)
@@ -70,7 +80,8 @@ public sealed class ToolContext
         fullPath = FinalPath(fullPath);
         if (DataFolders.Any(folder => HoldsAppFiles(folder, fullPath)) ||
             InstallationFolder is { } install && (IsInside(fullPath, install) || IsInside(install, fullPath)) ||
-            IsInside(FinalPath(AppPaths.InstalledModePath), fullPath) ||
+            IsInside(FinalPath(AppPaths.InstalledModePath), fullPath) || IsInside(FinalPath(AppPaths.PortableModePath), fullPath) ||
+            IsInside(fullPath, FinalPath(Path.Combine(AppContext.BaseDirectory, "plugins"))) ||
             Environment.ProcessPath != null && SamePath(fullPath, FinalPath(Environment.ProcessPath)))
             throw new ToolException("Это служебные файлы самой программы Sharp Agent (.env, auth, history, temp, plugins, state.json, exe " +
                 "или папка программы целиком) — изменять, перемещать и удалять их агенту нельзя.");
@@ -85,6 +96,8 @@ public sealed class ToolContext
     static bool HoldsAppFiles(string folder, string path) =>
         new[] { ".env", ".env.tmp", "state.json", "errors.log" }.Any(name => SamePath(path, Path.Combine(folder, name))) ||
         new[] { "auth", "history", "temp" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
+        Path.GetFileName(folder).Equals("data", StringComparison.OrdinalIgnoreCase) &&
+            new[] { "cache", "logs", "checkpoints", "database", "scripts", "models" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
         FinalPath(Path.Combine(folder, "plugins")) is var plugins && (IsInside(path, plugins) || IsInside(plugins, path)) || IsInside(folder, path);
 }
 
@@ -102,6 +115,8 @@ public sealed class AgentTool
 
 public sealed class ToolArgs(JsonObject obj)
 {
+    internal string? ConfirmedRevision { get; set; }
+    internal JsonArray Array(string name) => obj[name] as JsonArray ?? [];
     public string Required(string name, bool allowEmpty = false) =>
         JsonUtil.Str(obj[name]) is { } value && (allowEmpty || value.Length > 0) ? value
             : throw new ToolException($"Не указан обязательный параметр '{name}'.");

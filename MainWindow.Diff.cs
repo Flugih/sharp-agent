@@ -1,3 +1,6 @@
+using System.Windows.Documents;
+using Glyphs = SharpAgent.Ui.Glyphs;
+
 namespace SharpAgent;
 
 public partial class MainWindow
@@ -63,12 +66,12 @@ public partial class MainWindow
         }
     }
 
-    static FrameworkElement DiffView(string? path, FileDiff diff, int limit)
+    internal static FrameworkElement DiffView(string? path, FileDiff diff, int limit)
     {
         bool split = diff.Added > 0 && diff.Removed > 0, beforeOnly = diff.Added == 0;
-        var left = new StackPanel();
-        var right = new StackPanel();
         var extension = Path.GetExtension(path)?.ToLowerInvariant() ?? "";
+        var left = new DiffSide(extension);
+        var right = new DiffSide(extension);
         List<(int Number, string Text)> removed = [], added = [];
         int oldLine = 1, newLine = 1, shown = 0;
         bool inHunk = false;
@@ -104,21 +107,21 @@ public partial class MainWindow
                 case '+': added.Add((newLine++, code)); break;
                 default:
                     FlushChanges();
-                    if (split || beforeOnly) left.Children.Add(DiffLine(oldLine, code, extension));
-                    if (split || !beforeOnly) right.Children.Add(DiffLine(newLine, code, extension));
+                    if (split || beforeOnly) left.Add(oldLine, code);
+                    if (split || !beforeOnly) right.Add(newLine, code);
                     oldLine++;
                     newLine++;
                     break;
             }
         }
         FlushChanges();
-        if (!split) return Side(beforeOnly ? left : right);
+        if (!split) return (beforeOnly ? left : right).View();
         var pair = new Grid { ColumnDefinitions = { new(), new() { Width = new(1) }, new() } };
         var divider = new Border().Paint(BackgroundProperty, "LineStrong");
-        var after = Side(right);
+        var after = right.View();
         Grid.SetColumn(divider, 1);
         Grid.SetColumn(after, 2);
-        pair.Children.Add(Side(left));
+        pair.Children.Add(left.View());
         pair.Children.Add(divider);
         pair.Children.Add(after);
         return pair;
@@ -128,9 +131,15 @@ public partial class MainWindow
             for (int i = 0; i < Math.Max(removed.Count, added.Count); i++)
             {
                 if (split || beforeOnly)
-                    left.Children.Add(i < removed.Count ? DiffLine(removed[i].Number, removed[i].Text, extension, '-') : DiffGap());
+                {
+                    if (i < removed.Count) left.Add(removed[i].Number, removed[i].Text, '-');
+                    else left.Add(null, "");
+                }
                 if (split || !beforeOnly)
-                    right.Children.Add(i < added.Count ? DiffLine(added[i].Number, added[i].Text, extension, '+') : DiffGap());
+                {
+                    if (i < added.Count) right.Add(added[i].Number, added[i].Text, '+');
+                    else right.Add(null, "");
+                }
             }
             removed.Clear();
             added.Clear();
@@ -138,40 +147,69 @@ public partial class MainWindow
 
         void AddNote(string label)
         {
-            if (split || beforeOnly) left.Children.Add(DiffNote(label));
-            if (split || !beforeOnly) right.Children.Add(DiffNote(label));
+            if (split || beforeOnly) left.Add(null, label, '@');
+            if (split || !beforeOnly) right.Add(null, label, '@');
         }
     }
-
-    static ScrollViewer Side(StackPanel rows) => new()
-    {
-        Content = rows, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-        PanningMode = PanningMode.HorizontalOnly, Focusable = false,
-    };
 
     static Border DiffNote(string label) => new Border
     {
         Padding = new(10, 5, 10, 5), Child = new TextBlock { Text = label, FontSize = 12 }.Paint(ForegroundProperty, "TextDim"),
     }.Paint(BackgroundProperty, "Fill");
 
-    static Border DiffGap() => new Border { Height = 19 }.Paint(BackgroundProperty, "DiffGap");
-
-    static Border DiffLine(int number, string code, string extension, char kind = ' ')
+    sealed class DiffSide(string extension)
     {
-        string? change = kind switch { '+' => "Success", '-' => "DangerText", _ => null };
-        var text = new TextBlock { FontFamily = Theme.Mono, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center }
-            .Paint(ForegroundProperty, "TextSoft");
-        DiffCode.Write(text, code, extension);
-        var gutter = new TextBlock
+        const int RowHeight = 19;
+        readonly StackPanel _gutter = new() { Width = 50, IsHitTestVisible = false };
+        readonly FlowDocument _document = new()
         {
-            Text = number.ToString(), Width = 40, Margin = new(0, 0, 8, 0), TextAlignment = TextAlignment.Right,
-            FontFamily = Theme.Mono, FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
-        }.Paint(ForegroundProperty, change ?? "TextMuted");
-        var row = new Border
-        {
-            Height = 19, BorderThickness = new(2, 0, 0, 0), Padding = new(0, 0, 8, 0),
-            Child = new DockPanel { Children = { gutter, text } },
+            FontFamily = Theme.Mono, FontSize = 12.5, PagePadding = new(0), LineHeight = RowHeight,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
         };
-        return change == null ? row : row.Paint(BackgroundProperty, kind == '+' ? "DiffAdd" : "DiffRemove").Paint(BorderBrushProperty, change);
+        int _columns = 8;
+
+        public void Add(int? number, string code, char kind = ' ')
+        {
+            string? change = kind switch { '+' => "Success", '-' => "DangerText", _ => null };
+            string? background = kind switch { '+' => "DiffAdd", '-' => "DiffRemove", '@' => "Fill", _ when number == null => "DiffGap", _ => null };
+            var paragraph = new Paragraph { Margin = new(0) }.Paint(TextElement.ForegroundProperty, kind == '@' ? "TextDim" : "TextSoft");
+            if (kind == '@')
+            {
+                paragraph.FontFamily = Theme.Ui;
+                paragraph.FontSize = 12;
+                paragraph.Inlines.Add(new Run(code));
+            }
+            else if (number.HasValue) DiffCode.Write(paragraph.Inlines, code, extension);
+            else paragraph.Inlines.Add(new Run(""));
+            _columns = Math.Max(_columns, code.Length + 3 * code.Count(character => character == '\t'));
+            var gutter = new Border
+            {
+                Height = RowHeight, BorderThickness = new(2, 0, 0, 0), Padding = new(0, 0, 8, 0),
+                Child = new TextBlock { Text = number?.ToString() ?? "", TextAlignment = TextAlignment.Right,
+                    FontFamily = Theme.Mono, FontSize = 12, VerticalAlignment = VerticalAlignment.Center }.Paint(ForegroundProperty, change ?? "TextMuted"),
+            };
+            if (background != null)
+            {
+                paragraph.Paint(TextElement.BackgroundProperty, background);
+                gutter.Paint(BackgroundProperty, background);
+            }
+            if (change != null) gutter.Paint(BorderBrushProperty, change);
+            _document.Blocks.Add(paragraph);
+            _gutter.Children.Add(gutter);
+        }
+
+        public ScrollViewer View()
+        {
+            double page = Math.Clamp(_columns * 8d + 8, 160, 32000);
+            _document.PageWidth = page;
+            var box = ReadOnlyChatText(_document, Tr("Код изменений", "Changed code"));
+            box.Margin = new(0);
+            box.Width = page + 10;
+            box.Height = Math.Max(RowHeight, _gutter.Children.Count * RowHeight);
+            var content = new DockPanel { Children = { _gutter, box } };
+            DockPanel.SetDock(_gutter, Dock.Left);
+            return new() { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, PanningMode = PanningMode.HorizontalOnly, Focusable = false };
+        }
     }
 }

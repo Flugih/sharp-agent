@@ -288,7 +288,7 @@ public class OpenAiResponsesClient : IChatProvider
         var reason = Str((answer?["incomplete_details"] as JsonObject)?["reason"]);
         if (reason == "content_filter")
             return new(new JsonObject(), reason, answer?["usage"] is JsonObject billed
-                ? new UsageInfo(Long(billed["input_tokens"]), Long(billed["output_tokens"])) : null, requestId);
+                ? ReadUsage(billed) : null, requestId);
         if (answer?["output"] is JsonArray { Count: > 0 } output) items = output.OfType<JsonObject>().ToList();
         List<string> texts = [], commentary = [];
         var calls = new JsonArray();
@@ -327,9 +327,12 @@ public class OpenAiResponsesClient : IChatProvider
             .SelectMany(item => (item["summary"] as JsonArray)?.OfType<JsonObject>() ?? []).Select(part => Str(part["text"])).OfType<string>();
         var finish = incomplete || status == "incomplete" || reason != null ? "length" : calls.Count > 0 ? "tool_calls" : "stop";
         return new ChatResult(message, finish,
-            answer?["usage"] is JsonObject usage ? new UsageInfo(Long(usage["input_tokens"]), Long(usage["output_tokens"])) : null,
+            answer?["usage"] is JsonObject usage ? ReadUsage(usage) : null,
             requestId ?? Str(answer?["id"]), new(Join(finalSummaries) ?? Join(summaries ?? []), Join(commentary)), phase);
     }
+
+    static UsageInfo ReadUsage(JsonObject usage) => new(Long(usage["input_tokens"]), Long(usage["output_tokens"]),
+        Long((usage["input_tokens_details"] as JsonObject)?["cached_tokens"]), Long((usage["output_tokens_details"] as JsonObject)?["reasoning_tokens"]));
 
     static bool IsCommentary(JsonObject? item) => Str(item?["type"]) == "message" && Str(item?["phase"]) == "commentary";
 

@@ -96,18 +96,6 @@ public static partial class CommandLog
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    public static void Prune(string folder)
-    {
-        try
-        {
-            var expired = DateTime.Now.AddDays(-KeepDays);
-            foreach (var file in new DirectoryInfo(folder).EnumerateFiles().Where(f => f.Extension == ".log" || f.Name.StartsWith("screen_")))
-                try { if (file.LastWriteTime < expired) file.Delete(); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-    }
-
     static string? Save(string folder, string text)
     {
         try

@@ -12,7 +12,7 @@ partial class AgentRunner
             {
                 ["path"] = change.Path, ["before"] = change.BeforeHash, ["after"] = change.AfterHash, ["backup"] = change.Backup,
             };
-        if (call.Name is not ("write_file" or "edit_file" or "run_plugin") || (change?.Path ?? WriteTarget(call)) is not { } path ||
+        if (call.Name is not ("write_file" or "edit_file" or "run_plugin" or AgentKnowledge.Name) || (change?.Path ?? WriteTarget(call)) is not { } path ||
             (change?.AfterHash ?? FileChanges.CurrentHash(path)) is not { } hash) return;
         var meta = EnsureMeta(message);
         meta["written_path"] = path;
@@ -24,7 +24,7 @@ partial class AgentRunner
         _completedWrites.Clear();
         foreach (var (call, result, _) in CurrentActions())
             if (MetaOf(result) is { } meta && Str(meta["written_path"]) is { } path && Str(meta["written_hash"]) is { } hash)
-                _completedWrites[WriteKey(call)] = new(call.Id, path, hash,
+                _completedWrites[WriteKey(call)] = new(call.Id, AppPaths.Relocate(path), hash,
                     $"Действие уже успешно выполнено до остановки. Файл {path} сохранил записанное содержимое. " +
                     $"Переходи к оставшимся шагам. Предыдущий результат: {Str(result["content"])?.Split('\n', 2)[0]}");
     }
@@ -68,7 +68,7 @@ partial class AgentRunner
 
     internal static FileChange? FileChangeOf(JsonNode message) =>
         FileChangeMeta(message) is { } info && Str(info["path"]) is { } path && Str(info["after"]) is { } after
-            ? new FileChange(path, Str(info["before"]), after, Str(info["backup"]))
+            ? new FileChange(AppPaths.Relocate(path), Str(info["before"]), after, Str(info["backup"]))
             : null;
 
     internal static bool FileChangeUndone(JsonNode message) => Bool(FileChangeMeta(message)?["undone"]) == true;

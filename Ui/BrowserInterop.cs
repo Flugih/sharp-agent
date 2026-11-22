@@ -37,7 +37,9 @@ internal interface IEdgePage
     void OnHistory(IHistoryChanged handler, out long token);
     void _VtblGap5_9();
     void OnPermission(IPermissionRequested handler, out long token);
-    void _VtblGap6_7();
+    void _VtblGap6_5();
+    void ExecuteScript([MarshalAs(UnmanagedType.LPWStr)] string script, IScriptCompleted handler);
+    void _VtblGap11_1();
     void Reload();
     void _VtblGap7_5();
     uint BrowserPid();
@@ -80,6 +82,9 @@ internal interface IDownloadArgs
 
 [ComImport, Guid("c10e7f7b-b585-46f0-a623-8befbf3e4ee0"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IDeferral { void Complete(); }
+
+[ComVisible(true), Guid("49511172-CC67-4BCA-9923-137112F4C4CC"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IScriptCompleted { void Invoke(int error, [MarshalAs(UnmanagedType.LPWStr)] string json); }
 
 [ComImport, Guid("5b495469-e119-438a-9b18-7604f25f2e49"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IStartingArgs

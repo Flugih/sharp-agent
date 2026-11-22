@@ -51,12 +51,14 @@ public partial class MainWindow
         if (!HasFiles(e.Data)) return;
         e.Handled = true;
         if (!accepted || SettingsOpen || IsShown(SearchLayer) || WaitForChatFile(_chatOperation != null)) return;
-        var paths = e.Data.GetData(DataFormats.FileDrop) as string[] ?? SaveVirtualFiles(e.Data);
+        var paths = AttachmentDropPaths(e.Data);
         if (paths.Length == 0) return;
         _ = AddAttachmentsAsync(paths);
         Activate();
         InputBox.Focus();
     }
+
+    string[] AttachmentDropPaths(IDataObject data) => data.GetData(DataFormats.FileDrop) as string[] ?? SaveVirtualFiles(data);
 
     string[] SaveVirtualFiles(IDataObject data)
     {
@@ -93,13 +95,15 @@ public partial class MainWindow
 
     static bool IsPointerOver(FrameworkElement element, DragEventArgs e) => new Rect(element.RenderSize).Contains(e.GetPosition(element));
 
-    void Attach_Click(object sender, RoutedEventArgs e)
+    void Attach_Click(object sender, RoutedEventArgs e) => PickAttachmentFiles();
+
+    void PickAttachmentFiles()
     {
         if (SettingsOpen) return;
         var dialog = new Microsoft.Win32.OpenFileDialog { Title = Tr("Прикрепить файлы", "Attach files"), Multiselect = true, CheckFileExists = true };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
-        if (dialog.ShowDialog(this) == true) _ = AddAttachmentsAsync(dialog.FileNames);
-        InputBox.Focus();
+        if (dialog.ShowDialog(ActiveChatWindow) == true) _ = AddAttachmentsAsync(dialog.FileNames);
+        FocusAttachmentInput();
     }
 
     void AttachFolder_Click(object sender, RoutedEventArgs e)
@@ -250,9 +254,7 @@ public partial class MainWindow
         {
             void Remove()
             {
-                _pendingAttachments.Remove(attachment);
-                RenderPendingAttachments();
-                InputBox.Focus();
+                RemovePendingAttachment(attachment);
             }
             var chip = _links.FileChip(attachment.Path, attachment.Name, FileActions.Item(Tr("Убрать из сообщения", "Remove from message"), Glyphs.Cancel, Remove));
             chip.ToolTip = $"{attachment.Path}\n{attachment.Describe()}\nЩелчок — открыть, правая кнопка — другие действия";
@@ -268,8 +270,21 @@ public partial class MainWindow
             }.Paint(Border.BackgroundProperty, "Surface3"));
         }
         AttachPanel.Visibility = VisibleIf(_pendingAttachments.Count > 0);
-        if (_cts == null && _pendingAttachments.Count > 0) _compactChat?.SetStatus(Tr($"Вложений к сообщению: {_pendingAttachments.Count}", $"Attachments: {_pendingAttachments.Count}"));
+        _compactChat?.ShowAttachments(_pendingAttachments, RemovePendingAttachment);
         UpdateSendButton();
+    }
+
+    void RemovePendingAttachment(Attachment attachment)
+    {
+        _pendingAttachments.Remove(attachment);
+        RenderPendingAttachments();
+        FocusAttachmentInput();
+    }
+
+    void FocusAttachmentInput()
+    {
+        if (_compactChat is { } compact) compact.FocusInput();
+        else InputBox.Focus();
     }
 
     void ClearPendingAttachments()

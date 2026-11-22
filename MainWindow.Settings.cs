@@ -21,6 +21,8 @@ public partial class MainWindow
     FrameworkElement? _settingsPage;
     bool _settingsRussian;
     CancellationTokenSource? _signIn;
+    bool _chatGptSigningOut, _testingKey;
+    string? _chatGptAccountChoice;
     DispatcherTimer? _toastTimer;
     Action? _toastAction;
 
@@ -104,7 +106,8 @@ public partial class MainWindow
 
     void ShowKeySettings() => OpenSettings(KeyField);
 
-    Control KeyField => _config.Provider == AgentProvider.ChatGpt ? ChatGptSignInButton : KeyPasswordBox;
+    Control KeyField => _config.Provider != AgentProvider.ChatGpt ? KeyPasswordBox
+        : _chatGpt.SavedAccounts.Any() ? ChatGptAccountButton : ChatGptSignInButton;
 
     void OpenSettings(Control? focus)
     {
@@ -161,6 +164,7 @@ public partial class MainWindow
         MonthLimitBox.Text = _config.MonthLimit is { } month ? Tokens.ToMillions(month) : "";
         ClearInvalidFields();
         _settingsProvider = _config.Provider;
+        if (_signIn == null) _chatGptAccountChoice = _chatGpt.ClientId;
         ShowProviderSettings();
         ShowSettingsPage(focus ?? _settingsPage ?? SettingsGeneral);
         WorkArea.Visibility = Sidebar.Visibility = Visibility.Hidden;
@@ -229,7 +233,8 @@ public partial class MainWindow
         var provider = _settingsProvider;
         bool keyed = provider != AgentProvider.ChatGpt, groq = provider == AgentProvider.Groq;
         ProviderButton.Content = ProviderName(provider);
-        TestKeyButton.Content = keyed ? Tr("Проверить API-ключ", "Check API key") : "Проверить вход";
+        TestKeyButton.Content = keyed ? Tr("Проверить API-ключ", "Check API key") : Tr("Проверить вход", "Check sign-in");
+        TestKeyButton.IsEnabled = !_testingKey;
         KeyPanel.Visibility = VisibleIf(keyed);
         ChatGptPanel.Visibility = VisibleIf(!keyed);
         TookenPanel.Visibility = VisibleIf(provider == AgentProvider.Tooken);
@@ -307,62 +312,81 @@ public partial class MainWindow
         ShowImageSettings();
     });
 
+    (string? Value, string Label)[] ChatGptAccountChoices() => _chatGpt.SavedAccounts
+        .Select(account => ((string?)account.ClientId, account.Label ?? Tr("Аккаунт ChatGPT", "ChatGPT account")))
+        .Append((null, Tr("Другой аккаунт…", "Another account…"))).ToArray();
+
     void ShowChatGptAccount()
     {
+        var choices = ChatGptAccountChoices();
+        if (!choices.Any(choice => choice.Value == _chatGptAccountChoice)) _chatGptAccountChoice = _chatGpt.ClientId;
+        bool current = _chatGptAccountChoice == _chatGpt.ClientId;
         bool connected = _chatGpt.Connected, allowed = _chatGpt.PlanAllowed, waiting = _signIn != null;
-        ChatGptAccountPanel.Visibility = VisibleIf(connected);
-        ChatGptSignInPanel.Visibility = VisibleIf(!allowed);
-        ChatGptEmail.Text = _chatGpt.Label ?? Tr("Аккаунт ChatGPT", "ChatGPT account");
-        ChatGptPlan.Text = allowed ? Tr("Подписка ChatGPT подключена", "ChatGPT subscription connected") : Tr("Использование подписки не разрешено", "Subscription access was not granted");
-        ChatGptSignInButton.IsEnabled = !waiting;
-        var action = waiting ? "Ожидаю вход в браузере…" : connected ? "Разрешить использование подписки" : Tr("Продолжить с ChatGPT", "Continue with ChatGPT");
-        ChatGptSignInButton.Content = action;
-        AutomationProperties.SetName(ChatGptSignInButton, action);
+        bool busy = waiting || _chatGptSigningOut;
+        if (_settingsProvider == AgentProvider.ChatGpt) TestKeyButton.IsEnabled = !_testingKey && !busy && current;
+        ChatGptAccountButton.Visibility = VisibleIf(choices.Length > 1);
+        ChatGptAccountButton.IsEnabled = !busy;
+        ShowChoice(ChatGptAccountButton, choices, _chatGptAccountChoice);
+        var label = (string)ChatGptAccountButton.Content;
+        ChatGptAccountButton.ToolTip = label;
+        AutomationProperties.SetName(ChatGptAccountButton, Tr("Аккаунт ChatGPT: ", "ChatGPT account: ") + label);
+        ChatGptPlan.Text = !current && connected && _chatGpt.Label is { } active
+            ? Tr($"Сейчас подключён {active}", $"Currently connected: {active}")
+            : current && allowed ? Tr("Подписка ChatGPT подключена", "ChatGPT subscription connected")
+            : current && connected ? Tr("Использование подписки не разрешено", "Subscription access was not granted")
+            : _chatGptAccountChoice != null ? Tr("Для этого аккаунта нужен вход", "This account needs sign-in") : "";
+        ChatGptSignInButton.Visibility = VisibleIf(waiting || !current || !allowed);
+        ChatGptSignInButton.IsEnabled = !busy;
+        ChatGptSignInButton.Content = waiting ? Tr("Ожидаю вход в браузере…", "Waiting for browser sign-in…")
+            : current && connected ? Tr("Разрешить использование подписки", "Allow subscription access")
+            : Tr("Продолжить с ChatGPT", "Continue with ChatGPT");
         ChatGptCancelButton.Visibility = VisibleIf(waiting);
-        ChatGptHint.Text = waiting ? Tr("В браузере открылась страница OpenAI. Войдите и разрешите Sharp Agent использовать подписку — программа ждёт до 10 минут.", "The OpenAI page opened in your browser. Sign in and allow Sharp Agent to use your subscription within 10 minutes.")
-            : allowed ? Tr("Запросы агента расходуют вашу подписку ChatGPT.", "Agent requests count toward your ChatGPT subscription.")
-            : connected ? Tr("Разрешите Sharp Agent использовать подписку на сайте OpenAI или выберите другого провайдера.", "Allow Sharp Agent to use your subscription on the OpenAI site or choose another provider.")
-            : _chatGpt.Label is { } label ? Tr($"Sharp Agent подключён к {label}: нажмите «Продолжить с ChatGPT», чтобы войти снова.", $"Sharp Agent is connected to {label}. Choose Continue with ChatGPT to sign in again.")
+        ChatGptSignOutButton.Visibility = VisibleIf(connected && current && !waiting);
+        ChatGptSignOutButton.IsEnabled = !busy;
+        ChatGptHint.Text = waiting ? Tr("Завершите вход на сайте OpenAI — программа ждёт до 10 минут.", "Finish signing in on the OpenAI site within 10 minutes.")
+            : _chatGptSigningOut ? Tr("Выполняется выход из ChatGPT…", "Signing out of ChatGPT…")
+            : current && allowed ? Tr("Запросы агента расходуют вашу подписку ChatGPT.", "Agent requests count toward your ChatGPT subscription.")
+            : current && connected ? Tr("Разрешите Sharp Agent использовать подписку на сайте OpenAI.", "Allow Sharp Agent to use your subscription on the OpenAI site.")
             : Tr("Откроется сайт OpenAI. Войдите в ChatGPT и разрешите Sharp Agent использовать подписку.", "The OpenAI site will open. Sign in to ChatGPT and allow Sharp Agent to use your subscription.");
-        if (waiting || connected) return;
-        foreach (var account in _chatGpt.SavedAccounts)
-            AddSignInLink(Tr("Войти как ", "Sign in as ") + (account.Label ?? Tr("аккаунт ChatGPT", "ChatGPT account")), account.ClientId);
-        if (_chatGpt.ClientId != null) AddSignInLink(Tr("Войти в другой аккаунт", "Sign in to another account"), null);
     }
 
-    void AddSignInLink(string text, string? clientId)
-    {
-        ChatGptHint.Inlines.Add(new LineBreak());
-        ChatGptHint.Inlines.Add(MakeLink(text, async () => await SignInChatGptAsync(clientId)));
-    }
+    void ChatGptAccountButton_Click(object sender, RoutedEventArgs e) =>
+        PickChoice(ChatGptAccountButton, ChatGptAccountChoices(), _chatGptAccountChoice, account =>
+        {
+            _chatGptAccountChoice = account;
+            SetTestResult("", null);
+            ShowChatGptAccount();
+        });
 
-    async void ChatGptSignIn_Click(object sender, RoutedEventArgs e) => await SignInChatGptAsync(_chatGpt.ClientId);
+    async void ChatGptSignIn_Click(object sender, RoutedEventArgs e) => await SignInChatGptAsync(_chatGptAccountChoice);
 
     async Task SignInChatGptAsync(string? clientId)
     {
-        if (_signIn != null) return;
+        if (_signIn != null || _chatGptSigningOut || AnyRunning) return;
         var cts = _signIn = new CancellationTokenSource();
         ShowChatGptAccount();
         SetTestResult("", null);
-        bool welcome = false;
+        bool welcome = false, checkSignIn = false;
         try
         {
             welcome = await _chatGpt.SignInAsync(OpenSignInPage, clientId, cts.Token);
+            _chatGptAccountChoice = _chatGpt.ClientId;
             WindowEffects.Flash(this);
             if (_config.Provider == AgentProvider.ChatGpt) ApplyProvider();
-            else if (_chatGpt.PlanAllowed && _cts == null) SwitchProvider(AgentProvider.ChatGpt);
+            else if (_chatGpt.PlanAllowed && _cts == null) await SwitchProviderAsync(AgentProvider.ChatGpt);
             bool allowed = _chatGpt.PlanAllowed;
             if (!SettingsOpen)
                 ShowToast(allowed ? Tr("Подписка ChatGPT подключена", "ChatGPT subscription connected") + (_chatGpt.Label is { } label ? ": " + label : "")
                     : Tr("Вход выполнен, но Sharp Agent не получил разрешения использовать подписку ChatGPT", "Signed in. Sharp Agent still needs permission to use the ChatGPT subscription."), allowed ? ToastKind.Success : ToastKind.Warning);
-            else if (_settingsProvider == AgentProvider.ChatGpt && allowed) TestKey_Click(this, new RoutedEventArgs());
+            else checkSignIn = _settingsProvider == AgentProvider.ChatGpt && allowed;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         catch (Exception ex) when (ex is ApiException or IOException or System.Net.Sockets.SocketException or InvalidOperationException)
         {
             var text = ex is ApiException ? ex.Message : Tr("Не удалось войти в ChatGPT: ", "Could not sign in to ChatGPT: ") + ex.Message + Tr(" Попробуйте ещё раз.", " Try again.");
-            if (SettingsOpen) SetTestResult(text, false);
+            if (SettingsOpen && _settingsProvider == AgentProvider.ChatGpt) SetTestResult(text, false);
             else ShowToast(text, ToastKind.Error);
+            if (_provider is ChatGptClient && !_chatGpt.PlanAllowed) ApplyProvider();
         }
         finally
         {
@@ -370,6 +394,7 @@ public partial class MainWindow
             _signIn = null;
             ShowChatGptAccount();
         }
+        if (checkSignIn) TestKey_Click(this, new RoutedEventArgs());
         if (welcome) ShowPlanWelcome();
     }
 
@@ -387,8 +412,13 @@ public partial class MainWindow
 
     async void ChatGptSignOut_Click(object sender, RoutedEventArgs e)
     {
-        if (!DarkDialog.Ask(this, "Выйти из ChatGPT?", "Чтобы снова работать через ChatGPT, нажмите «Продолжить с ChatGPT».", Tr("Выйти", "Sign out"))) return;
-        ChatGptSignOutButton.IsEnabled = false;
+        if (_signIn != null || _chatGptSigningOut || AnyRunning) return;
+        if (!DarkDialog.Ask(this, Tr("Выйти из ChatGPT?", "Sign out of ChatGPT?"),
+            Tr("Вход будет удалён, но аккаунт останется в списке. Чтобы подключить его снова, войдите через браузер.",
+                "The session will be removed, but the account will stay in the list. Sign in again in your browser to reconnect it."),
+            Tr("Выйти", "Sign out"))) return;
+        _chatGptSigningOut = true;
+        ShowChatGptAccount();
         bool revoked;
         try { revoked = await _chatGpt.SignOutAsync(); }
         catch (ApiException ex)
@@ -396,7 +426,11 @@ public partial class MainWindow
             ShowToast(ex.Message, ToastKind.Error);
             return;
         }
-        finally { ChatGptSignOutButton.IsEnabled = true; }
+        finally
+        {
+            _chatGptSigningOut = false;
+            ShowChatGptAccount();
+        }
         _modelLists.Remove(AgentProvider.ChatGpt);
         _state.ModelCatalogs?.Remove(AgentProvider.ChatGpt);
         _state.Save();
@@ -407,7 +441,7 @@ public partial class MainWindow
             ShowProviderSettings();
         }
         if (!revoked)
-            ShowToast(Tr("Вход удалён из программы, но OpenAI не подтвердил его отзыв. Отключить Sharp Agent можно в настройках ChatGPT.", "The account was removed from the app. OpenAI did not confirm revocation. You can revoke access in ChatGPT settings."),
+            ShowToast(Tr("Вход удалён из программы, но OpenAI не подтвердил его отзыв. Отключить Sharp Agent можно в настройках ChatGPT.", "The session was removed from the app. OpenAI did not confirm revocation. You can revoke access in ChatGPT settings."),
                 ToastKind.Warning, Tr("Открыть", "Open"), () => FileActions.OpenUrl(ChatGptClient.UsageUrl));
     }
 
@@ -456,6 +490,8 @@ public partial class MainWindow
     async void TestKey_Click(object sender, RoutedEventArgs e)
     {
         var provider = _settingsProvider;
+        if (_testingKey || provider == AgentProvider.ChatGpt &&
+            (_signIn != null || _chatGptSigningOut || _chatGptAccountChoice != _chatGpt.ClientId)) return;
         var key = EnteredKey();
         var baseUrl = SettingsTookenBaseUrl();
         var connection = ModelCatalogKey(provider, key, baseUrl);
@@ -474,6 +510,7 @@ public partial class MainWindow
             AgentProvider.Tooken => new ChatApiClient(baseUrl, key),
             _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
         };
+        _testingKey = true;
         TestKeyButton.IsEnabled = false;
         SetTestResult(Tr("Проверяю…", "Checking…"), null);
         try
@@ -481,7 +518,7 @@ public partial class MainWindow
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             if (provider == AgentProvider.OpenRouter && client is ChatApiClient router) await router.CheckOpenRouterKeyAsync(cts.Token);
             var models = await client.ListModelsAsync(cts.Token);
-            if (provider != _settingsProvider || !SettingsOpen) return;
+            if (provider != _settingsProvider || !SettingsOpen || provider == AgentProvider.ChatGpt && _chatGptAccountChoice != _chatGpt.ClientId) return;
             if (SettingsCatalogKey() != connection)
             {
                 SetTestResult("", null);
@@ -505,7 +542,8 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            if (provider != _settingsProvider || !SettingsOpen || SettingsCatalogKey() != connection) return;
+            if (provider != _settingsProvider || !SettingsOpen || SettingsCatalogKey() != connection ||
+                provider == AgentProvider.ChatGpt && _chatGptAccountChoice != _chatGpt.ClientId) return;
             SetTestResult(ex switch
             {
                 ApiException { StatusCode: HttpStatusCode.Unauthorized } => provider == AgentProvider.ChatGpt
@@ -518,8 +556,9 @@ public partial class MainWindow
         }
         finally
         {
-            TestKeyButton.IsEnabled = true;
-            if (provider == AgentProvider.ChatGpt) ShowChatGptAccount();
+            _testingKey = false;
+            if (_settingsProvider == AgentProvider.ChatGpt) ShowChatGptAccount();
+            else TestKeyButton.IsEnabled = true;
             if (_provider is ChatGptClient && !_chatGpt.PlanAllowed && _cts == null) ApplyProvider();
         }
     }
@@ -617,6 +656,7 @@ public partial class MainWindow
         foreach (var (provider, model) in _settingsModels)
             if (provider == _settingsProvider || model != _savedModels.GetValueOrDefault(provider))
                 values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
+        var previous = CurrentModelSelection();
         if (SaveEnv(values) is { } error)
         {
             ShowSettingsError(Tr("Не удалось сохранить файл .env: ", "Could not save .env: ") + error);
@@ -634,6 +674,7 @@ public partial class MainWindow
             RenderCurrentChat();
         }
         CloseSettings();
+        await RunChatOperationAsync(() => ShowModelChangeAsync(previous));
         ShowToast(_provider != null ? Tr("Настройки сохранены", "Settings saved") : _config.Provider switch
         {
             AgentProvider.ChatGpt => Tr("Настройки сохранены. Для ответов агента подключите подписку ChatGPT.", "Settings saved. Connect a ChatGPT subscription to use the agent."),

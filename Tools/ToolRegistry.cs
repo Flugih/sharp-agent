@@ -9,9 +9,9 @@ public sealed record ToolOutcome(string Output, bool IsError, bool IsWarning = f
 public sealed class ToolRegistry
 {
     const int MaxToolOutputChars = 100_000;
-    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName];
+    static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName, ScriptRegistry.Name, BrowserTools.Name];
     static readonly HashSet<string> ReadOnly =
-        ["read_file", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin"];
+        ["read_file", "read_many", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin"];
     static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано"];
     readonly Dictionary<string, AgentTool> _byName;
     readonly List<AgentTool> _tools;
@@ -35,7 +35,8 @@ public sealed class ToolRegistry
     {
         Context = context;
         _tools = FileTools.All().Concat(ShellTools.All()).Concat(CommandLog.All()).Concat(ImageTools.All())
-            .Concat(PluginTools.All()).Concat(ComputerTools.All()).Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
+            .Concat(PluginTools.All()).Concat(ComputerTools.All()).Concat(AgentKnowledge.All()).Append(ScriptRegistry.Tool()).Append(BrowserTools.Tool()).Append(LocalTestTools.Tool())
+            .Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
         _byName = _tools.ToDictionary(t => t.Name);
     }
 
@@ -62,7 +63,8 @@ public sealed class ToolRegistry
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
         var toolArgs = new ToolArgs(args);
-        bool opaque = name is "run_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName;
+        bool opaque = name is "run_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName or ScriptRegistry.Name ||
+            name == LocalTestTools.Name && toolArgs.Optional("action") == "run";
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -75,8 +77,12 @@ public sealed class ToolRegistry
                     return Error("Пользователь отклонил это действие. Не повторяй его без явной просьбы пользователя.");
                 ToolContext.AllowNetwork();
             }
-            if (tool.Confirmation?.Invoke(toolArgs, Context) is { } request && confirm != null && !await confirm(request))
-                return Error("Пользователь отклонил это действие. Не повторяй его без явной просьбы пользователя.");
+            if (tool.Confirmation?.Invoke(toolArgs, Context) is { } request)
+            {
+                if (confirm == null ? request.AlwaysAsk : !await confirm(request))
+                    return Error("Пользователь отклонил это действие. Не повторяй его без явной просьбы пользователя.");
+                toolArgs.ConfirmedRevision = request.Revision;
+            }
             ct.ThrowIfCancellationRequested();
             if (opaque) Context.FileAccess.RequireExclusiveAccess(reserve: true);
             executionStarted?.Invoke();
@@ -84,7 +90,7 @@ public sealed class ToolRegistry
             {
                 var pending = FileChanges.Capture(Context, name, toolArgs);
                 var output = await tool.Handler(toolArgs, Context, ct);
-                bool warning = name is "run_command" or "run_plugin" && CommandFailed(output);
+                bool warning = name is "run_command" or "run_plugin" or ScriptRegistry.Name or LocalTestTools.Name && CommandFailed(output);
                 var (change, diff) = warning ? (null, null) :
                     FileChanges.Complete(Context, pending, name == "generate_image" ? ImageTools.SavedPath(output) : null);
                 if (output.Length > MaxToolOutputChars)
@@ -103,7 +109,9 @@ public sealed class ToolRegistry
     }
 
     string[] ForeignShares(JsonObject args) => args.Where(p => p.Key is "path" or "directory" or "source" or "destination" or "working_directory")
-        .Concat(args["arguments"] as JsonObject ?? []).Select(p => SharpAgent.Core.JsonUtil.Str(p.Value)).OfType<string>().Select(value =>
+        .Concat(args["arguments"] as JsonObject ?? [])
+        .Concat((args["files"] as JsonArray ?? []).OfType<JsonObject>().SelectMany(file => file.Where(p => p.Key == "path")))
+        .Select(p => SharpAgent.Core.JsonUtil.Str(p.Value)).OfType<string>().Select(value =>
         {
             try { return PathHelper.Resolve(value, Context.WorkingDirectory) is var full && Context.IsForeignShare(full) ? full : null; }
             catch (ToolException) { return null; }

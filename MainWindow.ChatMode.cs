@@ -77,6 +77,7 @@ public partial class MainWindow
     void UpdateComposerPlacement()
     {
         bool empty = _agent.History.Count == 0 && ChatPanel.Children.Count == 0;
+        ChatModePicker.Visibility = VisibleIf(empty && _agent.ChatPath == null);
         TemporaryChatButton.Visibility = VisibleIf(empty && _agent.ChatPath == null);
         SaveTemporaryChatButton.Visibility = VisibleIf(_agent.IsTemporary && !empty);
         ComposerIntro.Visibility = VisibleIf(empty);

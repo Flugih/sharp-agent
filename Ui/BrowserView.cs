@@ -2,7 +2,7 @@ using System.Windows.Interop;
 
 namespace SharpAgent.Ui;
 
-internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? proxy, string downloads) : HwndHost
+internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? proxy, string downloads, string profileRoot) : HwndHost
 {
     static readonly Lazy<CreateEnvironment> Loader = new(FindLoader, LazyThreadSafetyMode.PublicationOnly);
     Callbacks? _callbacks;
@@ -28,6 +28,46 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
     public void Forward() { if (CanForward) _page!.GoForward(); }
     public void Reload() => _page?.Reload();
 
+    internal async Task<BrowserTools.Snapshot?> ReadDocumentAsync(string? selector, string? term, CancellationToken ct)
+    {
+        if (_page is not { } browser) return null;
+        var completion = new ScriptResult();
+        var prefix = "const selector=" + JsonSerializer.Serialize(selector) + ", term=" + JsonSerializer.Serialize(term) + ";";
+        browser.ExecuteScript("(()=>{" + prefix + """
+            const main = document.querySelector('main,[role="main"],article') || document.body;
+            if (!main || location.protocol === 'about:') return null;
+            let nodes;
+            try { nodes = selector ? Array.from(document.querySelectorAll(selector)).slice(0,128) : [main]; }
+            catch (_) { return null; }
+            const visible = nodes.filter(n => n.getClientRects().length && getComputedStyle(n).visibility === 'visible');
+            const text = visible.map(n => n.innerText || '').join('\n').slice(0,44000);
+            const matches = visible.length > 0 && (!term || text.toLowerCase().includes(term.toLowerCase()));
+            const lines = [...new Set(text.split('\n').map(line => line.trim()).filter(Boolean))];
+            const filtered = term ? lines.filter(line => line.toLowerCase().includes(term.toLowerCase())) : [];
+            const links = [...new Set(Array.from(main.querySelectorAll('a[href]')).slice(0,120).map(a => {
+                try { const u = new URL(a.href); return /^https?:$/.test(u.protocol) && !u.username && !u.password ? u.origin+u.pathname : null; }
+                catch (_) { return null; }
+            }).filter(Boolean))].slice(0,16);
+            return { Address: location.origin+location.pathname, Title: document.title.slice(0,180),
+                Text: (filtered.length ? filtered : lines).join('\n').slice(0,4200), Links: links, Matches: matches,
+                Ready: document.readyState === 'complete' };
+            })()
+            """, completion);
+        var json = await completion.Result.Task.WaitAsync(ct);
+        return JsonSerializer.Deserialize<BrowserTools.Snapshot>(json);
+    }
+
+    [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
+    sealed class ScriptResult : IScriptCompleted
+    {
+        public readonly TaskCompletionSource<string> Result = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void IScriptCompleted.Invoke(int error, string json)
+        {
+            if (error < 0) Result.TrySetException(Marshal.GetExceptionForHR(error)!);
+            else Result.TrySetResult(json);
+        }
+    }
+
     protected override HandleRef BuildWindowCore(HandleRef parent)
     {
         _host = CreateWindowEx(0, "STATIC", "", 0x56000000, 0, 0, 1, 1, parent.Handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
@@ -44,7 +84,7 @@ internal sealed class BrowserView(Uri initial, NetworkMode mode, BrowserProxy? p
             var switches = proxy != null
                 ? $"--proxy-server=socks5://127.0.0.1:{proxy.Port} --proxy-bypass-list=<-loopback> --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-quic --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
                 : mode == NetworkMode.Direct ? "--no-proxy-server" : "";
-            var profile = Path.Combine(AppPaths.AppFolder, "auth", "browser", mode.ToString());
+            var profile = Path.Combine(profileRoot, mode.ToString());
             Directory.CreateDirectory(profile);
             _callbacks = new(this, proxy);
             Marshal.ThrowExceptionForHR(Loader.Value(1, 0, profile, new EdgeOptions(switches), _callbacks));

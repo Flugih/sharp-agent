@@ -31,7 +31,7 @@
                     <ColumnDefinition x:Name="PreviewColumn" Width="0"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Panel.ZIndex="5" HorizontalAlignment="Center" CornerRadius="17" Background="{DynamicResource ChatModeTrack}" Margin="0,8,0,8">
+                <Border x:Name="ChatModePicker" Panel.ZIndex="5" HorizontalAlignment="Center" CornerRadius="17" Background="{DynamicResource ChatModeTrack}" Margin="0,8,0,8">
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.28"/>
                     </Border.Effect>
@@ -645,19 +645,19 @@
 
                                     <Border x:Name="ChatGptPanel" Style="{StaticResource SettingsRow}" Visibility="Collapsed">
                                         <StackPanel>
-                                            <TextBlock Text="{ui:Localized 'Аккаунт ChatGPT', 'ChatGPT account'}"/>
-                                            <DockPanel x:Name="ChatGptAccountPanel" Margin="0,8,0,0" Visibility="Collapsed">
-                                                <Button x:Name="ChatGptSignOutButton" DockPanel.Dock="Right" Content="{ui:Localized 'Выйти', 'Sign out'}" Margin="12,0,0,0" AutomationProperties.Name="{ui:Localized 'Выйти из ChatGPT', 'Sign out of ChatGPT'}" Click="ChatGptSignOut_Click"/>
-                                                <StackPanel VerticalAlignment="Center">
-                                                    <TextBlock x:Name="ChatGptEmail" TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock x:Name="ChatGptPlan" Style="{StaticResource RowHint}"/>
+                                            <DockPanel>
+                                                <Button x:Name="ChatGptAccountButton" Style="{StaticResource RowDropdown}" Visibility="Collapsed" Click="ChatGptAccountButton_Click"/>
+                                                <StackPanel Style="{StaticResource RowText}">
+                                                    <TextBlock Text="{ui:Localized 'Аккаунт ChatGPT', 'ChatGPT account'}"/>
+                                                    <TextBlock x:Name="ChatGptPlan" Style="{StaticResource RowStatus}"/>
                                                 </StackPanel>
                                             </DockPanel>
-                                            <StackPanel x:Name="ChatGptSignInPanel" Orientation="Horizontal" Margin="0,12,0,0">
-                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" AutomationProperties.Name="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" Click="ChatGptSignIn_Click"/>
-                                                <Button x:Name="ChatGptCancelButton" Content="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Margin="8,0,0,0" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Click="ChatGptCancel_Click"/>
-                                            </StackPanel>
-                                            <TextBlock x:Name="ChatGptHint" Style="{StaticResource FieldHint}" Margin="0,8,0,0"/>
+                                            <WrapPanel Margin="0,12,0,0">
+                                                <Button x:Name="ChatGptSignInButton" Style="{StaticResource PrimaryButton}" Content="{ui:Localized 'Продолжить с ChatGPT', 'Continue with ChatGPT'}" Margin="0,0,8,0" AutomationProperties.Name="{Binding Content, RelativeSource={RelativeSource Self}}" Click="ChatGptSignIn_Click"/>
+                                                <Button x:Name="ChatGptCancelButton" Content="{ui:Localized 'Отменить вход', 'Cancel sign-in'}" Visibility="Collapsed" Click="ChatGptCancel_Click"/>
+                                                <Button x:Name="ChatGptSignOutButton" Content="{ui:Localized 'Выйти', 'Sign out'}" Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Выйти из ChatGPT', 'Sign out of ChatGPT'}" Click="ChatGptSignOut_Click"/>
+                                            </WrapPanel>
+                                            <TextBlock x:Name="ChatGptHint" Style="{StaticResource RowStatus}"/>
                                         </StackPanel>
                                     </Border>
 

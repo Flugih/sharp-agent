@@ -5,7 +5,7 @@
         Title="{ui:Localized 'Sharp Agent · Компактный режим', 'Sharp Agent · Compact mode'}" Width="360" SizeToContent="Height" WindowStyle="None"
         ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent" Foreground="{DynamicResource Text}"
         FontFamily="Segoe UI" FontSize="14" Topmost="True" ShowInTaskbar="False"
-        UseLayoutRounding="True" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" PreviewKeyDown="Window_PreviewKeyDown">
+        UseLayoutRounding="True" AllowDrop="True" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" PreviewKeyDown="Window_PreviewKeyDown">
     <StackPanel Margin="8,5,8,9">
         <Border x:Name="TranscriptCard" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="16" Padding="14,4,8,4"
                 Visibility="Collapsed" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
@@ -27,14 +27,21 @@
             </ScrollViewer>
         </Border>
         <ContentControl x:Name="QuestionSlot" Margin="0,7,0,0" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
-        <Border Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,6,6,6"
+        <Border x:Name="CompactComposer" Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,6,6,6"
                 MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <Grid Margin="3,0,4,0" VerticalAlignment="Center">
+                <ScrollViewer x:Name="AttachmentScroll" Grid.ColumnSpan="2" Visibility="Collapsed" MaxHeight="72" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <WrapPanel x:Name="Attachments"/>
+                </ScrollViewer>
+                <Grid Grid.Row="1" Margin="3,0,4,0" VerticalAlignment="Center">
                     <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0"
                              CaretBrush="{DynamicResource Text}" SelectionBrush="{DynamicResource Accent}" Padding="0,4"
                              AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
@@ -58,7 +65,9 @@
                         </TextBlock.Style>
                     </TextBlock>
                 </Grid>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="CompactAttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" Margin="0,0,4,0"
+                            ToolTip="{ui:Localized 'Прикрепить файлы (Ctrl+O)', 'Attach files (Ctrl+O)'}" AutomationProperties.Name="{ui:Localized 'Прикрепить файлы', 'Attach files'}" Click="AttachFiles_Click"/>
                     <Button Style="{StaticResource IconButton}" Content="&#xE8A7;" Margin="0,0,4,0"
                             ToolTip="{ui:Localized 'Открыть полное окно', 'Open full window'}" AutomationProperties.Name="{ui:Localized 'Открыть полное окно', 'Open full window'}" Click="FullWindow_Click"/>
                     <Button x:Name="ActionButton" Style="{StaticResource SendButton}"

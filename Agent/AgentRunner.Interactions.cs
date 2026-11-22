@@ -14,7 +14,7 @@ public sealed record SubagentUpdate(string Id, string Title, string Status, Date
 
 partial class AgentRunner
 {
-    const int SubagentInputTokens = 32_000, SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 8, MaxSubagentSteps = 8;
+    const int SubagentInputTokens = 12_000, SubagentOutputTokens = 1_200, SubagentReasoningTokens = 4_000, SubagentAttachmentLimit = 3, MaxSubagentTasks = 4, MaxSubagentSteps = 4;
     const string SubagentStepStop = "Достигнут лимит шагов субагента.";
     const string SubagentPrompt = """
         Ты — субагент Sharp Agent. Выполни порученную часть задачи. Пользуйся только доступными инструментами чтения и поиска.
@@ -47,7 +47,18 @@ partial class AgentRunner
     {
         if (delegated) return tools.Definitions;
         var definitions = (JsonArray)tools.Definitions.DeepClone();
-        if (!WorkMode)
+        bool readOnly = CurrentDiagnosis() is { Repair: false };
+        bool simple = !WorkMode && LastUser() is { } current && Attachment.ListFrom(current).Count == 0 &&
+            AdaptiveModelRouter.IsSimple(ExtractText(current["content"]) ?? "");
+        bool plugins = !simple && AvailablePlugins().Count > 0;
+        foreach (var tool in definitions.Where(tool => simple || Str(tool?["function"]?["name"]) switch
+        {
+            "use_plugin" or "run_plugin" => readOnly || !plugins,
+            BrowserTools.Name => tools.Context.ReadBrowser == null,
+            { } name => readOnly && !ToolRegistry.IsReadOnly(name),
+            null => readOnly,
+        }).ToArray()) definitions.Remove(tool);
+        if (!WorkMode || readOnly)
         {
             if (ClarifyAsync != null) definitions.Add(AskDefinition.DeepClone());
             return definitions;
@@ -83,9 +94,8 @@ partial class AgentRunner
             "Не спрашивай о мелочах и не используй этот инструмент для подтверждения действий.") +
         (UseSubagents
             ? (FastMode
-                ? "\nКогда доступен delegate_tasks, активно делегируй независимые проверки и анализ в начале работы. " +
-                  "При исследовании проекта, диагностике, ревью или задаче с несколькими файлами распредели независимые направления " +
-                  "между субагентами в одном параллельном вызове и используй результаты. Простые задачи делай сам. "
+                ? "\nВ быстром режиме делегируй независимые проверки одним параллельным вызовом, если они заметно ускорят задачу. " +
+                  "Переиспользуй результаты субагентов и не повторяй уже выполненный поиск. Простые задачи делай сам. "
                 : "\nКогда доступен delegate_tasks, используй субагентов для отдельных проверок, которые заметно помогают задаче. " +
                   "Обычно поручай одну точечную проверку за 2–3 шага. Не дублируй собственный поиск. ") +
               "Формулируй самодостаточные поручения, включая нужные требования, " +
@@ -105,7 +115,7 @@ partial class AgentRunner
             "\nUse ask_user only to resolve ambiguity that blocks the task. Give a short question and distinct options. Do not use it for action confirmations.";
         var delegation = !UseSubagents ? "" :
             (FastMode
-                ? "\nWhen delegate_tasks is available, delegate independent research, debugging, review, and multi-file checks early. Batch independent assignments in parallel and use their findings. Handle simple tasks yourself. "
+                ? "\nIn fast mode, batch independent checks in parallel when that will substantially accelerate the task. Reuse the findings and avoid repeating searches. Handle simple tasks yourself. "
                 : "\nWhen delegate_tasks is available, delegate focused checks that materially help. Usually assign one check in 2–3 steps and avoid duplicating your own search. ") +
             $"Give each worker a self-contained brief and only relevant attachment paths. Up to {SubagentTaskLimit} assignments per request, with up to {SubagentStepsPerTask} steps each. Subagents are read-only. Apply changes yourself with the usual confirmations.";
         return clarification + delegation + (FastMode
@@ -175,7 +185,7 @@ partial class AgentRunner
         using var slots = new SemaphoreSlim(4);
         var results = await Task.WhenAll(briefs.Select(brief =>
             RunSubagentAsync(registry, slots, model, brief.Title, brief.Task, brief.Files, brief.Steps, ct)));
-        var usage = new UsageInfo(results.Sum(r => r.Usage.PromptTokens), results.Sum(r => r.Usage.CompletionTokens));
+        var usage = results.Aggregate(new UsageInfo(0, 0, Requests: 0), (total, result) => total.Add(result.Usage));
         if (ct.IsCancellationRequested) return new("Отменено пользователем.", true, DelegatedUsage: usage);
         bool failed = results.All(result => result.Failed);
         return new((failed ? "Ошибка: субагенты не завершили анализ.\n\n" : "") + string.Join("\n\n", results.Select(result => result.Text)),
@@ -192,7 +202,7 @@ partial class AgentRunner
         SubagentChanged?.Invoke(update);
         bool entered = false, failed = false;
         string? answer = null, warning = null;
-        long promptTokens = 0, completionTokens = 0;
+        var total = new UsageInfo(0, 0, Requests: 0);
         var clock = new Stopwatch();
         void Report(string status, ToolCallEvent? action = null, ToolResultEvent? completed = null, bool newStep = false)
         {
@@ -217,6 +227,7 @@ partial class AgentRunner
                     (FastMode ? SubagentReasoningTokens : SubagentReasoningTokens / 2),
                 ReasoningEffort = effort, SubagentStepLimit = steps, CanSpendAsync = CanSpendAsync,
                 ModelSupportsVision = ModelSupportsVision, ModelContextTokens = ModelContextTokens,
+                _timeline = _timeline, _timelineParent = update.Id,
             };
             var actions = new Dictionary<string, ToolCallEvent>();
             worker.ThinkingStarted += () =>
@@ -244,8 +255,7 @@ partial class AgentRunner
             worker.Stopped += text => warning = text;
             worker.UsageReported += (id, usage) =>
             {
-                promptTokens += usage.PromptTokens;
-                completionTokens += usage.CompletionTokens;
+                total = total.Add(usage);
                 UsageReported?.Invoke(id, usage);
             };
             await worker.RunAsync(PromptText("Поручение основного агента:\n", "Assignment from the main agent:\n") + task, files, model, ct);
@@ -255,7 +265,7 @@ partial class AgentRunner
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             SubagentChanged?.Invoke(update with { Status = "Остановлен", Elapsed = clock.Elapsed, Failed = true, Action = null });
-            return ("Отменено пользователем.", true, new(promptTokens, completionTokens));
+            return ("Отменено пользователем.", true, total);
         }
         catch (Exception ex)
         {
@@ -269,7 +279,7 @@ partial class AgentRunner
         }
         var status = warning == SubagentStepStop ? "Лимит шагов" : failed ? "Ошибка" : "Готово";
         SubagentChanged?.Invoke(update with { Status = status, Elapsed = clock.Elapsed, Result = answer, Failed = failed, Action = null });
-        return (title + "\n" + answer, failed, new(promptTokens, completionTokens));
+        return (title + "\n" + answer, failed, total);
     }
 
     static string? TextArg(JsonNode? node) =>

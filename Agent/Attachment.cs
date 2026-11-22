@@ -41,7 +41,7 @@ public sealed record Attachment(string Path, AttachmentKind Kind, long Size)
 
     static Attachment? FromJson(JsonNode? node) =>
         node is JsonObject obj && JsonUtil.Str(obj["path"]) is { } path && !string.IsNullOrWhiteSpace(path)
-            ? new(path, JsonUtil.Str(obj["kind"]) switch
+            ? new(AppPaths.Relocate(path), JsonUtil.Str(obj["kind"]) switch
             {
                 "folder" => AttachmentKind.Folder,
                 "image" => AttachmentKind.Image,

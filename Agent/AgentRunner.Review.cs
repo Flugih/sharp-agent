@@ -41,16 +41,16 @@ partial class AgentRunner
         ? PromptText("Текущий план:\n", "Current plan:\n") + string.Join("\n", plan.Items.Select(item => (item.Done ? "[x] " : "[ ] ") + item.Step)) : null;
 
     // A local check before the model finishes: one cheap extra step only when work is visibly unfinished or unverified.
-    string? ReviewNote()
+    async Task<(string? Review, string? Verification)> ReviewAsync(ContextRun context, CancellationToken ct)
     {
         int start = _history.LastIndex(ChatJournal.Flags.User);
-        if (delegated || start < 0) return null;
+        if (delegated || start < 0) return (null, null);
         int atReview = start + 1, since = start, reviews = 0;
         foreach (var message in _history.Range(atReview, _history.Count - atReview))
         {
             if (ReviewOf(message) != null)
             {
-                if (++reviews >= MaxReviews) return null;
+                if (++reviews >= MaxReviews) return (null, null);
                 since = atReview;
             }
             atReview++;
@@ -76,22 +76,44 @@ partial class AgentRunner
             }
         }
         var notes = new List<string>();
+        string? verification = null;
         if (CurrentPlan() is { } plan && (reviews == 0 || plan.At > since) && plan.Items.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
             notes.Add(PromptText("В плане остались невыполненные пункты: ", "The plan has unfinished steps: ") + string.Join("; ", open) +
                       PromptText(". Выполни их или обнови план, если они не нужны.", ". Complete them or update the plan if they are unnecessary."));
         if (lastChange > since && lastCheck < lastChange && tools.Context.SandboxRoot == null)
-            notes.Add(PromptText("После последних изменений кода не было проверки: ", "The latest code changes were not verified: ") +
-                      string.Join(", ", changed.TakeLast(6).Select(Path.GetFileName)) +
-                      PromptText(". Проверь изменённое поведение на сценарии пользователя или целевым тестом. Если проверить нечем, скажи это в ответе.",
-                          ". Verify the changed behavior in the user’s scenario or with a targeted test. If verification is unavailable, say so in the answer."));
+        {
+            var task = ExtractText(LastUser()?["content"]) ?? "";
+            bool automatic = !Regex.IsMatch(task, @"(?i)\b(?:без (?:сборки|тестов|проверок)|не (?:запускай|выполняй|проверяй|собирай)|do not (?:run|build|test)|no tests)\b");
+            if (automatic && context.VerificationAttempts < 2 && lastChange > context.LastVerifiedChange &&
+                changed.LastOrDefault() is { } changedPath && ApplicableRecipe(changedPath) is { } recipe)
+            {
+                context.VerificationAttempts++;
+                context.LastVerifiedChange = lastChange;
+                var outcome = await VerifyAsync(recipe, ct);
+                verification = Clip(outcome.Report, 3000);
+                if (!outcome.Success)
+                    notes.Add(PromptText("Локальная проверка завершилась без успеха. Учти результат и исправь причину, если она относится к задаче:\n",
+                        "Local verification did not pass. Consider the result and fix causes relevant to the task:\n") + verification);
+            }
+            else if (automatic && context.LastVerifiedChange < lastChange)
+                notes.Add(PromptText("После последних изменений кода не было проверки: ", "The latest code changes were not verified: ") +
+                    string.Join(", ", changed.TakeLast(6).Select(Path.GetFileName)) +
+                    PromptText(". Проверь изменения или укажи причину.", ". Verify the changes or explain why verification was unavailable."));
+        }
         else if (lastCheck > since && lastCheck > lastChange && failed.Count > 0)
             notes.Add(PromptText("Остались ошибки проверки: ", "Verification failures remain: ") +
                       string.Join(", ", failed.Values.TakeLast(4).Select(call => HistoryCompressor.Describe(call.Name, call.ArgumentsJson))) +
                       PromptText(". Исправь причину и проверь снова либо объясни, что помешало.", ". Fix the cause and check again, or explain what blocked verification."));
-        return notes.Count == 0 ? null
+        return (notes.Count == 0 ? null
             : PromptText("[Программа: проверка перед завершением] ", "[Application: pre-completion check] ") + string.Join("\n", notes) +
               PromptText("\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, повтори итоговый ответ полностью: пользователь увидит только его.",
-                  "\nCompare the result with the user’s request. If everything is complete and verified, repeat the final answer in full. The user sees only that version.");
+                  "\nCompare the result with the user’s request. If everything is complete and verified, repeat the final answer in full. The user sees only that version."), verification);
+    }
+
+    ProjectVerification.Recipe? ApplicableRecipe(string? path = null, bool testsOnly = false)
+    {
+        try { return ProjectVerification.Detect(tools.Context, path, testsOnly); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException) { return null; }
     }
 
     // A passing check also settles narrower ones (`dotnet build` after `dotnet build App.csproj`) and tests settle builds.

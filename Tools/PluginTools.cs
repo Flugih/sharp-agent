@@ -30,17 +30,29 @@ public static partial class PluginTools
     public static List<Plugin> Load(string? folder)
     {
         var plugins = new List<Plugin>();
-        try
+        if (folder == null) return plugins;
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in new[] { Path.Combine(AppContext.BaseDirectory, "plugins"), folder })
         {
-            if (folder != null && Directory.Exists(folder))
-                foreach (var dir in Directory.EnumerateDirectories(folder).Order(StringComparer.OrdinalIgnoreCase))
+            try
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (var dir in Directory.EnumerateDirectories(root).Order(StringComparer.OrdinalIgnoreCase))
                 {
                     var manifest = Path.Combine(dir, "PLUGIN.md");
-                    try { if (File.Exists(manifest)) plugins.Add(Parse(dir, File.ReadAllText(manifest).Replace("\r\n", "\n"))); }
+                    try
+                    {
+                        if (!File.Exists(manifest)) continue;
+                        var plugin = Parse(dir, File.ReadAllText(manifest).Replace("\r\n", "\n"));
+                        if (plugin.Name.Equals("code", StringComparison.OrdinalIgnoreCase) &&
+                            File.Exists(Path.Combine(dir, "inspect-project.ps1"))) continue;
+                        if (names.Add(plugin.Name)) plugins.Add(plugin);
+                    }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                 }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         return plugins;
     }
 

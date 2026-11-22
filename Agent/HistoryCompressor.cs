@@ -313,6 +313,7 @@ public static class HistoryCompressor
             "read_file" => "прочитан" + string.Concat(first.Split(" | ").Skip(3)
                 .Where(part => part.StartsWith("строк", StringComparison.Ordinal) || part.StartsWith("показаны", StringComparison.Ordinal))
                 .Select(part => ", " + part)),
+            "read_many" => $"прочитано диапазонов: {output.Split('\n').Count(line => line.StartsWith("Файл: ", StringComparison.Ordinal))}",
             "search_text" => Clip(output.TrimEnd().Split('\n')[^1].Trim(), 200),
             "search_files" => first.StartsWith("Ничего", StringComparison.Ordinal) ? "ничего не найдено" : $"найдено: {Count(output) - 1}",
             "list_directory" => output.Contains("(папка пуста)") ? "папка пуста" : $"элементов: {Count(output) - 1}",

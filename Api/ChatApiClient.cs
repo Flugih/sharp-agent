@@ -1,6 +1,22 @@
 namespace SharpAgent.Api;
 
-public sealed record UsageInfo(long PromptTokens, long CompletionTokens);
+public sealed record UsageInfo(long PromptTokens, long CompletionTokens, long CachedTokens = 0, long ReasoningTokens = 0, long Requests = 1)
+{
+    internal UsageInfo Add(UsageInfo other) => new(PromptTokens + other.PromptTokens, CompletionTokens + other.CompletionTokens,
+        CachedTokens + other.CachedTokens, ReasoningTokens + other.ReasoningTokens, Requests + other.Requests);
+
+    internal static UsageInfo Read(JsonObject data) => new(Long(data["prompt_tokens"]), Long(data["completion_tokens"]),
+        Long(data["cached_tokens"]), Long(data["reasoning_tokens"]), Long(data["requests"]));
+
+    internal void Save(JsonObject data)
+    {
+        data["prompt_tokens"] = PromptTokens;
+        data["completion_tokens"] = CompletionTokens;
+        data["requests"] = Requests;
+        if (CachedTokens > 0) data["cached_tokens"] = CachedTokens;
+        if (ReasoningTokens > 0) data["reasoning_tokens"] = ReasoningTokens;
+    }
+}
 public sealed record ModelProgress(string? Reasoning = null, string? Commentary = null);
 public sealed record ChatResult(JsonObject Message, string? FinishReason, UsageInfo? Usage, string? RequestId, ModelProgress? Progress = null,
     string? Phase = null);
@@ -65,12 +81,15 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
         Action reset, Action<int, int>? retrying, CancellationToken ct)
     {
         const int maxAttempts = 5;
+        int requests = 0;
         for (int attempt = 1; ; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                return await SendWithTimeoutAsync(send, ct);
+                requests++;
+                var result = await SendWithTimeoutAsync(send, ct);
+                return result.Usage is { } usage ? result with { Usage = usage with { Requests = requests } } : result;
             }
             catch (Exception ex)
             {

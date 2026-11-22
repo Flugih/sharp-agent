@@ -263,7 +263,8 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
 
     static UsageInfo MergeUsage(JsonObject? usage, UsageInfo previous) => new(
         usage?["input_tokens"] != null ? Long(usage["input_tokens"]) + Long(usage["cache_creation_input_tokens"]) + Long(usage["cache_read_input_tokens"]) : previous.PromptTokens,
-        usage?["output_tokens"] != null ? Long(usage["output_tokens"]) : previous.CompletionTokens);
+        usage?["output_tokens"] != null ? Long(usage["output_tokens"]) : previous.CompletionTokens,
+        usage?["cache_read_input_tokens"] != null ? Long(usage["cache_read_input_tokens"]) : previous.CachedTokens);
 
     async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)
     {

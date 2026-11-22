@@ -1,6 +1,6 @@
 namespace SharpAgent.Ui;
 
-// Status text in its Base colour; while active a lighter band sweeps across it every 4 s instead of a spinner.
+// Status text in its Base colour; while active a lighter band sweeps across it instead of a spinner.
 public sealed class Shimmer : TextBlock
 {
     static readonly DependencyProperty BaseColorProperty = ColorSource("BaseColor"), BandColorProperty = ColorSource("BandColor");
@@ -67,7 +67,7 @@ public sealed class Shimmer : TextBlock
         _running = run;
         if (run) Foreground = _sweep;
         else this.Paint(ForegroundProperty, _base);
-        _shift.BeginAnimation(TranslateTransform.XProperty, run ? new DoubleAnimation(-60, 1300, TimeSpan.FromSeconds(4)) { RepeatBehavior = RepeatBehavior.Forever } : null);
+        _shift.BeginAnimation(TranslateTransform.XProperty, run ? new DoubleAnimation(-60, 1300, TimeSpan.FromSeconds(5)) { RepeatBehavior = RepeatBehavior.Forever } : null);
     }
 
     // Palette brushes arrive through resource references, so a theme switch recolours the sweep too.

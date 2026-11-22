@@ -9,17 +9,22 @@ internal static partial class DiffCode
     [GeneratedRegex("""(?<comment>//.*|/\*.*?(?:\*/|$))|(?<dash>--)|(?<hash>#)|(?<string>"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|`[^`]*`?)|(?<number>\b(?:0[xX][\da-fA-F]+|\d+(?:\.\d+)?)\b)|(?<word>[\p{L}_][\p{L}\p{Nd}_]*)""")]
     private static partial Regex Tokens();
 
+    [GeneratedRegex("""(?<comment><!--.*?(?:-->|$))|(?<tag></?[\p{L}_][\w:.-]*|<\?[\w:-]+|<![\w:-]+|/?>|\?>)|(?<name>[\w:.-]+)(?=\s*=)|(?<string>"[^"]*"?|'[^']*'?)""")]
+    private static partial Regex MarkupTokens();
+
     static readonly HashSet<string> KeywordSet = new(Keywords.Split('|'), StringComparer.OrdinalIgnoreCase);
 
-    public static void Write(TextBlock target, string text, string extension)
+    internal static void Write(InlineCollection inlines, string text, string extension)
     {
         if (extension is "" or ".txt" or ".md" or ".log" || text.Length > 1200)
         {
-            target.Text = text;
+            inlines.Add(new Run(text));
             return;
         }
+        var tokens = extension is ".xaml" or ".xml" or ".csproj" or ".html" or ".xhtml" or ".svg" or ".props" or ".targets"
+            ? MarkupTokens() : Tokens();
         int end = 0;
-        foreach (Match token in Tokens().Matches(text))
+        foreach (Match token in tokens.Matches(text))
         {
             var value = token.Value;
             bool tailComment = token.Groups["dash"].Success && extension == ".sql" ||
@@ -27,14 +32,14 @@ internal static partial class DiffCode
             var brush = tailComment || token.Groups["comment"].Success ? "TextMuted"
                 : token.Groups["string"].Success ? "CodeString"
                 : token.Groups["number"].Success ? "CodeNumber"
-                : token.Groups["word"].Success && KeywordSet.Contains(value) ? "CodeKeyword"
-                : token.Groups["word"].Success && (char.IsUpper(value[0]) || extension == ".sql") ? "CodeName" : null;
+                : token.Groups["tag"].Success || token.Groups["word"].Success && KeywordSet.Contains(value) ? "CodeKeyword"
+                : token.Groups["name"].Success || token.Groups["word"].Success && (char.IsUpper(value[0]) || extension == ".sql") ? "CodeName" : null;
             if (brush == null) continue;
-            if (end < token.Index) target.Inlines.Add(new Run(text[end..token.Index]));
-            target.Inlines.Add(new Run(tailComment ? text[token.Index..] : value).Paint(TextElement.ForegroundProperty, brush));
+            if (end < token.Index) inlines.Add(new Run(text[end..token.Index]));
+            inlines.Add(new Run(tailComment ? text[token.Index..] : value).Paint(TextElement.ForegroundProperty, brush));
             if (tailComment) return;
             end = token.Index + token.Length;
         }
-        if (end < text.Length) target.Inlines.Add(new Run(text[end..]));
+        if (end < text.Length) inlines.Add(new Run(text[end..]));
     }
 }

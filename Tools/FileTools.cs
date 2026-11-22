@@ -22,6 +22,16 @@ public static partial class FileTools
             FilePath,
             Number("offset", "С какой строки читать (нумерация с 1). По умолчанию 1."),
             Number("limit", $"Сколько строк прочитать (по умолчанию {DefaultReadLines}, максимум {MaxReadLines}).")]),
+        new()
+        {
+            Name = "read_many", Description = "Прочитать несколько независимых диапазонов файлов за один шаг. Укажи только нужные строки.",
+            Parameters = new() { ["type"] = "object", ["required"] = new JsonArray("files"), ["properties"] = new JsonObject
+            {
+                ["files"] = new JsonObject { ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 8,
+                    ["items"] = Schema.Object(FilePath, Number("offset", "Первая строка, по умолчанию 1."), Number("limit", "Число строк, по умолчанию 60.")) },
+            } },
+            Handler = AgentTool.Sync(ReadMany),
+        },
         Tool("get_file_info", "Подробности о файле или папке: существует ли, размер, даты создания/изменения, атрибуты.", GetFileInfo, [Text("path", "Путь к файлу или папке.", true)]),
         Tool("search_files", "Найти файлы и папки по маске имени (например *.txt, отчет*.docx) в папке и её подпапках.", SearchFiles, [
             Text("pattern", "Маска имени: * — любые символы, ? — один символ. Пример: *.pdf", true),
@@ -122,19 +132,67 @@ public static partial class FileTools
         return sb.ToString();
     }
 
-    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct)
+    static string ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
+    {
+        var files = args.Array("files");
+        if (files.Count is < 1 or > 8 || files.Any(file => file is not JsonObject))
+            throw new ToolException("Укажите от одного до восьми диапазонов файлов.");
+        var pages = new List<string>();
+        var ranges = new Dictionary<string, List<(int Start, int Count)>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files.OfType<JsonObject>())
+        {
+            ct.ThrowIfCancellationRequested();
+            var request = new ToolArgs(file);
+            try
+            {
+                var path = context.Resolve(request.Required("path"));
+                context.GuardSecrets(path);
+                if (!ranges.TryGetValue(path, out var requested)) ranges[path] = requested = [];
+                requested.Add(ReadRange(request, 60));
+            }
+            catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+        }
+        foreach (var (path, requested) in ranges)
+        {
+            var merged = new List<(int Start, int Count)>();
+            foreach (var (start, count) in requested.OrderBy(range => range.Start))
+            {
+                if (merged.Count > 0 && merged[^1] is var earlier && start <= (long)earlier.Start + earlier.Count &&
+                    Math.Max((long)start + count - earlier.Start, earlier.Count) is <= MaxReadLines and var combined)
+                    merged[^1] = (earlier.Start, (int)combined);
+                else merged.Add((start, count));
+            }
+            foreach (var (start, count) in merged)
+            {
+                var request = new ToolArgs(new JsonObject { ["path"] = path, ["offset"] = start, ["limit"] = count });
+                try { pages.Add(ReadFile(request, context, ct, Math.Max(6_000, MaxReadChars / files.Count), 60)); }
+                catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+            }
+        }
+        return string.Join("\n\n", pages);
+    }
+
+    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct) => ReadFile(a, c, ct, MaxReadChars, DefaultReadLines);
+
+    static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct, int maxChars, int defaultLines)
     {
         var path = c.Resolve(a.Required("path"));
-        c.GuardSecrets(path);
+        var sourcePath = PathHelper.FinalPath(path);
+        c.GuardSecrets(sourcePath);
         if (Directory.Exists(path)) throw new ToolException($"Это папка, а не файл: {path}. Используйте list_directory.");
         if (!File.Exists(path)) throw new ToolException($"Файл не найден: {path}");
-        var (offset, limit) = ReadRange(a);
-        if (OfficeText.Extract(path) is { } document)
+        var (offset, limit) = ReadRange(a, defaultLines);
+        if (OfficeText.Extract(sourcePath) is { } document)
         {
             using var reader = new StringReader(document);
             return Page(reader, "текст извлечён из документа");
         }
-        using var stream = File.OpenRead(path);
+        if (c.Snapshots.Read(sourcePath) is { } snapshot)
+        {
+            using var reader = new StringReader(snapshot.Text);
+            return Page(reader, "кодировка: " + snapshot.Encoding.WebName);
+        }
+        using var stream = File.OpenRead(sourcePath);
         if (stream.Length > 20 * 1024 * 1024)
             throw new ToolException($"Файл слишком большой для чтения как текст ({FormatSize(stream.Length)}).");
         var prefix = new byte[Math.Min(stream.Length, 8000)];
@@ -174,9 +232,10 @@ public static partial class FileTools
                 var line = ClipLine(current, number + 1, single);
                 if (number >= offset)
                 {
-                    if (body.Length + line.Length + 1 > MaxReadChars) break;
+                    if (body.Length + line.Length + 1 > maxChars) break;
                     body.Append('\n');
                 }
+                if (line.Length > maxChars) line = line[..maxChars] + " … [строка обрезана]";
                 body.Append(line);
                 if (line.Length != current.Length) clipped++;
                 number++;
@@ -201,8 +260,8 @@ public static partial class FileTools
         return line.Length > 0 && line[^1] == '\r' ? line.ToString(0, line.Length - 1) : line.ToString();
     }
 
-    internal static (int Offset, int Limit) ReadRange(ToolArgs args) =>
-        (Math.Max(1, args.Int("offset", 1)), Math.Clamp(args.Int("limit", DefaultReadLines), 1, MaxReadLines));
+    internal static (int Offset, int Limit) ReadRange(ToolArgs args, int defaultLines = DefaultReadLines) =>
+        (Math.Max(1, args.Int("offset", 1)), Math.Clamp(args.Int("limit", defaultLines), 1, MaxReadLines));
 
     public static string ClipLine(string line, int number, bool single)
     {

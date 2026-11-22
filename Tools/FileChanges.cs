@@ -21,6 +21,7 @@ internal static class FileChanges
             {
                 "write_file" or "edit_file" => context.Resolve(args.Required("path")),
                 "run_plugin" => PluginTools.TargetOf(args, context),
+                AgentKnowledge.Name => AgentKnowledge.TargetOf(args, context),
                 "copy_path" => FileTools.ResolveSourceAndTarget(args, context) is var (source, copy) && File.Exists(source) ? copy : null,
                 _ => null,
             };
@@ -55,7 +56,7 @@ internal static class FileChanges
 
     public static string? BackupPath(string? logsFolder, string? backup) =>
         logsFolder != null && Guid.TryParseExact(backup, "N", out var id)
-            ? Path.GetFullPath(Path.Combine(logsFolder, "..", "changes", id.ToString("N") + ".bak")) : null;
+            ? Path.Combine(AppPaths.CheckpointsFor(logsFolder), id.ToString("N") + ".bak") : null;
 
     static string? SaveBackup(string? logsFolder, byte[] bytes)
     {

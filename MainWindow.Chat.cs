@@ -37,6 +37,8 @@ public partial class MainWindow
         public TextBlock? ProgressHint;
         public ToolCallEvent? PendingPlan;
         public bool Compacting;
+        public (string Status, long Until)? FinishedToolStatus;
+        public string? ContextStatus;
         public string[] NextActions = [];
     }
 
@@ -49,6 +51,7 @@ public partial class MainWindow
     {
         ReleaseStickyProgress();
         _modelProgressTimer?.Stop();
+        _toolStatusTimer?.Stop();
         _pendingModelProgress = null;
         ClearSubagents();
         ClearDraft();
@@ -394,9 +397,9 @@ public partial class MainWindow
     void OnToolCallStarted(ToolCallEvent e)
     {
         FlushModelProgress();
-        _chatView.ActiveTools[e.Id] = e.Name switch
+        var status = e.Name switch
         {
-            "read_file" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
+            "read_file" or "read_many" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
             "search_files" or "search_text" => Tr("Поиск по проекту…", "Searching project…"),
             "write_file" or "edit_file" => Tr("Редактирование файлов…", "Editing files…"),
             "create_directory" => Tr("Создание папки…", "Creating folder…"),
@@ -405,21 +408,34 @@ public partial class MainWindow
             "delete_path" => Tr("Удаление файлов…", "Deleting files…"),
             "run_command" => Tr("Выполнение команды…", "Running command…"),
             "run_plugin" => Tr("Выполнение плагина…", "Running plugin…"),
+            ScriptRegistry.Name => Tr("Локальный сценарий…", "Local script…"),
+            LocalTestTools.Name => Tr("Локальные проверки…", "Local checks…"),
+            AgentKnowledge.Name => Tr("Работа с базой знаний…", "Working with project knowledge…"),
+            BrowserTools.Name => Tr("Чтение страницы…", "Reading the page…"),
             "generate_image" => Tr("Создание изображения…", "Generating image…"),
             "open_path" => Tr("Открытие файла или ссылки…", "Opening file or link…"),
             "delegate_tasks" => Tr("Проверка субагентами…", "Subagents are checking…"),
+            ComputerTools.Name when ArgumentOf(e.ArgumentsJson, "action") == "ocr" => Tr("Распознавание текста…", "Recognizing screen text…"),
             ComputerTools.Name => Tr("Управление компьютером…", "Controlling computer…"),
             ComputerTools.AppName => Tr("Проверка приложения…", "Checking application…"),
-            _ => Tr("Думаю…", "Thinking…"),
+            _ => null,
         };
-        UpdateWorkStatus();
+        if (status != null)
+        {
+            _chatView.ActiveTools[e.Id] = status;
+            UpdateWorkStatus();
+        }
         if (e.Name == "update_plan") _chatView.PendingPlan = e;
         else AddToolRow(e.Id, e.Name, e.ArgumentsJson);
     }
 
-    void OnToolCallFinished(ToolResultEvent e)
+    void OnToolCallFinished(ToolResultEvent e, long finishedAt)
     {
-        if (_chatView.ActiveTools.Remove(e.Id)) UpdateWorkStatus();
+        if (_chatView.ActiveTools.Remove(e.Id, out var status))
+        {
+            if (_chatView.ActiveTools.Count == 0) _chatView.FinishedToolStatus = (status, finishedAt + ToolStatusGraceMs);
+            UpdateWorkStatus();
+        }
         if (_chatView.PendingPlan is { } plan && plan.Id == e.Id)
         {
             _chatView.PendingPlan = null;
@@ -438,6 +454,7 @@ public partial class MainWindow
         return tool switch
         {
             "read_file" => Tr("Читаю файл ", "Reading ") + Name(),
+            "read_many" => Tr("Читаю файлы", "Reading files"),
             "list_directory" => ShortName(Get("path")) is var name and not ("" or ".") ? Tr("Смотрю папку ", "Inspecting folder ") + name : Tr("Смотрю рабочую папку", "Inspecting the working folder"),
             "get_file_info" => Tr("Смотрю сведения о ", "Checking details for ") + Name(fallback: Tr("файле", "file")),
             "search_files" => Tr("Ищу файлы ", "Searching for files ") + OneLine(Get("pattern")),
@@ -451,6 +468,10 @@ public partial class MainWindow
             "open_path" => Tr("Открываю ", "Opening ") + Name(),
             "run_command" => Tr("Выполняю ", "Running ") + OneLine(Get("command")),
             "run_plugin" => Tr("Запускаю плагин ", "Running plugin ") + Get("name"),
+            ScriptRegistry.Name => Tr("Локальный сценарий", "Local script"),
+            LocalTestTools.Name => Tr("Локальные проверки", "Local checks"),
+            AgentKnowledge.Name => Tr("База проверенных решений", "Verified solutions"),
+            BrowserTools.Name => Get("action") == "research" ? Tr("Ищу документацию", "Finding documentation") : Tr("Проверяю страницу", "Checking the page"),
             "use_plugin" => Tr("Открываю плагин ", "Opening plugin ") + Get("name"),
             "generate_image" => Tr("Рисую изображение", "Generating an image"),
             "get_system_info" => Tr("Смотрю сведения о системе", "Checking system information"),
@@ -473,6 +494,9 @@ public partial class MainWindow
         "keys" => Tr("Нажимаю клавиши", "Pressing keys"),
         "scroll" => Tr("Прокручиваю к элементу", "Scrolling to the element"),
         "screenshot" => Tr("Делаю скриншот", "Taking a screenshot"),
+        "ocr" => Tr("Распознаю текст", "Recognizing text"),
+        "save_baseline" => Tr("Сохраняю эталон окна", "Saving the window baseline"),
+        "compare_baseline" => Tr("Сравниваю окно с эталоном", "Comparing the window with its baseline"),
         "wait" => Tr("Жду", "Waiting"),
         "close" => Tr("Закрываю окно", "Closing the window"),
         _ => Tr("Управляю программой", "Controlling the application"),
@@ -481,6 +505,11 @@ public partial class MainWindow
     static (string Glyph, string Label) Describe(string tool) => tool switch
     {
         "read_file" => (Glyphs.View, Tr("Чтение файла", "Read file")),
+        "read_many" => (Glyphs.View, Tr("Чтение файлов", "Read files")),
+        ScriptRegistry.Name => (Glyphs.Terminal, Tr("Локальный сценарий", "Local script")),
+        LocalTestTools.Name => (Glyphs.Info, Tr("Локальные проверки", "Local checks")),
+        AgentKnowledge.Name => (Glyphs.Info, Tr("Проверенные решения", "Verified solutions")),
+        BrowserTools.Name => (Glyphs.View, Tr("Встроенный браузер", "Built-in browser")),
         "list_directory" => (Glyphs.Folder, Tr("Просмотр папки", "List directory")),
         "get_file_info" => (Glyphs.Info, Tr("Сведения о файле", "File information")),
         "write_file" => (Glyphs.Save, Tr("Запись файла", "Write file")),
@@ -629,7 +658,7 @@ public partial class MainWindow
         if (row.Name == "generate_image" && !isError && ImageTools.SavedPath(output) is { } image && File.Exists(image))
             row.Root.Children.Add(ImagePreview(image));
         if (row.Name == ComputerTools.Name && !isError && output.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) &&
-            output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim() is var shot && File.Exists(shot))
+            AppPaths.Relocate(output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim()) is var shot && File.Exists(shot))
             row.Root.Children.Add(ViewedImage(shot));
         if (change != null) row.FilePath = change.Path;
         else if (row.FilePath != null && !isError && ResultPath(output) is { } exact) row.FilePath = exact;

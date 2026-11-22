@@ -51,6 +51,34 @@ public partial class MainWindow
 
     IntPtr BrowserWindowHandle() => _browserTab?.Page?.NativeHandle ?? IntPtr.Zero;
 
+    Task<BrowserTools.Snapshot> ReadBrowserAsync(string? url, string? selector, string? term, CancellationToken ct) =>
+        Dispatcher.InvokeAsync(async () =>
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            if (url != null)
+            {
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0)
+                    throw new ToolException("Нужен абсолютный адрес http или https без данных для входа.");
+                ShowBrowser();
+                AddBrowserTab(uri);
+            }
+            var tab = _browserTab ?? throw new ToolException("Откройте страницу во встроенном браузере.");
+            try
+            {
+                var until = DateTime.UtcNow.AddSeconds(3);
+                while (true)
+                {
+                    if (tab.Error != null) throw new ToolException(tab.Error);
+                    if (!_tabs.Contains(tab)) throw new ToolException("Вкладка закрыта.");
+                    if (tab.Page is { } page && await page.ReadDocumentAsync(selector, term, timeout.Token) is { Ready: true } snapshot &&
+                        (term == null && selector == null || snapshot.Matches || DateTime.UtcNow >= until)) return snapshot;
+                    await Task.Delay(250, timeout.Token);
+                }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new ToolException("Страница не стала доступна за 20 секунд."); }
+        }, DispatcherPriority.Normal, ct).Task.Unwrap();
+
     void HideBrowser()
     {
         if (!IsShown(BrowserPane)) return;
@@ -169,7 +197,7 @@ public partial class MainWindow
         {
             var mode = _config.Network.Mode;
             var proxy = mode is NetworkMode.Proxy or NetworkMode.Vpn ? _browserProxy ??= new() : null;
-            var page = tab.Page = new BrowserView(uri, mode, proxy, _toolContext.WorkingDirectory);
+            var page = tab.Page = new BrowserView(uri, mode, proxy, _toolContext.WorkingDirectory, AppPaths.BrowserFolder);
             tab.Title.Text = uri.Host;
             page.Changed += () =>
             {

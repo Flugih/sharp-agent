@@ -38,13 +38,15 @@ public static class ShellTools
         },
     ];
 
-    public static Task<string> RunPowerShellAsync(string command, ToolContext c, CancellationToken ct) =>
-        RunCommandAsync(new ToolArgs(new JsonObject { ["command"] = command }), c, ct);
+    public static Task<string> RunPowerShellAsync(string command, ToolContext c, CancellationToken ct, int timeout = 120, bool saveLog = true) =>
+        RunCommandAsync(new ToolArgs(new JsonObject { ["command"] = command, ["timeout_seconds"] = timeout }), c, ct, saveLog);
 
     internal static CommandShell ShellOf(ToolArgs a) => string.Equals(a.Optional("shell"), "cmd", StringComparison.OrdinalIgnoreCase)
         ? CommandShell.Cmd : CommandShell.PowerShell;
 
-    static async Task<string> RunCommandAsync(ToolArgs a, ToolContext c, CancellationToken ct)
+    static Task<string> RunCommandAsync(ToolArgs a, ToolContext c, CancellationToken ct) => RunCommandAsync(a, c, ct, true);
+
+    static async Task<string> RunCommandAsync(ToolArgs a, ToolContext c, CancellationToken ct, bool saveLog)
     {
         var command = a.Required("command");
         var workDir = c.Resolve(a.Optional("working_directory"));
@@ -127,7 +129,7 @@ public static class ShellTools
             if (errors.Length > 0) output += (output.Length > 0 ? "\n" : "") + "[stderr]\n" + errors;
             if (restriction != null) output = CommandRestriction.Prefix + restriction.Message + "\n\n" + output;
             var result = CommandLog.Summarize(timedOut ? $"{CommandLog.TimeoutPrefix} ({timeout} с)" : CommandLog.ExitPrefix + exitCode,
-                output, c.LogsFolder);
+                output, saveLog ? c.LogsFolder : null);
             return restriction == null ? result : throw new CommandRestrictedException(result, restriction);
         }
         finally

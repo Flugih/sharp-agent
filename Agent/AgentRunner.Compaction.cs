@@ -5,11 +5,15 @@ partial class AgentRunner
     const string SummaryField = "summary", SummaryUsageField = "summary_usage";
     const int DefaultContextTokens = 128_000, MaxInputTokens = 160_000, SummaryTokens = 6_000, TranscriptLineChars = 300;
 
-    sealed class ContextRun(int historyCount)
+    sealed class ContextRun(int historyCount, JsonArray definitions)
     {
+        public JsonArray Definitions { get; } = definitions;
         int _seen = historyCount;
         public int Steps { get; private set; }
         public int Growth { get; private set; }
+        public long Spent { get; set; }
+        public int LastVerifiedChange { get; set; } = -1;
+        public int VerificationAttempts { get; set; }
         public int AttemptedBoundary { get; set; } = -1;
         public double InputScale { get; private set; } = 1;
         public long OutputReserve { get; private set; } = 8_000;
@@ -25,8 +29,10 @@ partial class AgentRunner
             Steps++;
         }
 
-        public void Observe(int estimatedInput, UsageInfo usage)
+        public void Observe(int estimatedInput, UsageInfo? usage)
         {
+            Spent += usage == null ? estimatedInput : usage.PromptTokens + usage.CompletionTokens;
+            if (usage == null) return;
             if (estimatedInput > 0 && usage.PromptTokens > 0)
             {
                 double measured = Math.Clamp((double)usage.PromptTokens / estimatedInput, 0.5, 4);
@@ -75,7 +81,7 @@ partial class AgentRunner
         if (maxSummary < 256) return false;
         var previous = from > 0 ? PromptText("Прежняя сводка:\n", "Previous summary:\n") + Str(MetaOf(_history[from])?[SummaryField]) + "\n" : "";
         var prompt = PromptText(CompactPrompt, EnglishCompactPrompt);
-        int remaining = (InputBudget(model, context) - prompt.Length / 3 - maxSummary) * 3 - previous.Length;
+        int remaining = (InputBudget(model, context, WorkingInputTokens) - prompt.Length / 3 - maxSummary) * 3 - previous.Length;
         if (remaining <= 0) return false;
         List<string> transcript = [];
         int i = cut - 1;
@@ -108,8 +114,9 @@ partial class AgentRunner
         ChatResult result;
         try
         {
-            result = await Api!.CompleteAsync(model, [new JsonObject { ["role"] = "system", ["content"] = prompt },
-                new JsonObject { ["role"] = "user", ["content"] = text }], [], maxSummary, null, (_, _) => { }, _ => { }, ct, retrying: Retrying);
+            result = await TrackModelAsync("compaction", model, (prompt.Length + text.Length) / 3, 0, retry =>
+                Api!.CompleteAsync(model, [new JsonObject { ["role"] = "system", ["content"] = prompt },
+                    new JsonObject { ["role"] = "user", ["content"] = text }], [], maxSummary, null, (_, _) => { }, _ => { }, ct, retrying: retry));
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or IOException ||
                                    ex is TaskCanceledException && !ct.IsCancellationRequested)
@@ -123,7 +130,11 @@ partial class AgentRunner
         if (!summarized && result.Usage == null) return false;
         var meta = EnsureMeta(_history.Edit(cut));
         if (summarized) meta[SummaryField] = summary;
-        if (result.Usage is { } usage) RecordAdditionalUsage(meta, model, usage);
+        if (result.Usage is { } usage)
+        {
+            context.Spent += usage.PromptTokens + usage.CompletionTokens;
+            RecordAdditionalUsage(meta, model, usage);
+        }
         await SaveAsync();
         if (result.Usage != null) UsageReported?.Invoke(model, result.Usage);
         return summarized;
@@ -139,8 +150,7 @@ partial class AgentRunner
             entry = new() { ["provider"] = provider, ["model"] = model };
             entries.Add(entry);
         }
-        entry["prompt_tokens"] = Long(entry["prompt_tokens"]) + usage.PromptTokens;
-        entry["completion_tokens"] = Long(entry["completion_tokens"]) + usage.CompletionTokens;
+        UsageInfo.Read(entry).Add(usage).Save(entry);
     }
 
     JsonObject SummaryMessage(int start) => new()

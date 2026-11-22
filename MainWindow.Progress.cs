@@ -153,9 +153,11 @@ public partial class MainWindow
         }
     }
 
+    const int ToolStatusGraceMs = 900;
     readonly StringBuilder _draftText = new();
     DispatcherTimer? _draftTimer;
     DispatcherTimer? _modelProgressTimer;
+    DispatcherTimer? _toolStatusTimer;
     ModelProgress? _pendingModelProgress;
     RichTextBox? _draftView;
     int _draftShown;
@@ -174,6 +176,8 @@ public partial class MainWindow
     {
         ResetProgressStep();
         _chatView.ActiveTools.Clear();
+        _chatView.FinishedToolStatus = null;
+        _chatView.ContextStatus = null;
         _chatView.Compacting = false;
         EnsureProgress().Start();
         SetProgressHint(Tr("Подготовка запроса…", "Preparing request…"));
@@ -205,6 +209,9 @@ public partial class MainWindow
         if (progress.Items.Children.Count == 0) SetProgressHint(Tr("Нет подробностей по этому запросу", "No details for this request"));
         progress.Finish(title);
         _chatView.ActiveTools.Clear();
+        _chatView.FinishedToolStatus = null;
+        _chatView.ContextStatus = null;
+        _toolStatusTimer?.Stop();
         _chatView.Compacting = false;
         ResetProgressStep();
     }
@@ -220,13 +227,37 @@ public partial class MainWindow
     {
         if (_chatView.Progress is not { IsRunning: true } progress) return;
         var status = progress.ReconnectStatus ?? (CurrentRun is { Question: not null } || Taskbar.ProgressState == TaskbarItemProgressState.Paused
-            ? Tr("Думаю…", "Thinking…")
+            ? Tr("Ожидаю подтверждения…", "Waiting for confirmation…")
             : _chatView.Compacting ? Tr("Сжатие контекста…", "Compacting context…")
-            : _chatView.ActiveTools.Values.FirstOrDefault() ?? (_preparingAnswer ? Tr("Подготавливаю ответ…", "Preparing response…") : Tr("Думаю…", "Thinking…")));
+            : _chatView.ContextStatus ?? _chatView.ActiveTools.Values.FirstOrDefault() ??
+                (_preparingAnswer ? Tr("Подготавливаю ответ…", "Preparing response…") : null));
+        if (status == null && _chatView.FinishedToolStatus is { } finished && finished.Until - Environment.TickCount64 is > 0 and var remaining)
+        {
+            status = finished.Status;
+            if (!_suppressAnimation && _toolStatusTimer?.IsEnabled != true)
+            {
+                var delay = TimeSpan.FromMilliseconds(remaining);
+                _toolStatusTimer ??= new DispatcherTimer(delay, DispatcherPriority.Background, ToolStatusDelayElapsed, Dispatcher);
+                _toolStatusTimer.Interval = delay;
+                _toolStatusTimer.Start();
+            }
+        }
+        else
+        {
+            _chatView.FinishedToolStatus = null;
+            _toolStatusTimer?.Stop();
+        }
+        status ??= Tr("Думаю…", "Thinking…");
         bool reconnecting = progress.ReconnectStatus != null;
         bool animate = !_suppressAnimation && !reconnecting;
         progress.SetTitle(status, animate: animate);
         _compactChat?.SetStatus(status, reconnecting ? "Text" : "TextMuted", animate: animate);
+    }
+
+    void ToolStatusDelayElapsed(object? sender, EventArgs e)
+    {
+        _toolStatusTimer?.Stop();
+        UpdateWorkStatus();
     }
 
     void ShowReconnect(int attempt, int total)
@@ -251,10 +282,18 @@ public partial class MainWindow
         UpdateWorkStatus();
     }
 
+    void ShowPreparingContext(string status)
+    {
+        _chatView.ContextStatus = status;
+        _chatView.Compacting = false;
+        UpdateWorkStatus();
+    }
+
     void ShowThinking()
     {
         ResetProgressStep();
         _chatView.Compacting = false;
+        _chatView.ContextStatus = null;
         _chatView.Progress?.SetReconnectStatus(null);
         SetProgressHint(null);
         UpdateWorkStatus();

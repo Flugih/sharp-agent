@@ -10,6 +10,7 @@ public sealed class ComputerTools(bool automationOnly = false)
     internal static bool IsControl(string name) => name is Name or AppName;
     const int MaxTreeLines = 180, MaxShotSide = 1280;
     readonly SemaphoreSlim _actions = new(1, 1);
+    readonly ScreenStateCache _screens = new();
     static readonly AutomationProperty[] Cached =
     [
         AutomationElement.NameProperty, AutomationElement.AutomationIdProperty, AutomationElement.ControlTypeProperty, AutomationElement.IsPasswordProperty,
@@ -39,10 +40,10 @@ public sealed class ComputerTools(bool automationOnly = false)
             Description = "Управление программами на экране через UI Automation: запуск, окна, дерево элементов, нажатия, ввод текста, " +
                 "клавиши, скриншот. Работает с WPF, WinForms, Win32, Qt, UWP и другими; если элементов нет в дереве — щёлкай по координатам " +
                 "со скриншота. После действий программа сама сообщает заголовок окна, до трёх его открытых диалогов с их текстом, открытое меню и завершение процесса. " +
-                "Сначала смотри tree — это дёшево; screenshot делай только для проверки внешнего вида или когда дерево пустое.",
+                "Сначала смотри tree; если текст недоступен, используй локальное ocr. screenshot нужен для визуальной проверки.",
             Parameters = Schema.Object(
                 new Prop("action", "string", "Действие.", Required: true,
-                    Enum: ["launch", "windows", "tree", "click", "type", "keys", "scroll", "screenshot", "wait", "close"]),
+                    Enum: ["launch", "windows", "tree", "click", "type", "keys", "scroll", "ocr", "screenshot", "save_baseline", "compare_baseline", "wait", "close"]),
                 new Prop("path", "string", "launch: программа, ярлык или файл."),
                 new Prop("arguments", "string", "launch: аргументы командной строки."),
                 new Prop("window", "string", "Окно: id из windows/launch, browser для встроенного браузера или часть заголовка. По умолчанию — текущее окно."),
@@ -51,7 +52,10 @@ public sealed class ComputerTools(bool automationOnly = false)
                 new Prop("y", "integer", "click без element: Y на последнем скриншоте."),
                 new Prop("button", "string", "click: left (по умолчанию), right или double.", Enum: ["left", "right", "double"]),
                 new Prop("text", "string", "type: текст (заменяет значение поля); keys: сочетания через пробел, например \"ctrl+a ctrl+c\"; " +
-                    "tree: показать только элементы с этим текстом."),
+                    "tree или ocr: показать только строки с этим текстом."),
+                new Prop("language", "string", "ocr: язык распознавания. Без параметра пробует русский и английский.", Enum: ["ru", "en"]),
+                new Prop("baseline", "string", "Сохранить или сравнить именованный эталон окна."),
+                new Prop("ignore", "string", "Области анимаций в координатах снимка: x,y,ширина,высота; x,y,ширина,высота."),
                 new Prop("mode", "string", "type: заменить содержимое (по умолчанию) или вставить в позицию курсора.", Enum: ["replace", "insert"]),
                 new Prop("state", "string", "wait: условие для окна или элемента. Для value укажи точное ожидаемое значение в text.",
                     Enum: ["visible", "gone", "enabled", "disabled", "checked", "unchecked", "selected", "value"]),
@@ -63,7 +67,7 @@ public sealed class ComputerTools(bool automationOnly = false)
         var parameters = (JsonObject)computer.Parameters.DeepClone();
         var properties = (JsonObject)parameters["properties"]!;
         properties["action"]!["enum"] = new JsonArray(AppActions.Select(action => (JsonNode?)JsonValue.Create(action)).ToArray());
-        foreach (var key in new[] { "x", "y", "button", "mode" }) properties.Remove(key);
+        foreach (var key in new[] { "x", "y", "button", "mode", "language", "baseline", "ignore" }) properties.Remove(key);
         properties["text"]!["description"] = "type: новое значение поля через ValuePattern; tree: фильтр элементов; wait: ожидаемое значение поля.";
         return [computer, new AgentTool
         {
@@ -95,7 +99,7 @@ public sealed class ComputerTools(bool automationOnly = false)
     // Programs this run launched are trusted; the embedded browser is part of this run.
     bool Allowed(string action, int pid) => IsBrowserWindow(_window) || _started.Contains(pid) || action != "close" && _trusted.Contains(pid);
 
-    async Task<string> RunAsync(ToolArgs a, ToolContext c, CancellationToken ct)
+    internal async Task<string> RunAsync(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var action = a.Required("action");
         if (automationOnly && !AppActions.Contains(action)) throw new ToolException("это действие недоступно через API приложения — используй computer.");
@@ -127,7 +131,10 @@ public sealed class ComputerTools(bool automationOnly = false)
                 "windows" => Windows(),
                 "wait" => await WaitAsync(a, ct),
                 "tree" => Tree(Target(a.Optional("window")), a.Optional("text")),
-                "screenshot" => Screenshot(Target(a.Optional("window")), c),
+                "ocr" => await OcrAsync(Target(a.Optional("window")), a, c, ct),
+                "screenshot" => Screenshot(Target(a.Optional("window")), c, a),
+                "save_baseline" or "compare_baseline" => ScreenStateCache.Baseline(c, ScreenshotFrame(Target(a.Optional("window"))),
+                    a.Required("baseline"), action == "save_baseline", a.Optional("ignore")),
                 "click" or "type" or "keys" or "scroll" or "close" => await AfterAsync(Target(a.Optional("window")), action, a, ct),
                 _ => throw new ToolException($"неизвестное действие '{action}'."),
             };
@@ -326,15 +333,29 @@ public sealed class ComputerTools(bool automationOnly = false)
                 Walk(child, shown && filter == null ? depth + 1 : depth);
             }
         }
-        Walk(Snapshot(window), 0);
-        foreach (var popup in PopupRoots(window)) Walk(popup, 0);
+        var root = Snapshot(window);
+        var popups = PopupRoots(window).ToArray();
+        Walk(root, 0);
+        foreach (var popup in popups) Walk(popup, 0);
+        var changes = _screens.TreeChanges(window, PidOf(window), filter,
+            popups.Prepend(root).SelectMany(item => Flatten(item, offscreen: true)).Select(ElementLabel).OfType<string>()
+                .Where(label => filter == null || label.Contains(filter, StringComparison.OrdinalIgnoreCase)));
         _refs = refs;
         var head = $"Окно «{TitleOf(window)}» ({Id(window)}). Элементы (#номер — для click/type):";
         if (lines.Count == 0)
             return head + (filter != null ? $"\nЭлементов с текстом «{filter}» нет."
-                : "\nДерево пусто: программа не сообщает элементы UI Automation (игра или своя отрисовка). Сделай screenshot и щёлкай по координатам.");
+                : "\nДерево пусто: программа не сообщает элементы UI Automation (игра или своя отрисовка). Сделай screenshot и щёлкай по координатам.") + changes;
         return head + "\n" + string.Join("\n", lines) + (omitted > 0 ? $"\n… ещё {omitted} элементов — сузь поиск параметром text." : "") +
-               (hidden > 0 ? $"\n(вне экрана пропущено: {hidden}; найди нужный через text и покажи через scroll)" : "");
+               (hidden > 0 ? $"\n(вне экрана пропущено: {hidden}; найди нужный через text и покажи через scroll)" : "") + changes;
+    }
+
+    static string? ElementLabel(AutomationElement element)
+    {
+        if (element.Cached.IsPassword || !Interactive.Contains(element.Cached.ControlType)) return null;
+        var name = element.Cached.Name?.Trim();
+        var id = element.Cached.AutomationId?.Trim();
+        return string.IsNullOrEmpty(name) && string.IsNullOrEmpty(id) ? null :
+            $"{element.Cached.ControlType.ProgrammaticName}: {name} ({id})";
     }
 
     static AutomationElement Snapshot(IntPtr window)
@@ -684,7 +705,28 @@ public sealed class ComputerTools(bool automationOnly = false)
         return state;
     }
 
-    string Screenshot(IntPtr window, ToolContext c)
+    async Task<string> OcrAsync(IntPtr window, ToolArgs args, ToolContext context, CancellationToken ct)
+    {
+        var path = Path.Combine(context.TempFolder, $"ocr-{Guid.NewGuid():N}.png");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, ImageEncoder.Encode(new PngBitmapEncoder(), ScreenshotFrame(window)));
+            return await WindowsOcr.RecognizeAsync(path, args.Optional("language"), args.Optional("text"), context, ct);
+        }
+        finally { try { File.Delete(path); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
+    }
+
+    string Screenshot(IntPtr window, ToolContext c, ToolArgs args)
+    {
+        var shot = ScreenshotFrame(window);
+        var path = Path.Combine(c.LogsFolder ?? c.TempFolder, $"screen_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png");
+        var saved = _screens.Capture(window, shot, path, ScreenStateCache.Masks(args.Optional("ignore")));
+        return $"{ShotPrefix}{saved.Path}\nОкно «{TitleOf(window)}», снимок {shot.PixelWidth}×{shot.PixelHeight}. Координаты x, y для click — по этому снимку. " +
+               "Изображение передаётся тебе следующим сообщением, если модель видит картинки." + saved.Note;
+    }
+
+    BitmapSource ScreenshotFrame(IntPtr window)
     {
         GetWindowRect(window, out var rect);
         if (DwmGetWindowAttribute(window, 9, out Rect frame, Marshal.SizeOf<Rect>()) != 0) frame = rect;
@@ -708,12 +750,8 @@ public sealed class ComputerTools(bool automationOnly = false)
         BitmapSource shot = crop.Width > 0 && crop.Height > 0 ? new CroppedBitmap(image, crop) : image;
         double scale = Math.Min(1, (double)MaxShotSide / Math.Max(shot.PixelWidth, shot.PixelHeight));
         if (scale < 1) shot = new TransformedBitmap(shot, new ScaleTransform(scale, scale));
-        var path = Path.Combine(c.LogsFolder ?? c.TempFolder, $"screen_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png");
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllBytes(path, ImageEncoder.Encode(new PngBitmapEncoder(), shot));
         _shot = (rect, area.Left + left, area.Top + top, shot.PixelWidth, shot.PixelHeight, scale);
-        return $"{ShotPrefix}{path}\nОкно «{TitleOf(window)}», снимок {shot.PixelWidth}×{shot.PixelHeight}. Координаты x, y для click — по этому снимку. " +
-               "Изображение передаётся тебе следующим сообщением, если модель видит картинки.";
+        return shot;
     }
 
     // DWM stretches a window whose DPI differs from its monitor's, while PrintWindow returns it unstretched.

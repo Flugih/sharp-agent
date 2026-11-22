@@ -12,10 +12,11 @@
     <Version>1.7.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);workspace\**;history\**;temp\**;attachments\**;auth\**;publish\**;data\**;data.migrating\**;Tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SharpAgent.Tests" />
     <Resource Include="Assets\app.ico" />
     <None Include="plugins\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="Agent\CodeIndexWorker.cs" />

@@ -27,9 +27,7 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Files]
 ; User data left in the publish folder by a local run never goes into the installer.
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "\plugins,\.env*,\auth,\history,\state.json*,\*.log,\workspace,\attachments,\temp,\installed.mode"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Built-in plugins are part of the program: every update replaces their files, the user's own plugins are kept.
-Source: "{#PublishDir}\plugins\*"; DestDir: "{localappdata}\SharpAgent\plugins"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "\data,\data.migrating,\.env*,\auth,\history,\state.json*,\*.log,\workspace,\attachments,\temp,\installed.mode,\portable.mode"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "installed.mode"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

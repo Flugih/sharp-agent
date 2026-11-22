@@ -9,6 +9,7 @@ partial class AgentRunner
     {
         var scheduled = new Dictionary<ReadKey, (string Id, Task<ToolOutcome> Task)>();
         var executions = new List<ToolExecution>();
+        bool readOnly = CurrentDiagnosis() is { Repair: false };
         foreach (var call in calls)
         {
             var key = ReadKeyOf(call);
@@ -19,7 +20,9 @@ partial class AgentRunner
             else
             {
                 ToolCallStarted?.Invoke(call);
-                var task = ExecuteCallAsync(call, ct);
+                var task = readOnly && (!ToolRegistry.IsReadOnly(call.Name) || call.Name == "use_plugin") &&
+                    call.Name != "ask_user" && call.Name != BrowserTools.Name
+                    ? Task.FromResult(new ToolOutcome("Ошибка: диагностика доступна только для чтения.", true)) : ExecuteCallAsync(call, ct);
                 if (key != null) scheduled[key] = (call.Id, task);
                 executions.Add(new(task, key));
             }
@@ -66,10 +69,15 @@ partial class AgentRunner
     bool ResultInContext(string id, string output) => _sent.Any(node => Role(node) == "tool" && Str(node["tool_call_id"]) == id &&
         Str(node["content"])?.StartsWith(output, StringComparison.Ordinal) == true);
 
-    void InvalidateReads(ToolCallEvent call)
+    void InvalidateReads(ToolCallEvent call, string? changedPath)
     {
-        foreach (var key in _reads.Keys.Where(key => key.Path != null).ToArray()) _reads.Remove(key);
+        bool unknown = changedPath == null && call.Name is ("run_command" or "run_plugin" or "move_path" or "copy_path" or "delete_path");
+        if (unknown || changedPath != null)
+        {
+            var path = unknown ? null : PathHelper.FinalPath(changedPath!);
+            tools.Context.Snapshots.Invalidate(path);
+            foreach (var key in _reads.Keys.Where(key => key.Path != null && (path == null || PathHelper.IsInside(key.Path, path))).ToArray()) _reads.Remove(key);
+        }
         if (call.Name == "run_command") (_systemMessage, _plugins) = (null, null);
-        InvalidateProjectContext(call);
     }
 }
