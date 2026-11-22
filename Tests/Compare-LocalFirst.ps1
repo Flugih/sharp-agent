@@ -8,10 +8,12 @@ $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
 $report = [IO.Path]::GetFullPath($Output)
 $previousMode = $env:SHARP_AGENT_BENCH_LIVE
-$env:SHARP_AGENT_BENCH_LIVE = if ($Live) {'1'} else {'0'}
-$temporary = Join-Path $workspace ('bin\local-first-benchmark-' + [Guid]::NewGuid().ToString('N'))
+$runId = [Guid]::NewGuid().ToString('N')
+$scratch = Join-Path $workspace '.sharpagent'
+$tempRoot = Join-Path $scratch 'tmp'
+$temporary = Join-Path $tempRoot $runId
 $baseline = Join-Path $temporary 'base'
-New-Item -ItemType Directory -Path $baseline -Force | Out-Null
+$lease = $null
 
 function Invoke-Native([scriptblock]$Action) {
     & $Action | Out-Host
@@ -44,6 +46,19 @@ function Median([double[]]$Values) {
 }
 
 try {
+    foreach ($folder in @($scratch, $tempRoot, $temporary)) {
+        if (!(Test-Path -LiteralPath $folder)) { [IO.Directory]::CreateDirectory($folder) | Out-Null }
+        $entry = Get-Item -LiteralPath $folder -Force
+        if (!$entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unexpected verification directory: $folder"
+        }
+    }
+    $lease = [IO.File]::Open((Join-Path $temporary '.verification.lock'), 'CreateNew', 'Write', 'None')
+    $marker = [Text.Encoding]::ASCII.GetBytes($runId)
+    $lease.Write($marker, 0, $marker.Length)
+    $lease.Flush()
+    $env:SHARP_AGENT_BENCH_LIVE = if ($Live) {'1'} else {'0'}
+    [IO.Directory]::CreateDirectory($baseline) | Out-Null
     $archive = Join-Path $temporary 'baseline.zip'
     Invoke-Native { git -C $workspace archive --format=zip --output=$archive $BaseCommit }
     Expand-Archive -LiteralPath $archive -DestinationPath $baseline
@@ -76,13 +91,31 @@ await LocalBenchmark.RunAsync(Path.Combine(AppContext.BaseDirectory, "fixtures")
 }
 finally {
     $env:SHARP_AGENT_BENCH_LIVE = $previousMode
-    $resolved = (Resolve-Path -LiteralPath $temporary).ProviderPath
-    $expectedParent = (Resolve-Path -LiteralPath (Join-Path $workspace 'bin')).ProviderPath
-    $item = Get-Item -LiteralPath $resolved
-    if ($resolved -eq $temporary -and [IO.Path]::GetDirectoryName($resolved) -eq $expectedParent -and
-        -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        Add-Type -AssemblyName Microsoft.VisualBasic
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($resolved,
-            [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+    if ($null -ne $lease) {
+        $lease.Dispose()
+        $resolved = (Resolve-Path -LiteralPath $temporary).ProviderPath
+        if ($resolved -ne $temporary -or [IO.Path]::GetDirectoryName($resolved) -ne $tempRoot) {
+            throw "Unexpected verification directory: $resolved"
+        }
+        foreach ($folder in @($scratch, $tempRoot)) {
+            if ((Get-Item -LiteralPath $folder -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Linked verification path: $folder"
+            }
+        }
+        $folders = [Collections.Generic.Stack[string]]::new()
+        $folders.Push($resolved)
+        while ($folders.Count -gt 0) {
+            $entry = Get-Item -LiteralPath $folders.Pop() -Force
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked verification path: $($entry.FullName)" }
+            foreach ($child in Get-ChildItem -LiteralPath $entry.FullName -Force) {
+                if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked verification path: $($child.FullName)" }
+                if ($child.PSIsContainer) { $folders.Push($child.FullName) }
+            }
+        }
+        if ([Environment]::UserInteractive) {
+            Add-Type -AssemblyName Microsoft.VisualBasic
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($resolved,
+                [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+        }
     }
 }

@@ -20,6 +20,7 @@ public partial class MainWindow
     string? _settingsTheme;
     FrameworkElement? _settingsPage;
     bool _settingsRussian;
+    bool _settingsLargeChatText;
     CancellationTokenSource? _signIn;
     bool _chatGptSigningOut, _testingKey;
     string? _chatGptAccountChoice;
@@ -153,6 +154,8 @@ public partial class MainWindow
         ShowChoice(ThemeButton, Themes, _settingsTheme);
         _settingsRussian = _config.RussianLanguage;
         ShowChoice(LanguageButton, Languages, _settingsRussian);
+        _settingsLargeChatText = _state.LargeChatText;
+        ShowChoice(TextSizeButton, TextSizes, _settingsLargeChatText);
         BaseUrlBox.Text = Value("TOOKEN_BASE_URL", AppConfig.DefaultBaseUrl);
         LoadNetworkSettings(unreadable ? _config.Network : NetworkSettings.Load(key => env.GetValueOrDefault(key)), Value("AGENT_VPN_PROFILES"));
         var plugins = PluginTools.Load(_toolContext.PluginsFolder);
@@ -664,6 +667,10 @@ public partial class MainWindow
         }
         _state.LimitOverrideDay = null;
         _state.Theme = _settingsTheme;
+        bool textSizeChanged = _state.LargeChatText != _settingsLargeChatText;
+        _state.LargeChatText = _settingsLargeChatText;
+        ChatTextSize.Extra = _settingsLargeChatText ? 1 : 0;
+        InputBox.FontSize = 14 + ChatTextSize.Extra;
         _state.Save();
         bool languageChanged = UiLanguage.Current.Value.IsRussian != _config.RussianLanguage;
         ApplyConfig();
@@ -671,8 +678,8 @@ public partial class MainWindow
         {
             UpdateConfirmToggle();
             ApplySidebar();
-            RenderCurrentChat();
         }
+        if (languageChanged || textSizeChanged) RenderCurrentChat();
         CloseSettings();
         await RunChatOperationAsync(() => ShowModelChangeAsync(previous));
         ShowToast(_provider != null ? Tr("Настройки сохранены", "Settings saved") : _config.Provider switch
@@ -699,6 +706,14 @@ public partial class MainWindow
     void ThemeButton_Click(object sender, RoutedEventArgs e) => PickChoice(ThemeButton, Themes, _settingsTheme, PreviewTheme);
 
     static readonly (bool Value, string Label)[] Languages = [(false, "English"), (true, "Русский")];
+
+    static (bool Value, string Label)[] TextSizes => [(false, Tr("Обычный", "Normal")), (true, Tr("Увеличенный", "Large"))];
+
+    void TextSizeButton_Click(object sender, RoutedEventArgs e) => PickChoice(TextSizeButton, TextSizes, _settingsLargeChatText, large =>
+    {
+        _settingsLargeChatText = large;
+        ShowChoice(TextSizeButton, TextSizes, large);
+    });
 
     void LanguageButton_Click(object sender, RoutedEventArgs e) => PickChoice(LanguageButton, Languages, _settingsRussian, russian =>
     {

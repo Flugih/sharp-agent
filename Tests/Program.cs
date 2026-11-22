@@ -1,4 +1,5 @@
 global using System.IO;
+using System.Net.Http;
 using System.Text.Json.Nodes;
 using SharpAgent.Agent;
 using SharpAgent.Api;
@@ -20,6 +21,7 @@ await DelegatedStepsAsync(root);
 await ChatTitlesAsync(root);
 RequestComponents();
 await ToolExpansionAsync(root);
+await WebResearchChecks.RunAsync(root);
 await SavedOutputsAsync(root);
 await CodexWorkflowAsync(root);
 await BackgroundCompactionAsync(root);
@@ -264,12 +266,31 @@ static async Task CodexWorkflowAsync(string root)
         CommandRestriction.RipgrepLaunchFailure(blocked, new("Shell disabled", CommandShell.PowerShell)) == null &&
         CommandRestriction.RipgrepLaunchFailure("rg: source.txt: Access is denied", null) == null,
         "fallback is limited to a failure to launch ripgrep");
-    var pending = await registry.ExecuteAsync("exec_command", """{"command":"Start-Sleep -Milliseconds 800; Write-Output finished","yield_ms":100}""",
+    var pending = await registry.ExecuteAsync("exec_command", """{"command":"Start-Sleep -Milliseconds 1400; Write-Output finished","yield_ms":100}""",
         _ => Task.FromResult(true), default);
     var id = pending.Output.Split("session_id=")[1].Split('.')[0];
-    var finished = await registry.ExecuteAsync("exec_command", new JsonObject { ["session_id"] = id, ["yield_ms"] = 5000 }.ToJsonString(),
+    var pollArgs = new JsonObject { ["session_id"] = id, ["yield_ms"] = 100 }.ToJsonString();
+    Check(SharpAgent.MainWindow.CommandText("""{"command":"dotnet build"}""") == "dotnet build" &&
+        SharpAgent.MainWindow.CommandText("""{"commands":["rg --files","git status"]}""") == "rg --files\ngit status" &&
+        SharpAgent.MainWindow.CommandText(pollArgs, sourceOfSession: session =>
+            pending.Output == ShellTools.Sessions.Running(session) ? "Start-Sleep" : null) == "Start-Sleep" &&
+        SharpAgent.MainWindow.CommandText(pollArgs, "completed command") == "completed command",
+        "collapsed tool rows retain single, batch and session command text");
+    var finished = await registry.ExecuteAsync("exec_command", pollArgs,
         _ => throw new InvalidOperationException("Polling must not ask for command approval"), default);
-    Check(CommandLog.ResultOf(finished.Output) == "код 0" && finished.Output.Contains("finished"), "execution session can be polled");
+    Check(CommandLog.ResultOf(finished.Output) == "код 0" && finished.Output.Contains("finished"), "one poll waits locally for the final result");
+    Put(Path.Combine(work, "Wait.proj"), """
+        <Project DefaultTargets="Build">
+          <Target Name="Build">
+            <Exec Command="powershell -NoProfile -Command &quot;Start-Sleep -Milliseconds 600&quot;" />
+            <Message Text="verification-finished" Importance="high" />
+          </Target>
+        </Project>
+        """);
+    var verification = await registry.ExecuteAsync("exec_command", """{"command":"dotnet build Wait.proj --no-restore --nologo","yield_ms":100}""",
+        _ => Task.FromResult(true), default);
+    Check(verification.Output.Contains("verification-finished") && CommandLog.ResultOf(verification.Output) == "код 0" &&
+        registry.PendingCommandOutput == null, "verification returns the final output even with a short yield");
     var sandbox = new ToolRegistry(new ToolContext { WorkingDirectory = work, AppFolder = context.AppFolder, SandboxRoot = work });
     Check((await sandbox.ExecuteAsync("exec_command", """{"command":"rg --files"}""", null, default)).IsError, "sandbox forbids execution and its fallback");
 }
@@ -287,8 +308,13 @@ static void RequestComponents()
     var first = meter.Measure(AgentProvider.ChatGpt, "fake", messages, tools, 4, 0);
     var next = meter.Measure(AgentProvider.ChatGpt, "fake", [.. messages, new JsonObject { ["role"] = "user", ["content"] = "later" }], tools, 4, 0);
     Check(first.Total == HistoryCompressor.EstimateAll(messages) + HistoryCompressor.Estimate(tools) && next.Project == 4 &&
-        next.StablePrefix == first.Total && next.RepeatedResults == first.Results && next.History > first.History,
+        next.StablePrefix == first.Total && next.RepeatedResults == first.Results && next.RepeatedInPrefix == first.Results &&
+        next.SchemaVersion == first.SchemaVersion && next.PrefixChange == null && next.History > first.History,
         "component estimates reconcile and matching prefixes exclude new messages");
+    JsonArray expanded = [tools[0]?.DeepClone(), new JsonObject { ["function"] = "extra" }];
+    var changed = meter.Measure(AgentProvider.ChatGpt, "fake", messages, expanded, 4, 0);
+    Check(changed.StablePrefix == 0 && changed.RepeatedResults == first.Results && changed.RepeatedInPrefix == 0 &&
+        changed.SchemaVersion != first.SchemaVersion && changed.PrefixChange == "tools_changed", "schema change explains why the prefix was lost");
     Check(LocalActionRouter.Match("""read files "one.cs" and "two.cs" """) == "read_many one.cs\ntwo.cs" &&
         LocalActionRouter.Match("""read files "one.cs" and "two.cs" and explain them""") == null,
         "only explicit batches bypass the model");
@@ -375,6 +401,11 @@ static async Task BackgroundCompactionAsync(string root)
     var failureFixture = new ChatHistory();
     foreach (var message in history) failureFixture.Add(message.DeepClone());
     await failureFixture.SaveAsync(failurePath, "fake", null, true);
+    using var shortRun = new CompactionProvider(1);
+    var shortAgent = new AgentRunner(new ToolRegistry(context), store) { Api = shortRun, AutoChatTitles = false };
+    await shortAgent.OpenAsync(failurePath);
+    await shortAgent.RunAsync("Keep the current request verbatim.", [], "fake", default);
+    Check(shortRun.Summaries == 0, "brief task with room never starts a speculative summary");
     using var provider = new CompactionProvider();
     var agent = new AgentRunner(new ToolRegistry(context), store) { Api = provider, AutoChatTitles = false };
     await agent.OpenAsync(path);
@@ -389,6 +420,13 @@ static async Task BackgroundCompactionAsync(string root)
     await retry.OpenAsync(failurePath);
     await retry.RunAsync("Keep the current request verbatim.", [], "fake", default);
     Check(failed.Summaries == 1 && !retry.CanContinue, "a rejected summary is not regenerated after each small step");
+    using var slow = new CompactionProvider(3, holdSummary: true);
+    var finishing = new AgentRunner(new ToolRegistry(context), store) { Api = slow, AutoChatTitles = false };
+    await finishing.OpenAsync(failurePath);
+    await finishing.RunAsync("Keep the current request verbatim.", [], "fake", default);
+    var cancelled = AgentProgressManager.Last(context, failurePath)?.Operations.SingleOrDefault(step => step.Name == "compaction");
+    Check(cancelled is { State: "cancelled", Error: "turn_ended", Usage: null },
+        "a background summary cancelled at completion records its cause and missing usage");
 
     const string active = "Keep active-sentinel verbatim and finish the current work.";
     var unfinished = new ChatHistory();
@@ -457,8 +495,10 @@ static async Task ProtectedContextAsync(string root)
         var older = results.First()["content"]!.ToString();
         Check(older.Contains("Код выхода: 1") && older.Contains("error unique-0") && older.Contains("read_log") &&
             CommandLog.IdOf(older) == CommandLog.IdOf(outputs[0]), "an old command keeps exit code, an error and its journal");
-        Check(window == 128_000 ? results.Skip(1).Select(node => node["content"]!.ToString()).SequenceEqual(outputs.Skip(1)) :
-            results.Skip(1).Any(node => node["content"]!.ToString().Contains("Output preview")), "four latest groups stay whole unless the hard limit requires previews");
+        Check(window == 128_000 ? results[^1]["content"]?.ToString() == outputs[^1] &&
+            results.Skip(1).SkipLast(1).Any(node => node["content"]!.ToString().Contains("Output preview")) :
+            results.Skip(1).Any(node => node["content"]!.ToString().Contains("Output preview")),
+            "newest output stays whole while repeated large results use recoverable previews");
     }
     var log = await registry.ExecuteAsync("read_log", new JsonObject
         { ["log_id"] = CommandLog.IdOf(outputs[0]), ["offset"] = 17, ["limit"] = 1 }.ToJsonString(), null, default);
@@ -591,11 +631,11 @@ static async Task LocalWorkflowsAsync(string root)
         { Step: 1, Model: "fixture", EstimatedInput: 12, Images: 1, Retries: 1, Usage.PromptTokens: 5 }, "persisted model step usage and retry");
     var support = Path.Combine(root, "diagnostic-no-project");
     Directory.CreateDirectory(support);
-    var diagnosticContext = new ToolContext { WorkingDirectory = support, AppFolder = data };
-    diagnosticContext.ReadBrowser = (url, _, term, _) =>
+    using var research = new HttpClient(new WebResearchChecks.Sources());
+    var diagnosticContext = new ToolContext { WorkingDirectory = support, AppFolder = data, ResearchClient = research };
+    diagnosticContext.ReadBrowser = (_, _, _, _) =>
     {
-        Check(url == "https://learn.microsoft.com/search/?terms=CS1002" && term == "CS1002", "diagnostic sends only the public code to documentation search");
-        return Task.FromResult(new BrowserTools.Snapshot(url!, "Docs", "Fixture documentation", [], true, true));
+        throw new InvalidOperationException("Diagnostics opened the browser.");
     };
     var diagnosticAgent = new AgentRunner(new ToolRegistry(diagnosticContext), store) { IsTemporary = true, RussianLanguage = true };
     string? answer = null;
@@ -690,7 +730,7 @@ static async Task UiChecksAsync(string root)
         """;
     var stored = await tools.ExecuteAsync(LocalTestTools.Name, save, null, default);
     Check(!stored.IsError, "UI suite is stored locally");
-    var failed = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"regression-ui"}""", null, default);
+    var failed = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"regression-ui"}""", null, default, allowBrowser: true);
     Check(failed.IsError && failed.Output.Contains("1/2") && failed.Output.Contains("#missing"),
         "failed UI assertions produce a failed tool outcome, not a false success: " + failed.Output);
     const string passing = """
@@ -698,7 +738,9 @@ static async Task UiChecksAsync(string root)
          "suite":{"checks":[{"target":"https://example.org","selector":"#present"}]}}
         """;
     Check(!(await tools.ExecuteAsync(LocalTestTools.Name, passing, null, default)).IsError, "passing UI suite stored");
-    var succeeded = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"passing-ui"}""", null, default);
+    var denied = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"passing-ui"}""", null, default);
+    Check(denied.IsError, "browser test requires a request to use a page");
+    var succeeded = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"passing-ui"}""", null, default, allowBrowser: true);
     Check(!succeeded.IsError && succeeded.Output.Contains("1/1"), "passing UI assertions still succeed");
 }
 
@@ -757,6 +799,34 @@ static void MemoryAndCache(string root)
     File.SetLastWriteTimeUtc(excess, now.AddHours(-1));
     AppCache.Prune(cache, 5, TimeSpan.FromDays(7), nowUtc: now);
     Check(!File.Exists(expired) && !File.Exists(excess) && File.Exists(recent) && File.Exists(source), "cache age, quota and active grace period");
+
+    Put(Path.Combine(working, "SharpAgent.csproj"), "<Project />");
+    var scratch = Path.Combine(working, ".sharpagent", "tmp");
+    var abandonedRun = VerificationRun();
+    var busyRun = VerificationRun();
+    var recentRun = VerificationRun();
+    var unmarked = Path.Combine(scratch, Guid.NewGuid().ToString("N"));
+    var unrelated = Path.Combine(working, "sharp_agent_build_check_old");
+    var savedReport = Path.Combine(working, ".sharpagent", "report.json");
+    Directory.CreateDirectory(unmarked);
+    Directory.CreateDirectory(unrelated);
+    Put(savedReport, "{}");
+    Put(Path.Combine(recentRun, "recent.log"), "process output");
+    var recycled = new List<string>();
+    using (File.Open(Path.Combine(busyRun, AppCache.VerificationMarker), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        AppCache.CleanupVerificationArtifacts(working, recycled.Add, now);
+    Check(recycled.SequenceEqual([abandonedRun]) && Directory.Exists(unmarked) && Directory.Exists(unrelated) && File.Exists(savedReport),
+        "cleanup only selects old, marked and unlocked verification runs within the project");
+
+    string VerificationRun()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var path = Path.Combine(scratch, id);
+        var marker = Path.Combine(path, AppCache.VerificationMarker);
+        Put(marker, id);
+        File.SetLastWriteTimeUtc(marker, now.AddHours(-1));
+        return path;
+    }
 }
 
 static void Check(bool condition, string name)
@@ -842,7 +912,7 @@ sealed class SubagentProvider : IChatProvider
     public void Dispose() { }
 }
 
-sealed class CompactionProvider(int toolCalls = 4, string summaryFinish = "stop") : IChatProvider
+sealed class CompactionProvider(int toolCalls = 4, string summaryFinish = "stop", bool holdSummary = false) : IChatProvider
 {
     readonly TaskCompletionSource _summary = new(TaskCreationOptions.RunContinuationsAsynchronously);
     int _steps;
@@ -856,7 +926,8 @@ sealed class CompactionProvider(int toolCalls = 4, string summaryFinish = "stop"
         if (!callTools)
         {
             Summaries++;
-            if (toolCalls > 0) await _summary.Task.WaitAsync(ct);
+            if (holdSummary) await Task.Delay(Timeout.Infinite, ct);
+            else if (toolCalls > 0) await _summary.Task.WaitAsync(ct);
             return new(new JsonObject { ["content"] = "Archived decisions and pending work." }, summaryFinish, new UsageInfo(100, 10), null);
         }
         Messages = messages;
@@ -869,6 +940,7 @@ sealed class CompactionProvider(int toolCalls = 4, string summaryFinish = "stop"
         if (++_steps <= toolCalls)
             return new(new JsonObject
             {
+                ["content"] = $"Decision at step {_steps}: " + new string('x', 1_100),
                 ["tool_calls"] = new JsonArray(new JsonObject
                 {
                     ["id"] = "inspect-" + _steps,

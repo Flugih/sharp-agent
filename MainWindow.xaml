@@ -99,7 +99,7 @@
                 </Button>
                 <Grid Grid.RowSpan="3">
                     <ScrollViewer x:Name="ChatScroll" Template="{StaticResource ChatScrollTemplate}" VerticalScrollBarVisibility="Auto" Focusable="False" ScrollChanged="ChatScroll_ScrollChanged" SizeChanged="Composer_SizeChanged" PreviewMouseLeftButtonDown="ChatScroll_PreviewMouseLeftButtonDown">
-                        <StackPanel x:Name="ChatContent" MaxWidth="736" Margin="24,58,24,24">
+                        <StackPanel x:Name="ChatContent" MaxWidth="736" Margin="24,28,24,24">
                             <StackPanel x:Name="ChatPages">
                                 <StackPanel x:Name="ChatPanel"/>
                             </StackPanel>
@@ -597,7 +597,7 @@
                 <ScrollViewer x:Name="SettingsScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="32,28,32,24" Focusable="False">
                     <Grid x:Name="SettingsFields" MaxWidth="724" TextBoxBase.TextChanged="SettingsFields_TextChanged">
                         <StackPanel x:Name="SettingsGeneral">
-                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Оформление', 'Appearance'}" Margin="0,0,0,16"/>
+                            <TextBlock Style="{StaticResource PageTitle}" Text="{ui:Localized 'Общие', 'General'}" Margin="0,0,0,16"/>
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
@@ -611,6 +611,30 @@
                                             <Button x:Name="LanguageButton" Style="{StaticResource RowDropdown}" Click="LanguageButton_Click"
                                                     AutomationProperties.Name="{ui:Localized 'Язык системы', 'System language'}"/>
                                             <TextBlock Text="{ui:Localized 'Язык системы', 'System language'}" VerticalAlignment="Center"/>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <Button x:Name="TextSizeButton" Style="{StaticResource RowDropdown}" Click="TextSizeButton_Click" AutomationProperties.Name="{ui:Localized 'Размер текста', 'Text size'}"/>
+                                            <TextBlock Text="{ui:Localized 'Размер текста', 'Text size'}" VerticalAlignment="Center"/>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <ToggleButton x:Name="AutoChatTitlesToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
+                                            <StackPanel Style="{StaticResource RowText}">
+                                                <TextBlock Text="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Если выключено, новый чат получает название из первого сообщения.', 'When off, new chats use their first message as the title.'}"/>
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <ToggleButton x:Name="ComputerUseToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" ToolTip="{ui:Localized 'Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам', 'The agent launches apps, clicks controls, types, and checks results using the UI tree and screenshots'}" AutomationProperties.Name="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
+                                            <StackPanel Style="{StaticResource RowText}">
+                                                <TextBlock Text="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно.', 'The agent uses screenshots only when the UI tree is insufficient, since screenshots use many tokens. Unavailable in sandbox mode.'}"/>
+                                            </StackPanel>
                                         </DockPanel>
                                     </Border>
                                 </StackPanel>
@@ -821,28 +845,10 @@
                                 <StackPanel>
                                     <Border Style="{StaticResource SettingsRow}">
                                         <DockPanel>
-                                            <ToggleButton x:Name="AutoChatTitlesToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
-                                            <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Если выключено, новый чат получает название из первого сообщения.', 'When off, new chats use their first message as the title.'}"/>
-                                            </StackPanel>
-                                        </DockPanel>
-                                    </Border>
-                                    <Border Style="{StaticResource SettingsRow}">
-                                        <DockPanel>
                                             <ToggleButton x:Name="SubagentsToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Использовать субагентов', 'Use subagents'}"/>
                                             <StackPanel Style="{StaticResource RowText}">
                                                 <TextBlock Text="{ui:Localized 'Использовать субагентов', 'Use subagents'}"/>
                                                 <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'В быстром режиме агент поручает больше независимых проверок. В обычном режиме бюджет субагентов меньше.', 'Fast mode delegates more independent checks. Standard mode uses a smaller subagent budget.'}"/>
-                                            </StackPanel>
-                                        </DockPanel>
-                                    </Border>
-                                    <Border Style="{StaticResource SettingsRow}">
-                                        <DockPanel>
-                                            <ToggleButton x:Name="ComputerUseToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" ToolTip="{ui:Localized 'Агент запускает программы, нажимает кнопки, вводит текст и проверяет работу приложений по дереву элементов и скриншотам', 'The agent launches apps, clicks controls, types, and checks results using the UI tree and screenshots'}" AutomationProperties.Name="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
-                                            <StackPanel Style="{StaticResource RowText}">
-                                                <TextBlock Text="{ui:Localized 'Управление компьютером', 'Computer use'}"/>
-                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Скриншоты расходуют много токенов: агент смотрит их, только когда дерева элементов недостаточно. В режиме песочницы недоступно.', 'The agent uses screenshots only when the UI tree is insufficient, since screenshots use many tokens. Unavailable in sandbox mode.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>
@@ -901,8 +907,15 @@
                 </Border>
             </Grid>
 
-            <Grid x:Name="PictureOverlay" Grid.Row="1" Grid.ColumnSpan="2" Visibility="Collapsed" Background="{DynamicResource Scrim}" MouseLeftButtonUp="PictureOverlay_MouseLeftButtonUp">
+            <Grid x:Name="PictureOverlay" Grid.Row="1" Grid.ColumnSpan="2" Visibility="Collapsed" Background="{DynamicResource Scrim}"
+                  Focusable="True" KeyboardNavigation.TabNavigation="Cycle" MouseLeftButtonUp="PictureOverlay_MouseLeftButtonUp">
                 <Image x:Name="PictureImage" Margin="48,20,48,64" StretchDirection="DownOnly" RenderOptions.BitmapScalingMode="HighQuality"/>
+                <Button x:Name="PicturePrevious" Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE76B;" Visibility="Collapsed"
+                        HorizontalAlignment="Left" VerticalAlignment="Center" Margin="8,0,0,0" Click="PicturePrevious_Click"
+                        ToolTip="{ui:Localized 'Предыдущее изображение (←)', 'Previous image (←)'}" AutomationProperties.Name="{ui:Localized 'Предыдущее изображение', 'Previous image'}"/>
+                <Button x:Name="PictureNext" Style="{StaticResource FloatButton}" Width="36" Height="36" Content="&#xE76C;" Visibility="Collapsed"
+                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" Click="PictureNext_Click"
+                        ToolTip="{ui:Localized 'Следующее изображение (→)', 'Next image (→)'}" AutomationProperties.Name="{ui:Localized 'Следующее изображение', 'Next image'}"/>
                 <Button Style="{StaticResource FloatButton}" Width="36" Height="36" FontSize="12" Content="&#xE8BB;" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0" ToolTip="{ui:Localized 'Закрыть (Esc)', 'Close (Esc)'}" AutomationProperties.Name="{ui:Localized 'Закрыть изображение', 'Close image'}" Click="PictureClose_Click"/>
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="24,0,24,14" Orientation="Horizontal">
                     <!-- The scrim is dark in both themes, so the name sits on a raised chip to stay readable -->

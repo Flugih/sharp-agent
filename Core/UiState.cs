@@ -34,6 +34,7 @@ public sealed class UiState
 
     public WindowPlacement? Window { get; set; }
     public string? Theme { get; set; }
+    public bool LargeChatText { get; set; }
     public bool FastMode { get; set; }
     public Dictionary<AgentProvider, string>? EconomyModels { get; set; }
     public bool SidebarCollapsed { get; set; }

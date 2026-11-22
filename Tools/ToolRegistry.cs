@@ -12,9 +12,9 @@ public sealed record ToolOutcome(string Output, bool IsError, bool IsWarning = f
 public sealed partial class ToolRegistry
 {
     const int MaxToolOutputChars = 100_000;
-    static readonly HashSet<string> UnsafeInSandbox = ["exec_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName, ScriptRegistry.Name, BrowserTools.Name];
+    static readonly HashSet<string> UnsafeInSandbox = ["exec_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName, ScriptRegistry.Name, BrowserTools.Name, WebResearch.Name];
     static readonly HashSet<string> ReadOnly =
-        ["list_directory", "get_file_info", "search_files", "get_system_info", "read_log", "use_plugin", LocalContractEngine.Name, LocalResearchEngine.Name, ToolOutputStore.Name, "local_batch"];
+        ["list_directory", "get_file_info", "search_files", "get_system_info", "read_log", "use_plugin", LocalContractEngine.Name, LocalResearchEngine.Name, ToolOutputStore.Name, "local_batch", WebResearch.Name];
     static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано", "Error:"];
     readonly Dictionary<string, AgentTool> _byName;
     readonly List<AgentTool> _tools;
@@ -49,6 +49,7 @@ public sealed partial class ToolRegistry
         _tools = FileTools.All().Concat(ShellTools.All(_sessions)).Concat(CommandLog.All()).Concat(ImageTools.All())
             .Concat(PluginTools.All()).Concat(ComputerTools.All()).Concat(AgentKnowledge.All()).Append(ScriptRegistry.Tool()).Append(BrowserTools.Tool()).Append(LocalTestTools.Tool())
             .Append(LocalResearchEngine.Tool()).Append(LocalContractEngine.Tool()).Append(ToolOutputStore.Tool()).Append(BatchTool()).Append(PatchTool.Tool())
+            .Append(WebResearch.Tool())
             .Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
         _byName = _tools.ToDictionary(t => t.Name);
     }
@@ -66,7 +67,7 @@ public sealed partial class ToolRegistry
     public static bool CommandFailed(string output) => CommandLog.ResultOf(output) is { } result && result != "код 0";
 
     public async Task<ToolOutcome> ExecuteAsync(string name, string argumentsJson, Func<ConfirmRequest, Task<bool>>? confirm,
-        CancellationToken ct, Action? executionStarted = null)
+        CancellationToken ct, Action? executionStarted = null, bool allowBrowser = false)
     {
         if (!_byName.TryGetValue(name, out var tool) || ComputerTools.IsControl(name) && !Context.ComputerUse)
             return Error($"Ошибка: неизвестный инструмент '{name}'.");
@@ -77,7 +78,9 @@ public sealed partial class ToolRegistry
         JsonObject args;
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
-        var toolArgs = new ToolArgs(args);
+        var toolArgs = new ToolArgs(args) { BrowserAllowed = allowBrowser };
+        if (!allowBrowser && (name == BrowserTools.Name || name == "open_path" && FileTools.IsWebUrl(toolArgs.Optional("path") ?? "")))
+            return Error("Ошибка: открытие вкладок доступно по запросу пользователя. Для чтения интернет-источников используй web_search.");
         bool opaque = name is "exec_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName or ScriptRegistry.Name ||
             name == LocalTestTools.Name && toolArgs.Optional("action") == "run";
         try

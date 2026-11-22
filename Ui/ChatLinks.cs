@@ -16,9 +16,9 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
         ? $"{path}\nЩелчок — открыть папку, правая кнопка — другие действия"
         : $"{path}\nЩелчок — посмотреть здесь, правая кнопка — другие действия";
 
-    void Click(string path)
+    void Click(string path, Action<string>? open = null)
     {
-        if (File.Exists(path)) openInApp(path);
+        if (File.Exists(path)) (open ?? openInApp)(path);
         else FileActions.Open(owner, path);
     }
 
@@ -35,7 +35,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
         return link;
     }
 
-    Inline WebLink(string url, string text)
+    internal Inline WebLink(string url, string text)
     {
         var link = new Hyperlink(new Run(text)) { ToolTip = Tr("Открыть во внешнем браузере", "Open in external browser") + "\n" + url, Style = LinkStyle };
         link.Click += (_, _) => FileActions.OpenUrl(url);
@@ -50,7 +50,9 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
         return link;
     }
 
-    public Button FileChip(string path, string? text = null, params MenuItem[] extra)
+    public Button FileChip(string path, string? text = null, params MenuItem[] extra) => FileChip(path, text, null, extra);
+
+    internal Button FileChip(string path, string? text, Action<string>? open, MenuItem[] extra)
     {
         var name = text ?? DisplayName(path);
         var chip = new Button
@@ -73,7 +75,7 @@ public sealed class ChatLinks(Window owner, PathRefs paths, Action<string> openI
             ContextMenu = FileActions.BuildMenu(owner, path, extra),
         };
         AutomationProperties.SetName(chip, (Directory.Exists(path) ? Tr("Папка ", "Folder ") : Tr("Файл ", "File ")) + name);
-        chip.Click += (_, _) => Click(path);
+        chip.Click += (_, _) => Click(path, open);
         FileActions.EnableDragOut(chip, path);
         return chip;
     }
@@ -124,20 +126,29 @@ sealed class CodeBlockView : Border
 {
     public CodeBlockView(string code, string? language)
     {
-        var text = new TextBox
+        var paragraph = new Paragraph { Margin = new(0) };
+        CodeSyntax.WriteBlock(paragraph.Inlines, code, language);
+        var document = new FlowDocument(paragraph)
         {
-            Text = code, IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, FontFamily = Theme.Mono, FontSize = 12.5,
-            TextWrapping = TextWrapping.Wrap, Background = Brushes.Transparent, BorderThickness = new(0),
-            Padding = new(0, 4, 0, 4), VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0),
-        }.Paint(TextBox.ForegroundProperty, "TextSoft").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
-        TextBlock.SetLineHeight(text, 19);
+            PagePadding = new(0), FontFamily = Theme.Mono, FontSize = 12.5 + ChatTextSize.Extra,
+            LineHeight = 19, TextAlignment = TextAlignment.Left,
+        }.Paint(TextElement.ForegroundProperty, "TextSoft");
+        var text = new RichTextBox(document)
+        {
+            IsReadOnly = true, IsReadOnlyCaretVisible = false, IsTabStop = false, AutoWordSelection = false,
+            Background = Brushes.Transparent, BorderThickness = new(0), FocusVisualStyle = null,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new(0, 4, 0, 4), VerticalAlignment = VerticalAlignment.Center, Margin = new(-5, 0, 3, 0),
+        }.Paint(TextBoxBase.SelectionBrushProperty, "Accent");
         var label = Tr("Скопировать код", "Copy code") + (language != null ? $" ({language})" : "");
         var copy = Theme.IconButton(Glyphs.Copy, label, 28, 14);
+        copy.HorizontalContentAlignment = HorizontalAlignment.Center;
+        TextBlock.SetLineHeight(copy, double.NaN);
+        TextBlock.SetLineStackingStrategy(copy, LineStackingStrategy.MaxHeight);
         copy.Click += (_, _) => ChatLinks.CopyWithFeedback(copy, code, label);
         var grid = new Grid { ColumnDefinitions = { new(), new() { Width = GridLength.Auto } }, Children = { text, copy } };
         Grid.SetColumn(copy, 1);
         copy.VerticalAlignment = VerticalAlignment.Center;
-        text.SizeChanged += (_, _) => copy.VerticalAlignment = text.LineCount > 1 ? VerticalAlignment.Top : VerticalAlignment.Center;
         SetResourceReference(BackgroundProperty, "BlockBg");
         CornerRadius = new(12);
         Padding = new(12, 8, 8, 8);

@@ -10,7 +10,7 @@ static class LocalBenchmark
 {
     internal sealed record Row(string Scenario, int Requests, long EstimatedInput, long EstimatedOutput, long RepeatedContext,
         long? Input, long? Output, long? Cached, long? Reasoning, int LocalActions, long Milliseconds, bool Passed, string? Error,
-        int Compactions, decimal? CostUsd);
+        int Compactions, decimal? CostUsd, long RepeatedPrevious, long PeakRepeated);
     sealed record Step(string Name, JsonObject Arguments);
     sealed record Case(string Name, string Request, Step[] Steps, Func<string, AgentRunner, bool> Verify,
         bool Work = true, bool Resume = false, bool Seed = false);
@@ -40,6 +40,13 @@ static class LocalBenchmark
                 LogsFolder = Path.Combine(root, scenario.Name + "-logs"),
             };
             using var watcher = context.ProjectWatcher;
+            if (scenario.Name == "13-journal-repeats")
+            {
+                Directory.CreateDirectory(context.LogsFolder!);
+                for (int i = 1; i <= 8; i++)
+                    File.WriteAllLines(Path.Combine(context.LogsFolder!, $"fixture-{i}.log"), Enumerable.Range(1, 70)
+                        .Select(line => $"Fixture {i}, row {line}: " + new string((char)('a' + i), 145)));
+            }
             watcher.Watch(context);
             var store = new ChatStore(Path.Combine(root, scenario.Name + "-chat"), context.LogsFolder);
             using var provider = new MeasuredProvider(scenario.Steps, live ? authPath == null
@@ -104,7 +111,7 @@ static class LocalBenchmark
                     usage.CachedTokens * rates[1] + usage.CompletionTokens * rates[2]) / 1_000_000 : null;
             result.Add(new(scenario.Name, provider.Calls, provider.EstimateInput, provider.EstimateOutput, provider.Repeated,
                 usage?.PromptTokens, usage?.CompletionTokens, usage?.CachedTokens, usage?.ReasoningTokens,
-                actions, timer.ElapsedMilliseconds, passed, error, provider.Compactions, cost));
+                actions, timer.ElapsedMilliseconds, passed, error, provider.Compactions, cost, provider.RepeatedPrevious, provider.PeakRepeated));
             Console.WriteLine($"{scenario.Name}: {provider.Calls} model calls, {provider.EstimateInput} estimated input, pass={passed}, error={error ?? "-"}");
         }
         File.WriteAllText(output, JsonSerializer.Serialize(new { Mode = live ? "live" : "replay", Model = model, Results = result },
@@ -151,6 +158,9 @@ static class LocalBenchmark
         new("12-steps", "Inspect all 30 distinct fixture paths and report completion.",
             Enumerable.Range(1, 30).Select(i => new Step("get_file_info", new() { ["path"] = $"fixture-{i:D2}.txt" })).ToArray(),
             (_, agent) => agent.History.Count(message => AgentRunner.Role(message) == "tool") == 30 && !agent.CanContinue),
+        new("13-journal-repeats", "Review eight prior command journals fixture-1 through fixture-8. Read 70 lines from each journal and report the result.",
+            Enumerable.Range(1, 8).Select(i => new Step("read_log", new() { ["log_id"] = $"fixture-{i}", ["offset"] = 1, ["limit"] = 70 })).ToArray(),
+            (_, agent) => !agent.CanContinue && Enumerable.Range(1, 8).All(i => Saw(agent, $"Fixture {i}, row 70"))),
     ];
 
     static Step Read(string path, int count = 20) => Command($"Get-Content -LiteralPath '{path}' -TotalCount {count}");
@@ -216,6 +226,7 @@ static class LocalBenchmark
     sealed class MeasuredProvider(Step[] steps, IChatProvider? live, bool interrupt) : IChatProvider
     {
         readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+        HashSet<string> _previous = new(StringComparer.Ordinal);
         int _step;
         bool _hadLiveStep;
         public bool Interrupted { get; private set; }
@@ -224,6 +235,8 @@ static class LocalBenchmark
         public long EstimateInput { get; private set; }
         public long EstimateOutput { get; private set; }
         public long Repeated { get; private set; }
+        public long RepeatedPrevious { get; private set; }
+        public long PeakRepeated { get; private set; }
         public UsageInfo? Usage { get; private set; }
 
         public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => live?.ListModelsAsync(ct) ?? Task.FromResult<List<ModelInfo>>([]);
@@ -239,11 +252,18 @@ static class LocalBenchmark
             bool compaction = !callTools && messages[0]["content"]?.ToString().Contains("Summarize this Sharp Agent", StringComparison.Ordinal) == true;
             if (compaction) Compactions++;
             EstimateInput += HistoryCompressor.EstimateAll(messages) + HistoryCompressor.Estimate(tools);
+            var current = new HashSet<string>(StringComparer.Ordinal);
+            int repeated = 0;
             foreach (var item in messages.Where(msg => msg["role"]?.ToString() == "tool"))
             {
                 var text = item["content"]?.ToString() ?? "";
                 if (!_seen.Add(text)) Repeated += HistoryCompressor.Estimate(item);
+                current.Add(text);
+                if (_previous.Contains(text)) repeated += HistoryCompressor.Estimate(item);
             }
+            _previous = current;
+            RepeatedPrevious += repeated;
+            PeakRepeated = Math.Max(PeakRepeated, repeated);
             ChatResult result;
             if (live != null)
             {

@@ -32,8 +32,12 @@ public static class AppPaths
         if (File.Exists(InstalledModePath)) return InstalledDataFolder;
         if (File.Exists(PortableModePath) || File.Exists(Path.Combine(exeDir, DotEnv.FileName))) return exeDir;
         var dir = new DirectoryInfo(exeDir);
-        while (dir != null && !dir.Name.Equals("bin", StringComparison.OrdinalIgnoreCase)) dir = dir.Parent;
-        return dir?.Parent is { } project && project.EnumerateFiles("*.csproj").Any() ? project.FullName : InstalledDataFolder;
+        for (; dir?.Parent is { } project; dir = project)
+            if ((dir.Name.Equals("bin", StringComparison.OrdinalIgnoreCase) && project.EnumerateFiles("*.csproj").Any()) ||
+                (dir.Name.Equals(".sharpagent", StringComparison.OrdinalIgnoreCase) &&
+                 PathHelper.IsInside(exeDir, Path.Combine(dir.FullName, "tmp")) && File.Exists(Path.Combine(project.FullName, "SharpAgent.csproj"))))
+                return project.FullName;
+        return InstalledDataFolder;
     }
 
     static readonly (string Old, string New)[] MigratedPaths =

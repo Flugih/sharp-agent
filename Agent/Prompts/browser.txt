@@ -1,1 +1,1 @@
-Open websites in the built-in browser. Use browser_page for page content and research, and the browser window for supported interactions.
+Use browser_page or the built-in browser when the task calls for interacting with a rendered page or checking its visible UI. Use web_search for public research without opening browser tabs.

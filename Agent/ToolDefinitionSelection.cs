@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 internal static class ToolDefinitionSelection
 {
-    internal static readonly string[] Groups = ["all", "files", "code", "documents", "browser", "computer", "media", "plugins", "git", "tests"];
+    internal static readonly string[] Groups = ["all", "files", "code", "documents", "browser", "computer", "media", "plugins", "git", "tests", "web"];
 
     internal static JsonObject EnableDefinition() => new()
     {
@@ -25,7 +25,8 @@ internal static class ToolDefinitionSelection
         else if (Regex.IsMatch(request, @"(?i)\b(?:refactor|edit|update|modify|implement|methods?|class|project|dotnet|compiler|typescript|python|csharp|endpoint|auth)\b|рефактор|исходник|метод|класс|исправ|измен|сборк|проект|авторизац"))
             groups.Add("edit");
         if (Regex.IsMatch(request, @"(?i)\b(?:docx|xlsx|pptx|pdf|csv|json|documents?|spreadsheet)\b|документ|таблиц|отч[её]т")) groups.Add("documents");
-        if (Regex.IsMatch(request, @"(?i)https?://|\b(?:browser|website|webpage)\b|браузер|сайт")) groups.Add("browser");
+        if (BrowserInteraction(request)) groups.Add("browser");
+        if (WebRequest(request)) groups.Add("web");
         if (Regex.IsMatch(request, @"(?i)\b(?:computer use|click|mouse|window|desktop|screenshot)\b|окн[оае]|мыш[ьюи]|нажми|скриншот")) groups.Add("computer");
         if (Regex.IsMatch(request, @"(?i)\b(?:image|audio|video)\b|картинк|изображен|видео|аудио")) groups.Add("media");
         if (Regex.IsMatch(request, @"(?i)\bplugins?\b|плагин")) groups.Add("plugins");
@@ -39,11 +40,27 @@ internal static class ToolDefinitionSelection
             (Belongs(name, "files") || groups.Any(group => Belongs(name, group)));
     }
 
+    internal static bool BackgroundResearch(string request) => WebRequest(request) && !BrowserInteraction(request) &&
+        Regex.IsMatch(request, @"(?i)https?://|\b(?:github|internet|online|research|search|review|inspect)\b|интернет|изучи|посмотри|просмотри|поищи|найди|расскажи|объясни|про что|о ч[её]м");
+
+    internal static bool RepositoryOverview(string request) => BackgroundResearch(request) &&
+        Regex.IsMatch(request, @"(?i)\b(?:review|inspect|explain|summari[sz]e|look)\b|просмотри|посмотри|изучи|расскажи|объясни|про что|о ч[её]м") &&
+        !Regex.IsMatch(request, @"(?i)\b(?:fix|edit|update|implement|build|clone|pull|test|compare)\b|исправ|измен|реализ|сборк|скачай|клонируй|сравни|запусти|тест");
+
+    static bool WebRequest(string request) =>
+        Regex.IsMatch(request, @"(?i)https?://|\b(?:github|repo(?:sitory)?|website|webpage|internet|online)\b|репозитор|\bреп[ауые]\b|интернет|сайт");
+
+    internal static bool BrowserInteraction(string request) =>
+        !Regex.IsMatch(request, @"(?i)без (?:браузера|webview|вкладок)|не\s+открыва\w*|without (?:a |the )?browser|(?:do not|don't) open") &&
+        (Regex.IsMatch(request, @"(?i)\b(?:in (?:the )?browser|open (?:the )?browser)\b|в (?:браузере|webview)\b|открой\s+(?:браузер|сайт|страниц|вкладк|ссылк|https?://)|open\s+https?://") ||
+         WebRequest(request) && Regex.IsMatch(request, @"(?i)\b(?:click|screenshot)\b|нажми|кликни|скриншот|(?:проверь|протестируй)\s+(?:интерфейс|кнопк|форму|в[её]рстку)"));
+
     internal static bool Belongs(string name, string group) => group switch
     {
         "all" => true,
         "files" or "code" or "documents" or "git" or "tests" when name is ToolOutputStore.Name or "local_batch" => true,
-        "browser" => name is "browser_page" or "open_path",
+        "browser" => name is BrowserTools.Name or "open_path",
+        "web" => name == WebResearch.Name,
         "computer" => ComputerTools.IsControl(name),
         "media" => name is "generate_image" or "image_edit" or "use_plugin" or "run_plugin",
         "plugins" => name is "use_plugin" or "run_plugin",

@@ -53,6 +53,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         get => _api;
         set
         {
+            if (!ReferenceEquals(_api, value)) _inputMeter.Reset("client_changed");
             _api = value;
             _noVisionModels.Clear();
             _noEffortModels.Clear();
@@ -223,6 +224,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 return;
             }
             EnsureApi();
+            if (!delegated && tools.Context.SandboxRoot == null && ToolDefinitionSelection.RepositoryOverview(userText) &&
+                WebResearch.RepositoryIn(userText) is { } repository)
+                await RunLocalToolAsync(WebResearch.Name, new() { ["repository"] = repository }, ct);
             if (subject is not { Length: > 0 } || _saveFailed || ChatPath is not { } path || _titleVersion != titleVersion)
             {
                 await LoopAsync(model, ct);
@@ -366,6 +370,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 "delegate_tasks" => "Subagent",
                 "run_plugin" or "exec_command" or ScriptRegistry.Name => "Script",
                 BrowserTools.Name => "Browser",
+                WebResearch.Name => "HTTP",
                 _ => "Local",
             });
         void End(ToolResultEvent result) => timeline.End(result.Id, result.IsError ? "failed" : result.IsWarning ? "warning" : "completed");
@@ -409,7 +414,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     async Task LoopAsync(string model, CancellationToken ct)
     {
         using var compaction = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var context = new ContextRun(_history.Count, Definitions(), compaction.Token);
+        var context = new ContextRun(Definitions(), compaction, ct);
         try { await RunStepsAsync(model, context, ct); }
         finally
         {
@@ -425,7 +430,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         {
             ct.ThrowIfCancellationRequested();
             if (CanSpendAsync != null && !await CanSpendAsync()) throw new OperationCanceledException();
-            context.NextStep(_history);
+            context.NextStep();
             var result = await CompleteAsync(model, context, ct);
             if (result.FinishReason == "content_filter")
             {
@@ -530,10 +535,10 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         {
             PreparingContext?.Invoke(PromptText("Подготавливаю контекст…", "Preparing context…"));
             var (messages, definitions, images, projectTokens) = await BuildRequestAsync(model, withImages, harder, context, ct);
-            var input = _inputMeter.Measure(Provider, model, messages, definitions, projectTokens, images * ImageTokens);
+            var effort = _noEffortModels.Contains(model) ? null : ReasoningEffort;
+            var input = _inputMeter.Measure(Provider, model, messages, definitions, projectTokens, images * ImageTokens, $"{effort}|{MaxTokens}");
             int estimatedInput = input.Total;
             ThinkingStarted?.Invoke();
-            var effort = _noEffortModels.Contains(model) ? null : ReasoningEffort;
             try
             {
                 void Emit(string? text, bool usesTools) => AssistantDelta?.Invoke(text, usesTools);
@@ -585,7 +590,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     }
 
     async Task<ChatResult> TrackModelAsync(string kind, string model, int estimated, int images, Func<Action<int, int>, Task<ChatResult>> send,
-        bool reportRetries = true, RequestInput? input = null)
+        bool reportRetries = true, RequestInput? input = null, Func<string>? cancellationReason = null)
     {
         var timeline = _timeline;
         var id = Guid.NewGuid().ToString("N");
@@ -603,7 +608,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         }
         catch (OperationCanceledException)
         {
-            timeline?.ModelResult(id, "cancelled", null);
+            timeline?.ModelResult(id, "cancelled", null, cancellationReason?.Invoke());
             throw;
         }
         catch (Exception ex)
@@ -762,17 +767,26 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             HistoryCompressor.EstimateAll(reviews.Values);
         int room = budget - fixedCost;
         int target = Math.Min(room, working - fixedCost);
+        const int RecentResultTokens = 2_600;
         var old = groups.Where(group => !group.Pending && group.End < protect).ToArray();
-        var superseded = old.Length > 0 ? SupersededResults(currentUser) : [];
-        var staleReads = old.Length > 0 ? StaleReads() : [];
-        foreach (var group in old)
+        var superseded = groups.Count > 1 ? SupersededResults(currentUser) : [];
+        var staleReads = groups.Count > 1 ? StaleReads() : [];
+        int recentRoom = RecentResultTokens;
+        for (int g = groups.Count - 1; g >= 0; g--)
+        {
+            var group = groups[g];
+            if (group.Pending || g == groups.Count - 1) continue;
             for (int i = group.Start + 1; i <= group.End; i++)
             {
                 var toolId = Str(projected[i]["tool_call_id"]) ?? "";
                 var state = staleReads.Contains(toolId) ? PromptText("Файл изменён после чтения.", "The file changed after this read.") :
                     superseded.Contains(toolId) ? PromptText("Есть более свежий результат.", "A newer result is available.") : null;
-                PreviewResult(i, ToolRegistry.CommandFailed(Str(projected[i]["content"]) ?? "") ? 1_100 : 750, state);
+                int tokens = HistoryCompressor.Estimate(projected[i]);
+                if (group.End < protect || state != null || tokens > recentRoom || context.ResultPreviews.ContainsKey(start + i))
+                    PreviewResult(i, ToolRegistry.CommandFailed(Str(projected[i]["content"]) ?? "") ? 700 : 460, state);
+                if (group.Start >= protect) recentRoom = Math.Max(0, recentRoom - HistoryCompressor.Estimate(projected[i]));
             }
+        }
         FitResults(target);
         int localSize = HistoryCompressor.EstimateAll(projected);
         bool readingSavedText = false;
@@ -780,7 +794,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         bool required = localSize > room;
         if (context.Compaction is { IsCompleted: true } && await CommitCompactionAsync(model, context))
             return await BuildRequestAsync(model, withImages, harder, context, ct);
-        if (required || !delegated && context.Steps > 1 && localSize + context.Growth >= target)
+        bool prepare = !delegated && context.ShouldPrepareCompaction(localSize, room, target);
+        if (required || prepare)
         {
             int retain = HistoryCompressor.EstimateAll(projected.Skip(protect));
             if (currentUser >= start && currentUser < start + protect) retain += HistoryCompressor.Estimate(projected[currentUser - start]);
@@ -793,8 +808,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     (currentUser >= start && currentUser < cut ? HistoryCompressor.Estimate(projected[currentUser - start]) : 0);
                 required = localSize > room;
             }
-            if (context.Compaction == null && retain < room &&
-                (required || !delegated && context.Steps > 1 && localSize + context.Growth >= target))
+            if (context.Compaction == null && retain < room && (required || prepare))
                 context.Compaction = CompactAsync(model, context, start, cut, currentUser, priorUser, retain, localSize,
                     room, required, stoppedRequests, original, projected, groups, ct: context.CompactionToken);
             if (required && context.Compaction != null)
@@ -849,7 +863,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         foreach (var tool in projected.Where(message => Role(message) == "tool"))
         {
             var output = Str(tool["content"]) ?? "";
-            if (CommandLog.IdOf(output) != null && output.Contains("read_log", StringComparison.Ordinal)) recovery.Add("read_log");
+            if ((CommandLog.IdOf(output) != null || CommandLog.PageHeader(output) != null) &&
+                output.Contains("read_log", StringComparison.Ordinal)) recovery.Add("read_log");
             if (ToolOutputStore.ReferenceOf(output) != null) recovery.Add(ToolOutputStore.Name);
         }
         var added = tools.Definitions.OfType<JsonObject>().Where(item => Str(item["function"]?["name"]) is { } name &&
@@ -889,7 +904,10 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         {
             var message = projected[index];
             if (Str(message["content"]) is not { } output || output.Length <= chars && state == null) return;
-            var preview = ToolPreview(original[index], output, chars, state, context);
+            int key = start + index;
+            if (!context.ResultPreviews.TryGetValue(key, out var cached) || cached.State != state || cached.Chars != chars)
+                context.ResultPreviews[key] = cached = (chars, state, ToolPreview(original[index], output, chars, state, context));
+            var preview = cached.Text;
             if (preview != null && preview.Length < output.Length)
                 projected[index] = ToolMessage(Str(message["tool_call_id"])!, preview);
         }
@@ -985,6 +1003,11 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             reference = headers[0].TrimEnd() + "\n" + headers[1].Split(',')[0].TrimEnd() + ", подробности: read_log";
             full = headers.Length == 3 ? headers[2] : "";
         }
+        else if (CommandLog.PageHeader(full) is { } page)
+        {
+            reference = page + " — read_log";
+            full = full[(full.IndexOf('\n') + 1)..];
+        }
         else
         {
             reference = Str(MetaOf(original)?["saved_read"]) ?? ToolOutputStore.ReferenceOf(full);
@@ -996,7 +1019,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         string heading = reference + (state == null ? "" : "\n" + state) +
             PromptText("\n[Сокращённый вывод]\n", "\n[Output preview]\n");
         int available = chars - heading.Length;
-        if (available < 180) return null;
+        if (available < 120) return null;
         var important = CommandLog.Details("\n" + full, available / 2);
         return heading + (important.Length > 0 ? important + "\n" : "") +
             HistoryCompressor.Excerpt(full, Math.Max(120, available - important.Length - 1));

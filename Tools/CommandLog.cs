@@ -89,6 +89,16 @@ public static partial class CommandLog
         return (comma >= 0 ? id[..comma] : id).Trim();
     }
 
+    internal static string? PageHeader(string output)
+    {
+        var first = output.AsSpan(0, output.IndexOf('\n') is >= 0 and var end ? end : output.Length).TrimEnd();
+        int colon = first.IndexOf(':');
+        if (!first.StartsWith("Журнал ", StringComparison.Ordinal) || colon <= 7 ||
+            !(first[(colon + 1)..].StartsWith(" строки ", StringComparison.Ordinal) ||
+              first[(colon + 1)..].StartsWith(" строка ", StringComparison.Ordinal))) return null;
+        return LogId().IsMatch(first[7..colon]) ? first.ToString() : null;
+    }
+
     public static string? PathOf(string folder, string id) => LogId().IsMatch(id) ? Path.Combine(folder, id + ".log") : null;
 
     public static string? Read(string folder, string id)

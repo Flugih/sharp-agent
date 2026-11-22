@@ -53,6 +53,8 @@ public partial class MainWindow
     {
         ApplyTheme();
         InitializeComponent();
+        ChatTextSize.Extra = _state.LargeChatText ? 1 : 0;
+        InputBox.FontSize = 14 + ChatTextSize.Extra;
         _links = new(this, new PathRefs(() => _toolContext.WorkingDirectory), OpenInApp);
         _toolContext.OpenUrl = OpenBrowserUrl;
         _toolContext.BrowserWindow = () => Dispatcher.Invoke(BrowserWindowHandle);
@@ -504,6 +506,12 @@ public partial class MainWindow
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (IsShown(SearchLayer)) return;
+        if (IsShown(PictureOverlay) && Keyboard.Modifiers == ModifierKeys.None && key is Key.Left or Key.Right)
+        {
+            MovePicture(key == Key.Left ? -1 : 1);
+            e.Handled = true;
+            return;
+        }
         if (key == Key.Escape)
         {
             if (Keyboard.FocusedElement is TextBox box && ChatList.IsAncestorOf(box)) return;

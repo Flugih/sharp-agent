@@ -3,6 +3,7 @@ namespace SharpAgent.Core;
 static class AppCache
 {
     internal const long CacheLimit = 192L * 1024 * 1024, TempLimit = 256L * 1024 * 1024, LogLimit = 128L * 1024 * 1024;
+    internal const string VerificationMarker = ".verification.lock";
     static int _running;
 
     internal static void Maintain()
@@ -10,6 +11,7 @@ static class AppCache
         if (Interlocked.Exchange(ref _running, 1) != 0) return;
         try
         {
+            CleanupVerificationArtifacts(AppPaths.LegacyFolder, RecycleBin.Send);
             Prune(AppPaths.CacheFolder, CacheLimit, TimeSpan.FromDays(30));
             Prune(AppPaths.TempFolder, TempLimit, TimeSpan.FromDays(2));
             Prune(AppPaths.LogsFolder, LogLimit, TimeSpan.FromDays(CommandLog.KeepDays), toolsOnly: true);
@@ -18,6 +20,40 @@ static class AppCache
         }
         finally { Volatile.Write(ref _running, 0); }
     }
+
+    internal static void CleanupVerificationArtifacts(string project, Action<string> recycle, DateTime? nowUtc = null)
+    {
+        if (!File.Exists(Path.Combine(project, "SharpAgent.csproj"))) return;
+        var scratch = new DirectoryInfo(Path.Combine(project, ".sharpagent"));
+        var root = new DirectoryInfo(Path.Combine(scratch.FullName, "tmp"));
+        var cutoff = (nowUtc ?? DateTime.UtcNow) - TimeSpan.FromMinutes(10);
+        try
+        {
+            if (!LocalDirectory(scratch) || !LocalDirectory(root)) return;
+            foreach (var run in root.EnumerateDirectories())
+            {
+                try
+                {
+                    if (!Guid.TryParseExact(run.Name, "N", out _) || !LocalDirectory(run)) continue;
+                    var marker = new FileInfo(Path.Combine(run.FullName, VerificationMarker));
+                    if (!marker.Exists || marker.LastWriteTimeUtc > cutoff || (marker.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    using (var lease = marker.Open(FileMode.Open, FileAccess.Read, FileShare.None))
+                    using (var reader = new StreamReader(lease, Encoding.ASCII))
+                        if (lease.Length != run.Name.Length || reader.ReadToEnd() != run.Name || ContainsRecentEntries(run)) continue;
+                    if (LocalDirectory(run)) recycle(run.FullName);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+
+        bool ContainsRecentEntries(DirectoryInfo directory) => directory.EnumerateFileSystemInfos().Any(entry =>
+            (entry.Attributes & FileAttributes.ReparsePoint) != 0 || entry.LastWriteTimeUtc > cutoff ||
+            entry is DirectoryInfo child && ContainsRecentEntries(child));
+    }
+
+    static bool LocalDirectory(DirectoryInfo directory) => directory.Exists && (directory.Attributes & FileAttributes.ReparsePoint) == 0 &&
+        PathHelper.SamePath(directory.FullName, PathHelper.FinalPath(directory.FullName));
 
     internal static void Prune(string root, long bytes, TimeSpan retention, bool toolsOnly = false, DateTime? nowUtc = null)
     {

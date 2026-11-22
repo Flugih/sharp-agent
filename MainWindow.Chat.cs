@@ -12,6 +12,7 @@ public partial class MainWindow
 
     sealed record ToolRow(string Id, string Name, string ArgumentsJson, StackPanel Root, Panel Header, Shimmer Label, TextBlock Status, Button Expand)
     {
+        public string? CommandText { get; init; }
         public string? FilePath, Output;
         public FrameworkElement? Subject;
         public RevealPanel? Details;
@@ -27,6 +28,7 @@ public partial class MainWindow
         public readonly Dictionary<string, ToolRow> ToolRows = new();
         public readonly Dictionary<string, string> ActiveTools = new();
         public readonly List<ProducedFile> TurnFiles = [];
+        public List<string> TurnPictures = [];
         public readonly List<(FrameworkElement View, ProducedFile[] Files)> ChangeCards = [];
         public readonly Dictionary<string, ProgressSection> FileEditGroups = new(StringComparer.OrdinalIgnoreCase);
         public StackPanel? LastAnswer;
@@ -85,15 +87,17 @@ public partial class MainWindow
         _chatView.NextActions = [];
         ResetProgressStep();
         _chatView.ToolRows.Clear();
+        _chatView.TurnPictures = [];
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new(64, 8, 0, 8) };
         if (attachments.Count > 0)
         {
+            var pictures = AttachmentPictures(attachments);
             var files = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
             foreach (var attachment in attachments)
             {
-                var chip = _links.FileChip(attachment.Path, attachment.Name, attachment.Kind == AttachmentKind.Image
-                    ? [FileActions.Item(Tr("Прикрепить к новому сообщению", "Attach to a new message"), Glyphs.Picture, () => _ = AddAttachmentsAsync([attachment.Path]))]
-                    : []);
+                bool image = attachment.Kind == AttachmentKind.Image;
+                var chip = _links.FileChip(attachment.Path, attachment.Name, image ? path => ShowPicture(path, pictures) : null,
+                    image ? [FileActions.Item(Tr("Прикрепить к новому сообщению", "Attach to a new message"), Glyphs.Picture, () => _ = AddAttachmentsAsync([attachment.Path]))] : []);
                 chip.Margin = new(6, 0, 0, 6);
                 files.Children.Add(chip);
             }
@@ -101,12 +105,12 @@ public partial class MainWindow
         }
         if (text.Length > 0)
         {
-            var measure = new TextBlock { Text = text, FontFamily = Theme.Ui, FontSize = 14 };
+            var measure = new TextBlock { Text = text, FontFamily = Theme.Ui, FontSize = 14 + ChatTextSize.Extra };
             measure.Measure(new(double.PositiveInfinity, double.PositiveInfinity));
             var body = ReadOnlyChatText(new System.Windows.Documents.FlowDocument(
                 new System.Windows.Documents.Paragraph(new System.Windows.Documents.Run(text)) { Margin = new(0) })
             {
-                FontFamily = Theme.Ui, FontSize = 14, PagePadding = new(0), LineHeight = 23,
+                FontFamily = Theme.Ui, FontSize = 14 + ChatTextSize.Extra, PagePadding = new(0), LineHeight = 23 + ChatTextSize.Extra,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
             }.Paint(System.Windows.Documents.FlowDocument.ForegroundProperty, "UserBubbleText"), Tr("Сообщение пользователя", "User message"));
             var menu = new ContextMenu();
@@ -413,6 +417,7 @@ public partial class MainWindow
         FlushModelProgress();
         var status = e.Name switch
         {
+            "enable_tools" => Tr("Подключение инструментов…", "Enabling tools…"),
             PatchTool.Name => Tr("Применяю патч…", "Applying patch…"),
             "read_file" or "read_many" or "read_log" or "list_directory" or "get_file_info" => Tr("Чтение файлов…", "Reading files…"),
             "search_files" or "search_text" => Tr("Поиск по проекту…", "Searching project…"),
@@ -431,6 +436,7 @@ public partial class MainWindow
             LocalContractEngine.Name => Tr("Проверяю, выполнены ли условия задачи…", "Checking whether the task meets its requirements…"),
             AgentKnowledge.Name => Tr("Работа с базой знаний…", "Working with project knowledge…"),
             BrowserTools.Name => Tr("Чтение страницы…", "Reading the page…"),
+            WebResearch.Name => Tr("Поиск в интернете…", "Searching the web…"),
             "generate_image" => Tr("Создание изображения…", "Generating image…"),
             "open_path" => Tr("Открытие файла или ссылки…", "Opening file or link…"),
             "delegate_tasks" => Tr("Проверка субагентами…", "Subagents are checking…"),
@@ -474,6 +480,7 @@ public partial class MainWindow
         string Name(string key = "path", string fallback = "") => Get(key) is { Length: > 0 } path ? ShortName(path) : fallback;
         return tool switch
         {
+            "enable_tools" => Tr("Подключаю инструменты для задачи", "Enabling tools for the task"),
             "read_file" => Tr("Читаю файл ", "Reading ") + Name(),
             "read_many" => Tr("Читаю файлы", "Reading files"),
             "list_directory" => ShortName(Get("path")) is var name and not ("" or ".") ? Tr("Смотрю папку ", "Inspecting folder ") + name : Tr("Смотрю рабочую папку", "Inspecting the working folder"),
@@ -488,7 +495,8 @@ public partial class MainWindow
             "copy_path" => Tr("Копирую ", "Copying ") + Name("source"),
             "delete_path" => Tr("Удаляю ", "Deleting ") + Name(),
             "open_path" => Tr("Открываю ", "Opening ") + Name(),
-            "exec_command" => Tr("Выполняю ", "Running ") + OneLine(Get("command")),
+            "exec_command" when CommandText(argumentsJson) is { } command => Tr("Выполняю ", "Running ") + OneLine(command),
+            "exec_command" => Describe(tool).Label,
             PatchTool.Name => Tr("Применяю патч", "Applying patch"),
             "run_plugin" => Tr("Запускаю плагин ", "Running plugin ") + Get("name"),
             ScriptRegistry.Name => Tr("Локальный сценарий", "Local script"),
@@ -497,6 +505,7 @@ public partial class MainWindow
             "local_batch" or ToolOutputStore.Name => Describe(tool).Label,
             LocalContractEngine.Name => Describe(tool).Label,
             AgentKnowledge.Name => Tr("База проверенных решений", "Verified solutions"),
+            WebResearch.Name => Describe(tool).Label,
             BrowserTools.Name => Get("action") == "research" ? Tr("Ищу документацию", "Finding documentation") : Tr("Проверяю страницу", "Checking the page"),
             "use_plugin" => Tr("Открываю плагин ", "Opening plugin ") + Get("name"),
             "generate_image" => Tr("Рисую изображение", "Generating an image"),
@@ -530,6 +539,7 @@ public partial class MainWindow
 
     static (string Glyph, string Label) Describe(string tool) => tool switch
     {
+        "enable_tools" => (Glyphs.Info, Tr("Подключение инструментов", "Enable tools")),
         "read_file" => (Glyphs.View, Tr("Чтение файла", "Read file")),
         "read_many" => (Glyphs.View, Tr("Чтение файлов", "Read files")),
         ScriptRegistry.Name => (Glyphs.Terminal, Tr("Локальный сценарий", "Local script")),
@@ -539,6 +549,7 @@ public partial class MainWindow
         ToolOutputStore.Name => (Glyphs.View, Tr("Чтение сохранённого результата", "Read saved tool output")),
         AgentKnowledge.Name => (Glyphs.Info, Tr("Проверенные решения", "Verified solutions")),
         BrowserTools.Name => (Glyphs.View, Tr("Встроенный браузер", "Built-in browser")),
+        WebResearch.Name => (Glyphs.Globe, Tr("Поиск в интернете", "Web search")),
         "list_directory" => (Glyphs.Folder, Tr("Просмотр папки", "List directory")),
         "get_file_info" => (Glyphs.Info, Tr("Сведения о файле", "File information")),
         "write_file" => (Glyphs.Save, Tr("Запись файла", "Write file")),
@@ -580,7 +591,7 @@ public partial class MainWindow
         return group;
     }
 
-    ToolRow AddToolRow(string id, string name, string argumentsJson)
+    ToolRow AddToolRow(string id, string name, string argumentsJson, string? completedCommand = null)
     {
         var (glyph, label) = Describe(name);
         var running = new Shimmer { Text = label, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, IsActive = true };
@@ -604,12 +615,17 @@ public partial class MainWindow
             DockPanel.SetDock(tail, Dock.Right);
             header.Children.Add(tail);
         }
-        var subject = MakeSubject(name, argumentsJson);
+        var command = name == "exec_command" ? CommandText(argumentsJson, completedCommand, session =>
+        {
+            var pending = ShellTools.Sessions.Running(session);
+            return _chatView.ToolRows.Values.FirstOrDefault(row => row.Name == "exec_command" && row.Output == pending)?.CommandText;
+        }) : null;
+        var subject = MakeSubject(name, argumentsJson, command);
         if (subject != null) header.Children.Add(subject);
         var root = new StackPanel { Children = { header } };
         var row = new ToolRow(id, name, argumentsJson, root, header, running, status, expand)
         {
-            Subject = subject, FilePath = name is "write_file" or "edit_file" ? ResolvePath(ArgumentOf(argumentsJson, "path")) : null,
+            Subject = subject, CommandText = command, FilePath = name is "write_file" or "edit_file" ? ResolvePath(ArgumentOf(argumentsJson, "path")) : null,
         };
         header.MouseLeftButtonUp += (_, _) => ToggleDetails(row);
         expand.Click += (_, _) => ToggleDetails(row);
@@ -624,6 +640,22 @@ public partial class MainWindow
         catch { return null; }
     }
 
+    internal static string? CommandText(string argumentsJson, string? completed = null, Func<string, string?>? sourceOfSession = null)
+    {
+        var args = ParseObject(argumentsJson);
+        if (args == null) return completed;
+        var options = new ToolArgs(args);
+        if (options.Optional("command") is { } command) return command;
+        if (args["commands"] is JsonArray commands)
+        {
+            var batch = commands.OfType<JsonValue>().Select(value => value.TryGetValue<string>(out var line) ? line : null)
+                .Where(line => !string.IsNullOrWhiteSpace(line));
+            var text = string.Join("\n", batch);
+            if (text.Length != 0) return text;
+        }
+        return completed ?? (options.Optional("session_id") is { } session ? sourceOfSession?.Invoke(session) : null);
+    }
+
     string? ResolvePath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
@@ -631,7 +663,7 @@ public partial class MainWindow
         catch (ToolException) { return null; }
     }
 
-    FrameworkElement? MakeSubject(string tool, string argumentsJson)
+    FrameworkElement? MakeSubject(string tool, string argumentsJson, string? command)
     {
         string? Get(string key) => ArgumentOf(argumentsJson, key);
         TextBlock? Plain(string? text) => string.IsNullOrWhiteSpace(text) ? null : new TextBlock
@@ -640,7 +672,8 @@ public partial class MainWindow
         }.Paint(ForegroundProperty, "TextMuted");
         return tool switch
         {
-            "exec_command" => Plain(OneLine(Get("command"))),
+            "exec_command" => Plain(OneLine(command)) ??
+                (Get("session_id") is { Length: > 0 } ? Plain(Tr("Получение результата", "Waiting for the result")) : null),
             "search_files" => Plain(OneLine(Get("pattern"))),
             "search_text" => Plain(OneLine(Get("query"))) ?? Plain(Tr("Запрос без текста", "Empty search query")),
             "generate_image" => Plain(OneLine(Get("prompt"))),
@@ -685,11 +718,22 @@ public partial class MainWindow
                 files.FindIndex(file => PathHelper.SamePath(file.Path, source)) is >= 0 and var moved)
                 files[moved] = files[moved] with { Path = target, Change = null };
         }
-        if (row.Name == "generate_image" && !isError && ImageTools.SavedPath(output) is { } image && File.Exists(image))
-            row.Root.Children.Add(ImagePreview(image));
-        if (row.Name == ComputerTools.Name && !isError && output.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) &&
-            AppPaths.Relocate(output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim()) is var shot && File.Exists(shot))
-            row.Root.Children.Add(ViewedImage(shot));
+        if (!isError)
+        {
+            var image = row.Name switch
+            {
+                "generate_image" => ImageTools.SavedPath(output),
+                ComputerTools.Name when output.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) =>
+                    AppPaths.Relocate(output[ComputerTools.ShotPrefix.Length..].Split('\n')[0].Trim()),
+                _ => null,
+            };
+            if (image != null && File.Exists(image))
+            {
+                var pictures = _chatView.TurnPictures;
+                pictures.Add(image);
+                row.Root.Children.Add(row.Name == ComputerTools.Name ? ViewedImage(image, pictures) : ImagePreview(image, pictures));
+            }
+        }
         if (change != null) row.FilePath = change.Path;
         else if (row.FilePath != null && !isError && ResultPath(output) is { } exact) row.FilePath = exact;
         row.Output = output;
@@ -716,7 +760,7 @@ public partial class MainWindow
         },
     };
 
-    FrameworkElement ImagePreview(string path)
+    FrameworkElement ImagePreview(string path, IReadOnlyList<string>? pictures = null)
     {
         var preview = new Border
         {
@@ -725,7 +769,7 @@ public partial class MainWindow
             ContextMenu = FileActions.BuildMenu(this, path),
         }.Paint(BackgroundProperty, "Surface");
         AutomationProperties.SetName(preview, Tr("Изображение ", "Image ") + Path.GetFileName(path));
-        preview.MouseLeftButtonUp += (_, _) => ShowPicture(path);
+        preview.MouseLeftButtonUp += (_, _) => ShowPicture(path, pictures);
         FileActions.EnableDragOut(preview, path);
         _ = LoadAsync();
         return preview;
@@ -744,7 +788,7 @@ public partial class MainWindow
         }
     }
 
-    FrameworkElement ViewedImage(string path)
+    FrameworkElement ViewedImage(string path, IReadOnlyList<string> pictures)
     {
         var chevron = GlyphText(Glyphs.ChevronRight, 12, "TextMuted", new(6, 0, 0, 0));
         var toggle = new Button
@@ -760,7 +804,7 @@ public partial class MainWindow
         var reveal = new RevealPanel();
         toggle.Click += (_, _) =>
         {
-            reveal.Child ??= ImagePreview(path);
+            reveal.Child ??= ImagePreview(path, pictures);
             reveal.IsOpen = !reveal.IsOpen;
             chevron.Text = reveal.IsOpen ? Glyphs.ChevronDown : Glyphs.ChevronRight;
             if (reveal.IsOpen) _autoScroll = false;
@@ -781,7 +825,25 @@ public partial class MainWindow
     void ToggleDetails(ToolRow row)
     {
         if (row.Output is not { } output) return;
-        if (row.Details == null)
+        if (row.Details == null && row.Name == WebResearch.Name)
+        {
+            var links = new StackPanel { Margin = new(24, 4, 0, 8) };
+            foreach (var url in WebResearch.Sources(output))
+            {
+                var line = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new(0, 2, 0, 2) };
+                line.Inlines.Add(_links.WebLink(url, url));
+                links.Children.Add(line);
+            }
+            if (links.Children.Count == 0)
+                links.Children.Add(new TextBlock
+                {
+                    Text = IsShown(row.Status) ? output : Tr("Источники не найдены", "No sources found"),
+                    TextWrapping = TextWrapping.Wrap,
+                }.Paint(ForegroundProperty, "TextMuted"));
+            row.Details = new RevealPanel { Child = links };
+            row.Root.Children.Add(row.Details);
+        }
+        else if (row.Details == null)
         {
             var details = new StackPanel { Margin = new(24, 4, 0, 8) };
             row.Details = new RevealPanel { Child = details };
@@ -802,8 +864,9 @@ public partial class MainWindow
             }
             var log = row.Name is "exec_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
             if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full) output = output.Split('\n', 2)[0] + "\n" + full;
-            var command = row.Name == "exec_command" ? ArgumentOf(row.ArgumentsJson, "command") : null;
-            var raw = SelectableText(KeepEnds(command != null ? output : Tr($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", $"Parameters:\n{PrettyJson(row.ArgumentsJson)}\n\nResult:\n{output}"), 16_000),
+            var command = row.CommandText;
+            bool hasCommand = row.Name == "exec_command" && ArgumentOf(row.ArgumentsJson, "command") != null;
+            var raw = SelectableText(KeepEnds(hasCommand ? output : Tr($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", $"Parameters:\n{PrettyJson(row.ArgumentsJson)}\n\nResult:\n{output}"), 16_000),
                 "TextSoft", mono: true, fontSize: 12.5);
             raw.MaxHeight = 360;
             raw.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
@@ -825,7 +888,7 @@ public partial class MainWindow
                 journal.Click += (_, _) =>
                 {
                     if (CommandLog.PathOf(AppPaths.LogsFolder, log) is { } path && File.Exists(path))
-                        ShowPreview(path, title: OneLine(ArgumentOf(row.ArgumentsJson, "command") ?? Describe(row.Name).Label));
+                        ShowPreview(path, title: OneLine(command ?? Describe(row.Name).Label));
                     else ShowToast(Tr($"Журнал команды удалён. Журналы хранятся {CommandLog.KeepDays} дней.", $"Command log deleted. Logs are kept for {CommandLog.KeepDays} days."), ToastKind.Warning);
                 };
                 footer.Children.Add(journal);
@@ -842,7 +905,9 @@ public partial class MainWindow
     static void ShowExpandState(ToolRow row, bool open)
     {
         row.Expand.Content = open ? Glyphs.ChevronDown : Glyphs.ChevronRight;
-        var hint = open ? Tr("Скрыть параметры и результат", "Hide parameters and result") : Tr("Показать параметры и результат", "Show parameters and result");
+        var hint = row.Name == WebResearch.Name
+            ? open ? Tr("Скрыть источники", "Hide sources") : Tr("Показать источники", "Show sources")
+            : open ? Tr("Скрыть параметры и результат", "Hide parameters and result") : Tr("Показать параметры и результат", "Show parameters and result");
         row.Expand.ToolTip = hint;
         AutomationProperties.SetName(row.Expand, hint);
     }
@@ -920,7 +985,7 @@ public partial class MainWindow
                                 if (result != null) CompletePlan(id, arguments, output, isError);
                                 continue;
                             }
-                            var row = AddToolRow(id, name, arguments);
+                            var row = AddToolRow(id, name, arguments, JsonUtil.Str(meta?["completed_command"]));
                             if (result == null) continue;
                             CompleteToolRow(row, output, isError,
                                 row.Name is "exec_command" or "run_plugin" && ToolRegistry.CommandFailed(output), AgentRunner.DiffOf(result),

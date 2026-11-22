@@ -239,7 +239,7 @@ public static partial class FileTools
         return $"Открыто: {target}" + (isUrl ? " (во внешней программе с её сетевыми настройками)" : "");
     }
 
-    static bool IsWebUrl(string value) =>
+    internal static bool IsWebUrl(string value) =>
         Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" or "mailto";
 
     static bool IsBrowserUrl(string value) =>

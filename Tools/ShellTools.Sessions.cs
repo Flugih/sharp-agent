@@ -7,8 +7,8 @@ partial class ShellTools
         var schema = Schema.Object(new Prop("command", "string", "Command to run."),
             new Prop("working_directory", "string", "Working directory."), new Prop("shell", "string", "Shell, defaults to PowerShell.", Enum: ["powershell", "cmd"]),
             new Prop("timeout_seconds", "integer", "Deadline, at most 1800 seconds."),
-            new Prop("yield_ms", "integer", "Wait briefly and return a session ID if still running."),
-            new Prop("session_id", "string", "Poll a running command session."));
+            new Prop("yield_ms", "integer", "Optionally return a session ID for a long-running command. Build and test checks wait for their final result."),
+            new Prop("session_id", "string", "Wait for the final result of a running command session."));
         schema["properties"]!["commands"] = new JsonObject { ["type"] = "array", ["maxItems"] = 6,
             ["description"] = "Run independent commands in the same directory.", ["items"] = new JsonObject { ["type"] = "string" } };
         return schema;
@@ -32,23 +32,27 @@ partial class ShellTools
         internal async Task<string> RunAsync(ToolArgs args, ToolContext context, CancellationToken ct)
         {
             if (context.SandboxRoot != null) throw new ToolException("Команды отключены в режиме песочницы.");
-            int wait = Math.Clamp(args.Int("yield_ms", 1000), 100, 10_000);
             if (args.Optional("session_id") is { } id)
             {
                 if (_active is not { } session || session.Id != id) throw new ToolException("Сессия команды не найдена.");
-                await Task.WhenAny(session.Result, Task.Delay(wait, ct));
-                ct.ThrowIfCancellationRequested();
-                if (!session.Result.IsCompleted) return Running(id);
-                _active = null;
                 args.CompletedCommand = session.Command;
-                using (session.Cancellation) return await session.Result;
+                try { return await session.Result.WaitAsync(ct); }
+                finally
+                {
+                    if (session.Result.IsCompleted)
+                    {
+                        _active = null;
+                        session.Cancellation.Dispose();
+                    }
+                }
             }
             if (_active != null) throw new ToolException("Сначала получите результат запущенной команды.");
             var commands = Commands(args);
-            if (args.Int("yield_ms", 0) <= 0) return await ExecuteAsync(ct);
+            int yield = args.Int("yield_ms", 0);
+            if (yield <= 0 || commands.All(ProjectVerification.Command)) return await ExecuteAsync(ct);
             var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var result = ExecuteAsync(cancellation.Token);
-            await Task.WhenAny(result, Task.Delay(wait, ct));
+            await Task.WhenAny(result, Task.Delay(Math.Clamp(yield, 100, 10_000), ct));
             if (result.IsCompleted || ct.IsCancellationRequested)
             {
                 using (cancellation) return await result;
@@ -70,7 +74,7 @@ partial class ShellTools
             }
         }
 
-        static string Running(string id) => $"Команда выполняется. session_id={id}. Получи результат через exec_command.";
+        internal static string Running(string id) => $"Команда выполняется. session_id={id}. Получи результат через exec_command.";
 
         internal async Task CancelAsync()
         {

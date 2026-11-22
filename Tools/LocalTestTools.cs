@@ -59,7 +59,7 @@ static partial class LocalTestTools
                 if (!File.Exists(saved) || JsonSerializer.Deserialize<Suite>(await File.ReadAllTextAsync(saved, ct)) is not { } test)
                     throw new ToolException("Такой набор проверок не найден.");
                 Validate(test);
-                return await Replay(test, context, ct);
+                return await Replay(test, args.BrowserAllowed, context, ct);
             default:
                 throw new ToolException("Неизвестное действие тестов.");
         }
@@ -191,12 +191,14 @@ static partial class LocalTestTools
             throw new ToolException("Проверьте поля набора. Допускается от одной до восьми проверок окна или страницы.");
     }
 
-    static async Task<string> Replay(Suite suite, ToolContext context, CancellationToken ct)
+    static async Task<string> Replay(Suite suite, bool allowBrowser, ToolContext context, CancellationToken ct)
     {
         if (suite.Mode == "window" && (!context.ComputerUse || context.SandboxRoot != null))
             throw new ToolException("Проверка окон требует разрешённого Computer Use.");
         if (suite.Mode == "browser" && (context.ReadBrowser == null || context.SandboxRoot != null))
             throw new ToolException("Встроенный браузер недоступен.");
+        if (suite.Mode == "browser" && !allowBrowser)
+            throw new ToolException("Для запуска браузерного теста попросите агента проверить страницу или выполнить этот набор проверок.");
         var windows = new ComputerTools(automationOnly: true);
         List<string> reports = [];
         string? loaded = null;
@@ -218,7 +220,7 @@ static partial class LocalTestTools
                         ["action"] = "wait", ["window"] = check.Target, ["element"] = check.Selector,
                         ["state"] = check.State ?? "visible", ["seconds"] = 4,
                     };
-                    await windows.RunAsync(new(request), context, ct);
+                    await windows.RunAsync(new(request) { BrowserAllowed = allowBrowser }, context, ct);
                 }
                 passed++;
                 reports.Add($"✓ {check.Target} · {check.Selector ?? check.Text ?? check.State}");

@@ -250,13 +250,16 @@ public partial class MainWindow
     void RenderPendingAttachments()
     {
         AttachPanel.Children.Clear();
+        var pictures = AttachmentPictures(_pendingAttachments);
         foreach (var attachment in _pendingAttachments)
         {
             void Remove()
             {
                 RemovePendingAttachment(attachment);
             }
-            var chip = _links.FileChip(attachment.Path, attachment.Name, FileActions.Item(Tr("Убрать из сообщения", "Remove from message"), Glyphs.Cancel, Remove));
+            var chip = _links.FileChip(attachment.Path, attachment.Name,
+                attachment.Kind == AttachmentKind.Image ? path => ShowPicture(path, pictures) : null,
+                [FileActions.Item(Tr("Убрать из сообщения", "Remove from message"), Glyphs.Cancel, Remove)]);
             chip.ToolTip = $"{attachment.Path}\n{attachment.Describe()}\nЩелчок — открыть, правая кнопка — другие действия";
             if (attachment.Kind == AttachmentKind.Image) _ = LoadThumbnailAsync(chip, attachment.Path);
             var remove = Theme.IconButton(Glyphs.Cancel, Tr("Убрать вложение ", "Remove attachment ") + attachment.Name, 24, 10);

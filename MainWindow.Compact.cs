@@ -38,6 +38,7 @@ public partial class MainWindow
         CloseOverlay();
         SaveState();
         var compact = _compactChat = new CompactChatWindow(AnswerView) { Draft = InputBox.Text };
+        compact.FontSize = 14 + ChatTextSize.Extra;
         compact.ChangesPill.Click += ChangesPill_Click;
         compact.DraftChanged += text =>
         {
@@ -114,7 +115,7 @@ public partial class MainWindow
     void UpdateCompactAction()
     {
         if (_compactChat is not { } compact) return;
-        compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content;
+        compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content is ComposerLoad { IsIndexing: false } load ? load : null;
         compact.Draft = InputBox.Text;
         compact.UpdateAction(_cts != null, _cts is { } running ? !running.IsCancellationRequested : SendButton.IsEnabled,
             _agent.CanContinue && string.IsNullOrWhiteSpace(InputBox.Text) && _pendingAttachments.Count == 0);

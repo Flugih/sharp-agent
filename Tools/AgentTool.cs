@@ -27,6 +27,7 @@ public sealed class ToolContext
     public Action<string>? OpenUrl { get; set; }
     public Func<IntPtr>? BrowserWindow { get; set; }
     internal Func<string?, string?, string?, CancellationToken, Task<BrowserTools.Snapshot>>? ReadBrowser { get; set; }
+    internal HttpClient? ResearchClient { get; init; }
     public string TempFolder => AppFolder != null ? App("temp") : Path.GetTempPath();
     public string? PluginsFolder => AppFolder != null ? App("plugins") : null;
     internal string CodeIndexFolder => App(@"cache\code-index");
@@ -115,6 +116,7 @@ public sealed class AgentTool
 
 public sealed class ToolArgs(JsonObject obj)
 {
+    internal bool BrowserAllowed { get; init; }
     internal PatchTool.Change[]? PatchChanges { get; set; }
     internal string? CompletedCommand { get; set; }
     internal string? ConfirmedRevision { get; set; }

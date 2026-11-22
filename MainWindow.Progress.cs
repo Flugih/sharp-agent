@@ -34,7 +34,7 @@ public partial class MainWindow
             SetTitle(title);
         }
 
-        public void SetTitle(string title, string? label = null, bool animate = false)
+        public void SetTitle(string title, string? label = null, bool animate = true)
         {
             _label.SetAnimatedText(label ?? title, animate);
             AutomationProperties.SetName(View, title);
@@ -164,7 +164,7 @@ public partial class MainWindow
     int _draftShown;
     bool _draftIsProgress, _preparingAnswer;
 
-    sealed record ComposerLoad(string Label, string? Remaining = null, double Percent = 0, bool IsIndeterminate = true);
+    sealed record ComposerLoad(string Label, string? Remaining = null, double Percent = 0, bool IsIndeterminate = true, bool IsIndexing = false);
     int _loadingRefreshQueued;
     bool ChatSubmitBusy => ChatFileBusy || _toolContext.ProjectWatcher.Progress != null;
 
@@ -189,10 +189,10 @@ public partial class MainWindow
                 ProjectWatcher.IndexPhase.Scans => Tr("Распознавание сканов", "Recognizing scanned documents"),
                 _ => Tr("Индексация проекта", "Indexing project"),
             };
-            load = progress.Total == 0 ? new(label) : new(label,
+            load = progress.Total == 0 ? new(label, IsIndexing: true) : new(label,
                 progress.Done < progress.Total ? Tr($"Осталось {progress.Total - progress.Done} из {progress.Total}", $"{progress.Total - progress.Done} of {progress.Total} remaining")
                     : Tr("Завершение…", "Finishing…"),
-                100d * progress.Done / progress.Total, false);
+                100d * progress.Done / progress.Total, IsIndeterminate: false, IsIndexing: true);
         }
         else if (_attachmentImports > 0) load = new(Tr("Подготовка вложений…", "Preparing attachments…"));
         else if (_chatOperation != null) load = new(Tr("Загрузка данных чата…", "Loading chat data…"));
@@ -277,7 +277,7 @@ public partial class MainWindow
         }
         else if (_chatView.FinishedToolStatus is { } previous && previous.Until <= now) _chatView.FinishedToolStatus = null;
         status ??= _chatView.Compacting ? Tr("Сжатие контекста…", "Compacting context…") : _chatView.ContextStatus ??
-            (_preparingAnswer ? Tr("Подготавливаю ответ…", "Preparing response…") : Tr("Думаю…", "Thinking…"));
+            (_preparingAnswer ? Tr("Рассуждаю…", "Reasoning…") : Tr("Думаю…", "Thinking…"));
         if (!_suppressAnimation && !reconnecting && !confirming && progress.Label.Text != status)
         {
             if (_pendingWorkStatus?.Text != status) _pendingWorkStatus = (status, now);
@@ -296,7 +296,7 @@ public partial class MainWindow
             _workStatusTimer.Interval = interval;
             _workStatusTimer.Start();
         }
-        if (progress.Label.Text != status) progress.SetTitle(status);
+        if (progress.Label.Text != status) progress.SetTitle(status, animate: true);
         _compactChat?.SetStatus(status, reconnecting ? "Text" : "TextMuted");
     }
 

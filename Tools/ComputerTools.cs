@@ -80,7 +80,7 @@ public sealed class ComputerTools(bool automationOnly = false)
 
     ConfirmRequest? Confirm(ToolArgs a, ToolContext c)
     {
-        _browserWindow = c.BrowserWindow?.Invoke() ?? IntPtr.Zero;
+        UpdateBrowserAccess(a, c);
         var action = a.Optional("action");
         if (action == "launch")
             return new("Запустить программу?", $"{a.Required("path")} {a.Optional("arguments")}".Trim(), "Запустить", Danger: true);
@@ -118,7 +118,7 @@ public sealed class ComputerTools(bool automationOnly = false)
     {
         try
         {
-            _browserWindow = c.BrowserWindow?.Invoke() ?? IntPtr.Zero;
+            UpdateBrowserAccess(a, c);
             if (ct != _run)
             {
                 _run = ct;
@@ -142,6 +142,12 @@ public sealed class ComputerTools(bool automationOnly = false)
         catch (ElementNotAvailableException) { throw new ToolException("элемент исчез или окно закрылось — запроси tree заново."); }
         catch (ElementNotEnabledException) { throw new ToolException("выбранный элемент сейчас недоступен."); }
         catch (InvalidOperationException) { throw new ToolException("элемент не поддерживает это действие."); }
+    }
+
+    void UpdateBrowserAccess(ToolArgs args, ToolContext context)
+    {
+        if (!args.BrowserAllowed && _window != IntPtr.Zero && _window == _browserWindow) Use(IntPtr.Zero);
+        _browserWindow = args.BrowserAllowed ? context.BrowserWindow?.Invoke() ?? IntPtr.Zero : IntPtr.Zero;
     }
 
     async Task<string> LaunchAsync(ToolArgs a, ToolContext c, CancellationToken ct)

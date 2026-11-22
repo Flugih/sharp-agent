@@ -96,7 +96,7 @@ partial class AgentRunner
         await CheckpointAsync([name]);
         var result = await ExecuteCallAsync(call, ct);
         ToolCallFinished?.Invoke(new(call.Id, name, result.Output, result.IsError, result.IsWarning) { Change = result.Change });
-        if (result.Change == null && name is not ("exec_command" or LocalTestTools.Name))
+        if (result.Change == null && name is not ("exec_command" or LocalTestTools.Name or WebResearch.Name))
         {
             await CheckpointAsync([]);
             return result;

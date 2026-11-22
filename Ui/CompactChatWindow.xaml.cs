@@ -67,11 +67,11 @@ public partial class CompactChatWindow : Window
 
     internal void SetStatus(string text, string color = "TextMuted")
     {
-        if (StatusText.Base == color && StatusText.Text == text) return;
+        if (StatusText.Base == color && StatusText.HasText(text)) return;
         StatusText.Base = color;
         ShimmerStatus();
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.Text = text;
+        StatusText.SetAnimatedText(text, animate: true);
         UpdateTranscript(scroll: true);
     }
 

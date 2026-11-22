@@ -35,8 +35,9 @@ Rules for every change to Sharp Agent.
 - Open local development sites in the built-in browser using the full server URL with its actual scheme and port, for example `http://localhost:3000`.
 
 ## Temporary verification artifacts
-- Put temporary build outputs and test stands under one task-specific folder inside `D:\Projects\sharp_agent\bin` or `D:\Projects\sharp_agent\temp`, never as separate folders directly under `D:\Projects`.
-- Remove temporary folders after verification by moving them to the Recycle Bin. Check the task-specific folder before finishing and leave only requested deliverables.
+- Put temporary build outputs, intermediate files and test stands under `.sharpagent/tmp/<run-id>` in the repository. Use a new 32-character GUID for each run.
+- Create a plain ASCII `.verification.lock` file containing the run ID, with no newline, and hold it open with `FileShare.None` throughout the run. Keep saved reports and fixtures outside the temporary folder.
+- Close the lock and move the finished run folder to the Recycle Bin. The app can recover marked folders left by interrupted runs after ten minutes. Check the run folder before finishing and leave only requested deliverables.
 
 ## Before finishing
-- `dotnet build SharpAgent.csproj -o <folder outside bin\Debug>` with 0 warnings (the owner may be running `bin\Debug`).
+- Run `dotnet build SharpAgent.csproj -o <run-folder>\app --artifacts-path <run-folder>\artifacts` with 0 warnings.

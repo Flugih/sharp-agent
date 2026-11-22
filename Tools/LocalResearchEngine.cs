@@ -493,7 +493,7 @@ internal static class LocalResearchEngine
 
     static Document Bound(string text) => new(Redact(text[..Math.Min(text.Length, TextLimit)]), text.Length >= TextLimit ? "partial" : "ready");
 
-    static string Redact(string text) => Regex.Replace(text,
+    internal static string Redact(string text) => Regex.Replace(text,
         @"(?:\bsk-(?:proj-)?[A-Za-z0-9_-]{25,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{25,}|\bAKIA[A-Z0-9]{16}\b)", "[redacted]");
 
     static IEnumerable<(string Location, string Text)> Fragments(string text)

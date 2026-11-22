@@ -118,13 +118,31 @@ public partial class MainWindow
         if (!split) return (beforeOnly ? left : right).View();
         var pair = new Grid { ColumnDefinitions = { new(), new() { Width = new(1) }, new() } };
         var divider = new Border().Paint(BackgroundProperty, "LineStrong");
-        var after = right.View();
+        double pageWidth = Math.Max(left.PageWidth, right.PageWidth);
+        var before = left.View(pageWidth);
+        var after = right.View(pageWidth);
+        double? pendingBefore = null, pendingAfter = null;
+        before.ScrollChanged += (_, e) => SyncHorizontal(before, after, e, ref pendingBefore, ref pendingAfter);
+        after.ScrollChanged += (_, e) => SyncHorizontal(after, before, e, ref pendingAfter, ref pendingBefore);
         Grid.SetColumn(divider, 1);
         Grid.SetColumn(after, 2);
-        pair.Children.Add(left.View());
+        pair.Children.Add(before);
         pair.Children.Add(divider);
         pair.Children.Add(after);
         return pair;
+
+        static void SyncHorizontal(ScrollViewer source, ScrollViewer target, ScrollChangedEventArgs e,
+            ref double? pendingSource, ref double? pendingTarget)
+        {
+            if (!ReferenceEquals(e.OriginalSource, source) || e.HorizontalChange == 0) return;
+            bool mirrored = pendingSource == e.HorizontalOffset;
+            pendingSource = null;
+            if (mirrored) return;
+            double offset = Math.Min(e.HorizontalOffset, target.ScrollableWidth);
+            if (offset == (pendingTarget ?? target.HorizontalOffset)) return;
+            pendingTarget = offset;
+            target.ScrollToHorizontalOffset(offset);
+        }
 
         void FlushChanges()
         {
@@ -167,6 +185,7 @@ public partial class MainWindow
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
         };
         int _columns = 8;
+        public double PageWidth => Math.Clamp(_columns * 8d + 8, 160, 32000);
 
         public void Add(int? number, string code, char kind = ' ')
         {
@@ -179,7 +198,7 @@ public partial class MainWindow
                 paragraph.FontSize = 12;
                 paragraph.Inlines.Add(new Run(code));
             }
-            else if (number.HasValue) DiffCode.Write(paragraph.Inlines, code, extension);
+            else if (number.HasValue) CodeSyntax.Write(paragraph.Inlines, code, extension);
             else paragraph.Inlines.Add(new Run(""));
             _columns = Math.Max(_columns, code.Length + 3 * code.Count(character => character == '\t'));
             var gutter = new Border
@@ -198,9 +217,9 @@ public partial class MainWindow
             _gutter.Children.Add(gutter);
         }
 
-        public ScrollViewer View()
+        public ScrollViewer View(double? pageWidth = null)
         {
-            double page = Math.Clamp(_columns * 8d + 8, 160, 32000);
+            double page = pageWidth ?? PageWidth;
             _document.PageWidth = page;
             var box = ReadOnlyChatText(_document, Tr("Код изменений", "Changed code"));
             box.Margin = new(0);

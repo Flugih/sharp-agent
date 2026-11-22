@@ -14,7 +14,11 @@ public partial class MainWindow
         ".ps1", ".bat", ".cmd", ".sh", ".yaml", ".yml", ".ini", ".toml", ".java", ".kt", ".c", ".h", ".cpp", ".go", ".rs", ".php",
     };
 
-    string? _previewPath, _picturePath;
+    string? _previewPath;
+    string[] _pictures = [];
+    int _pictureIndex, _pictureVersion;
+    IInputElement? _pictureFocus;
+    string? PicturePath => _pictures.ElementAtOrDefault(_pictureIndex);
     FileDiff? _previewDiff;
     ProducedFile[]? _previewChanges;
     int _previewSelected;
@@ -37,16 +41,46 @@ public partial class MainWindow
         else ShowPreview(path);
     }
 
-    void ShowPicture(string path)
+    static string[] AttachmentPictures(IReadOnlyList<Attachment> attachments) =>
+        [.. attachments.Where(file => file.Kind == AttachmentKind.Image).Select(file => file.Path)];
+
+    void ShowPicture(string path, IReadOnlyList<string>? pictures = null)
     {
-        _picturePath = path;
-        PictureName.Text = ChatLinks.DisplayName(path);
-        PictureImage.Source = null;
+        _compactChat?.Close();
+        _pictures = pictures?.Where(file => PathHelper.SamePath(file, path) || File.Exists(file))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [path];
+        _pictureIndex = Array.FindIndex(_pictures, file => PathHelper.SamePath(file, path));
+        if (_pictureIndex < 0)
+        {
+            _pictures = [path];
+            _pictureIndex = 0;
+        }
+        if (!IsShown(PictureOverlay)) _pictureFocus = Keyboard.FocusedElement;
         PictureOverlay.Visibility = Visibility.Visible;
-        _ = LoadPictureAsync(path);
+        PictureOverlay.Focus();
+        UpdatePicture();
     }
 
-    async Task LoadPictureAsync(string path)
+    void MovePicture(int direction)
+    {
+        int next = _pictureIndex + direction;
+        if ((uint)next >= (uint)_pictures.Length) return;
+        _pictureIndex = next;
+        UpdatePicture();
+    }
+
+    void UpdatePicture()
+    {
+        var path = _pictures[_pictureIndex];
+        PictureName.Text = ChatLinks.DisplayName(path);
+        PictureImage.Source = null;
+        PicturePrevious.Visibility = PictureNext.Visibility = VisibleIf(_pictures.Length > 1);
+        PicturePrevious.IsEnabled = _pictureIndex > 0;
+        PictureNext.IsEnabled = _pictureIndex + 1 < _pictures.Length;
+        _ = LoadPictureAsync(path, ++_pictureVersion);
+    }
+
+    async Task LoadPictureAsync(string path, int version)
     {
         try
         {
@@ -57,12 +91,12 @@ public partial class MainWindow
                     width = BitmapFrame.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).PixelWidth;
                 return DecodeImageAsync(path, Math.Min(width, 2400));
             });
-            if (_picturePath == path) PictureImage.Source = picture;
+            if (_pictureVersion == version) PictureImage.Source = picture;
         }
         catch
         {
-            if (_picturePath != path) return;
-            ClosePicture();
+            if (_pictureVersion != version) return;
+            if (_pictures.Length == 1) ClosePicture();
             ShowToast(Tr("Не удалось открыть изображение ", "Could not open image ") + ChatLinks.DisplayName(path), ToastKind.Error);
         }
     }
@@ -71,16 +105,23 @@ public partial class MainWindow
     {
         PictureOverlay.Visibility = Visibility.Collapsed;
         PictureImage.Source = null;
-        _picturePath = null;
+        _pictures = [];
+        _pictureVersion++;
+        if (_pictureFocus is UIElement { IsVisible: true } element) element.Focus();
+        _pictureFocus = null;
     }
 
     void PictureOverlay_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if (ReferenceEquals(e.OriginalSource, PictureOverlay)) ClosePicture(); }
 
     void PictureClose_Click(object sender, RoutedEventArgs e) => ClosePicture();
 
-    void PictureOpen_Click(object sender, RoutedEventArgs e) { if (_picturePath != null) FileActions.Open(this, _picturePath); }
+    void PicturePrevious_Click(object sender, RoutedEventArgs e) => MovePicture(-1);
 
-    void PictureReveal_Click(object sender, RoutedEventArgs e) { if (_picturePath != null) FileActions.Reveal(_picturePath); }
+    void PictureNext_Click(object sender, RoutedEventArgs e) => MovePicture(1);
+
+    void PictureOpen_Click(object sender, RoutedEventArgs e) { if (PicturePath is { } path) FileActions.Open(this, path); }
+
+    void PictureReveal_Click(object sender, RoutedEventArgs e) { if (PicturePath is { } path) FileActions.Reveal(path); }
 
     void ShowPreview(string path, FileDiff? diff = null, string? title = null, ProducedFile[]? changes = null, int selected = 0, int searchLine = 0)
     {

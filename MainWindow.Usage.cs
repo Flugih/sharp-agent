@@ -144,7 +144,7 @@ public partial class MainWindow
                 step.EstimatedInput > 0 ? Tr($" · вход ≈{Tokens.Format(step.EstimatedInput)}", $" · input ≈{Tokens.Format(step.EstimatedInput)}") : "";
             var retries = step.Retries > 0 ? Tr($" · повторов {step.Retries}", $" · retries {step.Retries}") : "";
             var images = step.Images > 0 ? Tr($" · изображений {step.Images}", $" · images {step.Images}") : "";
-            var model = step.Model != null ? " · " + ModelDisplayName(step.Model) : "";
+            var model = step.Model != null ? " · " + (step.Input?.Provider ?? run.Provider) + " · " + ModelDisplayName(step.Model) : "";
             var line = Caption($"{step.Step}. {name}{model} · {status}{duration}{usage}{images}{retries}", 4);
             line.ToolTip = step.Error;
             details.Children.Add(line);
@@ -154,6 +154,37 @@ public partial class MainWindow
                     $"Оценка входа ≈{input.Total:N0}: системный промпт {input.System:N0}, схемы {input.Tools:N0}, история {input.History:N0}, проект {input.Project:N0}, результаты {input.Results:N0}, изображения {input.Attachments:N0}. Совпавший префикс {input.StablePrefix:N0}, повторные результаты {input.RepeatedResults:N0}.",
                     $"Estimated input ≈{input.Total:N0}: system prompt {input.System:N0}, tool schemas {input.Tools:N0}, history {input.History:N0}, project {input.Project:N0}, tool results {input.Results:N0}, images {input.Attachments:N0}. Matching prefix {input.StablePrefix:N0}, repeated results {input.RepeatedResults:N0}.");
                 details.Children.Add(Caption(parts, 0));
+                var change = input.PrefixChange switch
+                {
+                    "first_request" => Tr("первый запрос", "first request"),
+                    "client_changed" => Tr("сменился клиент API", "API client changed"),
+                    "provider_changed" => Tr("сменился провайдер", "provider changed"),
+                    "model_changed" => Tr("сменилась модель", "model changed"),
+                    "tools_changed" => Tr("сменились схемы инструментов", "tool schemas changed"),
+                    "options_changed" => Tr("сменились параметры модели", "model options changed"),
+                    "tool_output_changed" => Tr("изменился вывод инструмента", "tool output changed"),
+                    "system_changed" => Tr("изменился системный промпт", "system prompt changed"),
+                    "history_changed" => Tr("изменилась история или контекст", "history or context changed"),
+                    "history_shortened" => Tr("история стала короче", "history shortened"),
+                    _ => Tr("префикс сохранился", "prefix held"),
+                };
+                if (input.SchemaVersion is { } version)
+                    details.Children.Add(Caption(Tr(
+                        $"Локальный префикс · {change} · схемы {version} · повторных результатов в префиксе {input.RepeatedInPrefix:N0}.",
+                        $"Local prefix · {change} · schemas {version} · repeated tool output in prefix {input.RepeatedInPrefix:N0}."), 0));
+            }
+            if (step.Name == "compaction" && step.State == "cancelled")
+            {
+                var reason = step.Error switch
+                {
+                    "user_cancelled" => Tr("пользователь остановил задачу", "the user stopped the task"),
+                    "turn_ended" => Tr("основной запрос завершился", "the main run ended"),
+                    "compaction_timeout" => Tr("истёк таймаут сжатия", "compaction timed out"),
+                    "provider_cancelled" => Tr("соединение с провайдером прервано", "the provider connection was interrupted"),
+                    _ => Tr("причина отмены недоступна", "cancellation reason unavailable"),
+                };
+                details.Children.Add(Caption(Tr($"Сжатие отменено: {reason}. Провайдер не вернул данные о расходе.",
+                    $"Compaction cancelled: {reason}. The provider returned no usage data."), 0));
             }
         }
         var title = Tr($"Последний запуск · запросов к моделям {calls} · повторов {run.Retries} · {seconds:F0} с",

@@ -7,8 +7,10 @@ public sealed class Shimmer : TextBlock
     readonly GradientStop _start = new(), _band = new() { Offset = 0.5 }, _end = new() { Offset = 1 };
     readonly TranslateTransform _shift = new();
     readonly LinearGradientBrush _sweep;
+    readonly Queue<string> _textQueue = new();
+    DispatcherTimer? _textTimer;
     string _base = "";
-    bool _active, _running;
+    bool _active, _running, _revealing;
 
     public Shimmer()
     {
@@ -41,13 +43,46 @@ public sealed class Shimmer : TextBlock
         }
     }
 
+    internal bool HasText(string text) => Equals(Text, text) && !_revealing && _textQueue.Count == 0;
+
     internal void SetAnimatedText(string text, bool animate)
     {
-        bool changed = !Equals(GetAnimationBaseValue(TextProperty), text);
-        if (!changed && animate) return;
+        if (!animate || !IsVisible || !Theme.AnimationsEnabled)
+        {
+            _textQueue.Clear();
+            _textTimer?.Stop();
+            _revealing = false;
+            BeginAnimation(TextProperty, null);
+            Text = text;
+            return;
+        }
+
+        var target = GetAnimationBaseValue(TextProperty) as string;
+        var lastQueued = _textQueue.Count == 0 ? null : _textQueue.Last();
+        if (Equals(target, text) || Equals(lastQueued, text)) return;
+        _textQueue.Enqueue(text);
+        if (!_revealing) RevealNextText();
+    }
+
+    void RevealNextText()
+    {
+        if (_textQueue.Count == 0)
+        {
+            _revealing = false;
+            return;
+        }
+
+        var text = _textQueue.Dequeue();
         BeginAnimation(TextProperty, null);
+        bool changed = !Equals(Text, text);
         Text = text;
-        if (!changed || !animate || !IsVisible || !Theme.AnimationsEnabled) return;
+        if (!changed)
+        {
+            RevealNextText();
+            return;
+        }
+
+        _revealing = true;
         var reveal = new StringAnimationUsingKeyFrames { FillBehavior = FillBehavior.Stop };
         int frames = Math.Min(text.Length, 48);
         for (int i = 1; i <= frames; i++)
@@ -57,6 +92,20 @@ public sealed class Shimmer : TextBlock
             reveal.KeyFrames.Add(new DiscreteStringKeyFrame(text[..end], KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds((i - 1) * 9))));
         }
         BeginAnimation(TextProperty, reveal);
+        _textTimer ??= new DispatcherTimer();
+        _textTimer.Stop();
+        _textTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(40, (frames - 1) * 9 + 40));
+        _textTimer.Tick -= FinishTextReveal;
+        _textTimer.Tick += FinishTextReveal;
+        _textTimer.Start();
+    }
+
+    void FinishTextReveal(object? sender, EventArgs e)
+    {
+        _textTimer?.Stop();
+        BeginAnimation(TextProperty, null);
+        _revealing = false;
+        RevealNextText();
     }
 
     // Runs only while shown in a window, so finished or removed rows cost nothing.

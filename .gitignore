@@ -3,6 +3,7 @@ obj/
 .vs/
 .codex/
 .agents/
+/.sharpagent/tmp/
 *.user
 *.suo
 TestResults/

@@ -17,7 +17,7 @@ public sealed class MarkdownRenderer(MarkdownContext context)
     {
         var doc = new FlowDocument
         {
-            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14, LineHeight = 23, TextAlignment = TextAlignment.Left,
+            PagePadding = new(0), FontFamily = Theme.Ui, FontSize = 14 + ChatTextSize.Extra, LineHeight = 23 + ChatTextSize.Extra, TextAlignment = TextAlignment.Left,
         }.Paint(TextElement.ForegroundProperty, foreground);
         var blocks = doc.Blocks;
         var lines = markdown.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
@@ -34,7 +34,7 @@ public sealed class MarkdownRenderer(MarkdownContext context)
                 var text = heading.Groups[2].Value;
                 var paragraph = new Paragraph
                 {
-                    FontSize = level switch { 1 => 20, 2 => 16, _ => 14 }, FontWeight = FontWeights.SemiBold, Margin = new(0, level <= 2 ? 12 : 8, 0, 8),
+                    FontSize = (level switch { 1 => 20, 2 => 16, _ => 14 }) + ChatTextSize.Extra, FontWeight = FontWeights.SemiBold, Margin = new(0, level <= 2 ? 12 : 8, 0, 8),
                 };
                 if (foreground == "Text") paragraph.Paint(TextElement.ForegroundProperty, "TextStrong");
                 blocks.Add(WithText(paragraph, text.TrimEnd('#').TrimEnd() is { Length: > 0 } title ? title : text[..1]));
@@ -229,7 +229,7 @@ public sealed class MarkdownRenderer(MarkdownContext context)
         context.Paths.Resolve(candidate, allowRelative: true) is { } path ? context.FileLink(path, text) : null;
 
     Inline Code(string code) =>
-        FileLinkTo(code, code.Trim()) ?? new Run(" " + code + " ") { FontFamily = Theme.Mono, FontSize = 13 }.Paint(TextElement.BackgroundProperty, "Surface3").Paint(TextElement.ForegroundProperty, "Text");
+        FileLinkTo(code, code.Trim()) ?? new Run(" " + code + " ") { FontFamily = Theme.Mono, FontSize = 13 + ChatTextSize.Extra }.Paint(TextElement.BackgroundProperty, "Surface3").Paint(TextElement.ForegroundProperty, "Text");
 
     Inline? Link(string label, string target) => IsWebUrl(target) ? context.WebLink(target, label)
         : FileLinkTo(Starts(target, "file:") && Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.IsFile && !uri.IsUnc ? uri.LocalPath

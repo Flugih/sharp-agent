@@ -8,12 +8,11 @@ partial class AgentRunner
 
     sealed record CompactionResult(int Start, int Cut, int User, string? Summary, string Requirements, UsageInfo? Usage);
 
-    sealed class ContextRun(int historyCount, JsonArray definitions, CancellationToken compactionToken)
+    sealed class ContextRun(JsonArray definitions, CancellationTokenSource compaction, CancellationToken turnToken)
     {
         public JsonArray Definitions { get; } = definitions;
-        int _seen = historyCount;
         public int Steps { get; private set; }
-        public int Growth { get; private set; }
+        int _lastLocalSize, _growth, _pressure, _measuredStep;
         public int LastVerifiedChange { get; set; } = -1;
         public int LastContractVerification { get; set; } = -2;
         public (int Revision, string Notes)? LastReview { get; set; }
@@ -22,23 +21,30 @@ partial class AgentRunner
         public bool AttemptedHard { get; set; }
         public bool ArchivedTurns { get; set; }
         public Dictionary<string, string?> SavedResults { get; } = new(StringComparer.Ordinal);
+        public Dictionary<int, (int Chars, string? State, string? Text)> ResultPreviews { get; } = [];
         public Task<CompactionResult?>? Compaction { get; set; }
-        public CancellationToken CompactionToken => compactionToken;
+        public CancellationToken CompactionToken => compaction.Token;
+        public string CompactionCancellation => turnToken.IsCancellationRequested ? "user_cancelled" :
+            CompactionToken.IsCancellationRequested ? "turn_ended" : "compaction_timeout";
         long _cacheHit;
         public double CachedFraction { get; private set; }
         public bool CacheWarm => CachedFraction > 0 && Environment.TickCount64 - _cacheHit < TimeSpan.FromMinutes(5).TotalMilliseconds;
         public double InputScale { get; private set; } = 1;
         public long OutputReserve { get; private set; } = 8_000;
 
-        public void NextStep(ChatHistory history)
+        public void NextStep() => Steps++;
+
+        public bool ShouldPrepareCompaction(int size, int room, int target)
         {
-            if (history.Count > _seen)
+            if (_measuredStep != Steps)
             {
-                int added = HistoryCompressor.EstimateAll(history.Range(_seen, history.Count - _seen));
-                Growth = (Growth + added) / 2;
+                _measuredStep = Steps;
+                _growth = _lastLocalSize == 0 ? 0 : Math.Max(0, (_growth + size - _lastLocalSize) / 2);
+                _pressure = size >= target ? _pressure + 1 : 0;
+                _lastLocalSize = size;
             }
-            _seen = history.Count;
-            Steps++;
+            return Steps >= 3 && (size >= room * 0.85 && size + 2L * _growth >= room ||
+                _pressure >= 3 && _growth >= 256);
         }
 
         public void Observe(int estimatedInput, UsageInfo? usage)
@@ -165,7 +171,8 @@ partial class AgentRunner
             var measured = new RequestInputMeter().Measure(Provider, model, messages, null, 0, 0);
             result = await TrackModelAsync("compaction", model, input, 0, retry =>
                 Api!.CompleteAsync(model, messages, [], maxSummary, null, (_, _) => { }, _ => { },
-                    timeout.Token, callTools: false, retrying: retry), reportRetries: false, input: measured);
+                    timeout.Token, callTools: false, retrying: retry), reportRetries: false, input: measured,
+                cancellationReason: () => timeout.IsCancellationRequested ? context.CompactionCancellation : "provider_cancelled");
         }
         catch (Exception ex) when (ex is ApiException or HttpRequestException or IOException ||
                                    ex is OperationCanceledException or InvalidOperationException)
@@ -190,7 +197,7 @@ partial class AgentRunner
 
     static bool WorthCompacting(ContextRun context, int saving, int input, int maxSummary)
     {
-        int future = Math.Clamp(context.Steps - 1, 1, 4);
+        const int future = 3;
         int output = Math.Min(maxSummary, 1_600);
         double cacheDiscount = context.CacheWarm ? context.CachedFraction : 0;
         return (saving - output) * future * (1 - cacheDiscount) > input + 3 * output;
