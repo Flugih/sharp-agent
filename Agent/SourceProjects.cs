@@ -59,7 +59,7 @@ sealed class SourceProjects(ToolContext context, string root)
     static void Stamp(StringBuilder revision, string path)
     {
         var file = new FileInfo(path);
-        revision.Append(Id(path)).Append(':').Append(file.LastWriteTimeUtc.Ticks).Append(':').Append(file.Length).Append(';');
+        revision.Append(Id(path)).Append(':').Append(PathHelper.Revision(path)).Append(':').Append(file.LastWriteTimeUtc.Ticks).Append(':').Append(file.Length).Append(';');
     }
 
     internal static string Id(string path) => "project_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path.ToUpperInvariant())))[..16];

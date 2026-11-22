@@ -39,6 +39,16 @@ partial class AgentRunner
         if (command == "pwd") text = tools.Context.WorkingDirectory;
         else if (command == "time") text = DateTimeOffset.Now.ToString("HH:mm (zzz)", CultureInfo.InvariantCulture);
         else if (command.StartsWith("git ", StringComparison.Ordinal)) text = await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct);
+        else if (command.Split(' ', 2) is [("read" or "inspect" or "research") and var kind, var value])
+        {
+            var args = kind switch
+            {
+                "inspect" => new JsonObject { ["action"] = "inspect", ["path"] = value },
+                "research" => new JsonObject { ["action"] = "search", ["query"] = value },
+                _ => new JsonObject { ["path"] = value },
+            };
+            text = (await RunLocalToolAsync(kind == "read" ? "read_file" : LocalResearchEngine.Name, args, ct)).Output;
+        }
         else if (command.Split(' ', 3) is [("script" or "suite" or "knowledge") and var system, var action, .. var tail])
         {
             var name = system switch { "script" => ScriptRegistry.Name, "suite" => LocalTestTools.Name, _ => AgentKnowledge.Name };
@@ -78,7 +88,7 @@ partial class AgentRunner
         await CheckpointAsync([name]);
         var result = await ExecuteCallAsync(call, ct);
         ToolCallFinished?.Invoke(new(call.Id, name, result.Output, result.IsError, result.IsWarning) { Change = result.Change });
-        if (result.Change == null)
+        if (result.Change == null && name is not ("run_command" or LocalTestTools.Name))
         {
             await CheckpointAsync([]);
             return result;
@@ -90,9 +100,11 @@ partial class AgentRunner
                 ["function"] = new JsonObject { ["name"] = name, ["arguments"] = call.ArgumentsJson } }),
         });
         var tool = ToolMessage(call.Id, result.Output, result.Diff);
+        if (name == "run_command" && VerificationCommand(call)) EnsureMeta(tool)["verification"] = true;
+        if (result.Restriction != null) EnsureMeta(tool)["command_restricted"] = true;
         RecordChange(call, tool, result.Change);
         _history.Add(tool);
-        InvalidateReads(call, result.Change.Path);
+        InvalidateReads(call, result.Change?.Path);
         await SaveAsync();
         await CheckpointAsync([]);
         return result;
@@ -117,6 +129,12 @@ partial class AgentRunner
             reports.Add("**" + step + "**\n\n" + report);
             success = !result.IsError && !result.IsWarning;
             blocked = result.Restriction != null || result.Output.StartsWith("Пользователь отклонил", StringComparison.Ordinal);
+            if (success && ProjectVerification.Tests(step) && !ProjectVerification.TestsExecuted(ProjectVerification.Transcript(tools.Context, result.Output)))
+            {
+                reports.Add(PromptText("Проверка не подтверждена: команда завершилась, но отчёта о выполненных тестах нет.",
+                    "Verification is unconfirmed: the command exited without reporting executed tests."));
+                if (recipe.Commands.All(ProjectVerification.Tests)) success = false;
+            }
             if (!success) break;
         }
         var changes = CurrentActions().Select(entry => (Change: FileChangeOf(entry.Result), Diff: DiffOf(entry.Result))).ToArray();

@@ -3,22 +3,27 @@ namespace SharpAgent.Tools;
 static partial class LocalTestTools
 {
     public const string Name = "local_tests";
+    internal static bool IsUiResult(string output) => output.StartsWith("Проверок пройдено:", StringComparison.Ordinal) ||
+        output.StartsWith("UI checks passed:", StringComparison.Ordinal) || output.StartsWith("Ошибка: UI-тест не пройден.", StringComparison.Ordinal) ||
+        output.StartsWith("Ошибка: UI test failed.", StringComparison.Ordinal);
     sealed record Check(string Target, string? Selector, string? Text, string? State);
     sealed record Suite(string Mode, Check[] Checks);
 
     internal static AgentTool Tool() => new()
     {
         Name = Name,
-        Description = "Локальные тесты: cases предлагает граничные входы, generate сохраняет исполняемый C#-тест из контракта, coverage читает Cobertura, save сохраняет проверки интерфейса, run повторяет сохранённый тест.",
+        Description = Tr("Локальные тесты: cases предлагает граничные входы, generate сохраняет исполняемый C#-тест, coverage читает Cobertura, save сохраняет UI-проверки, run запускает сохранённый тест.",
+            "Local testing: cases suggests edge cases, generate creates a runnable C# contract test, coverage reads Cobertura, save stores UI checks and run executes the saved test."),
         Parameters = Schema.Object(
-            new Prop("action", "string", "Действие.", true, ["cases", "generate", "coverage", "save", "run"]),
-            new Prop("signature", "string", "Сигнатура вида Method(int n, string text, bool enabled)."),
-            new Prop("path", "string", "Путь к Cobertura XML."),
-            new Prop("method", "string", "Метод, по которому показать покрытие."),
-            new Prop("id", "string", "ID сценария из букв ASCII, цифр, - и _."),
-            new Prop("mode", "string", "Сайт или окно.", Enum: ["browser", "window"]),
-            new Prop("suite", "object", "Объект с checks. Каждый объект: target (URL или заголовок окна), selector, text, state."),
-            new Prop("contract", "object", "Контракт: assembly, type, method, parameters (массив типов), returns, cases (массив объектов с args и expected либо throws).")),
+            new Prop("action", "string", Tr("Действие.", "Action."), true, ["cases", "generate", "coverage", "save", "run"]),
+            new Prop("signature", "string", Tr("Сигнатура вида Method(int n, string text, bool enabled).", "Signature such as Method(int n, string text, bool enabled).")),
+            new Prop("path", "string", Tr("Путь к Cobertura XML.", "Path to Cobertura XML.")),
+            new Prop("method", "string", Tr("Метод для отчёта покрытия.", "Method to report coverage for.")),
+            new Prop("id", "string", Tr("ID сценария из букв ASCII, цифр, - и _.", "Scenario ID using ASCII letters, digits, - or _.")),
+            new Prop("mode", "string", Tr("Сайт или окно.", "Website or window."), Enum: ["browser", "window"]),
+            new Prop("suite", "object", Tr("Набор checks с полями target, selector, text, state.", "A checks array with target, selector, text and state.")),
+            new Prop("contract", "object", Tr("Контракт с assembly, type, method, parameters, returns и cases (args и expected либо throws).",
+                "Contract with assembly, type, method, parameters, returns and cases (args and expected or throws)."))),
         Confirmation = Preview,
         Handler = Execute,
     };
@@ -220,9 +225,9 @@ static partial class LocalTestTools
             }
             catch (ToolException ex) { reports.Add($"✕ {check.Target} · {check.Selector ?? check.Text ?? check.State} · {ex.Message}"); }
         }
-        var report = $"Проверок пройдено: {passed}/{suite.Checks.Length}\n" + string.Join("\n", reports);
+        var report = Tr($"Проверок пройдено: {passed}/{suite.Checks.Length}\n", $"UI checks passed: {passed}/{suite.Checks.Length}\n") + string.Join("\n", reports);
         if (passed != suite.Checks.Length)
-            throw new ToolException("UI-тест не пройден. " + report);
+            throw new ToolException(Tr("UI-тест не пройден. ", "UI test failed. ") + report);
         return report;
     }
 

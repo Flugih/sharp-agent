@@ -29,7 +29,8 @@ sealed class ProjectIndexStore : IDisposable
         return result;
     }
 
-    internal void Update(string project, Dictionary<string, IndexedSource> previous, Dictionary<string, IndexedSource> current)
+    internal void Update(string project, Dictionary<string, IndexedSource> previous, Dictionary<string, IndexedSource> current,
+        IReadOnlyCollection<string>? affected)
     {
         _db.Execute("BEGIN IMMEDIATE");
         try
@@ -38,7 +39,7 @@ sealed class ProjectIndexStore : IDisposable
             using (var remove = _db.Prepare("DELETE FROM source WHERE project=?1 AND path=?2"))
             {
                 remove.Bind(1, project);
-                foreach (var path in previous.Keys.Where(path => !current.ContainsKey(path)))
+                foreach (var path in (affected ?? previous.Keys).Where(path => !current.ContainsKey(path)))
                 {
                     remove.Bind(2, path);
                     remove.Step();
@@ -48,8 +49,9 @@ sealed class ProjectIndexStore : IDisposable
             using (var upsert = _db.Prepare("INSERT OR REPLACE INTO source(project,path,payload) VALUES(?1,?2,?3)"))
             {
                 upsert.Bind(1, project);
-                foreach (var (path, entry) in current)
+                foreach (var path in affected ?? current.Keys)
                 {
+                    if (!current.TryGetValue(path, out var entry)) continue;
                     if (previous.TryGetValue(path, out var old) && ReferenceEquals(old, entry)) continue;
                     upsert.Bind(2, path);
                     upsert.Bind(3, JsonSerializer.Serialize(entry));

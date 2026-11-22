@@ -8,6 +8,11 @@ using SharpAgent.Tools;
 System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 var root = Path.Combine(AppContext.BaseDirectory, "checks-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
+if (args is ["--benchmark", var report])
+{
+    await LocalBenchmark.RunAsync(root, report);
+    return;
+}
 Migration(root);
 await ReadsAndIndexAsync(root);
 await AgentBudgetAsync(root);
@@ -18,6 +23,7 @@ await SemanticTestsAsync(root);
 await ContractAndCoverageAsync(root);
 await UiChecksAsync(root);
 await LocalIntelligenceChecksAsync(root);
+await FinalLocalChecks.RunAsync(root);
 MemoryAndCache(root);
 if (Environment.GetEnvironmentVariable("SHARP_AGENT_TEST_NATIVE") == "1") await NativeChecks.RunAsync(root);
 Console.WriteLine("Sharp Agent: migration, DPAPI, file reads, project index, local routing and model budget passed.");

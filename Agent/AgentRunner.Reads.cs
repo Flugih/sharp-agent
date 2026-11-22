@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    sealed record ReadKey(string Identity, string? Path = null, long Size = 0, DateTime Written = default, DateTime Created = default, string? RelatedPaths = null);
+    sealed record ReadKey(string Identity, string? Path = null, string? RelatedPaths = null);
     sealed record ToolExecution(Task<ToolOutcome> Task, ReadKey? Key, string? PreviousId = null);
 
     List<ToolExecution> PrepareCalls(List<ToolCallEvent> calls, CancellationToken ct)
@@ -50,8 +50,10 @@ partial class AgentRunner
                     tools.Context.GuardSecrets(resolved);
                     var info = new FileInfo(PathHelper.FinalPath(resolved));
                     if (!info.Exists) return null;
+                    var revision = PathHelper.Revision(info.FullName);
+                    if (revision == 0) return null;
                     var (start, count) = FileTools.ReadRange(part);
-                    entries.Add($"{info.FullName}|{start}|{count}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{info.CreationTimeUtc.Ticks}");
+                    entries.Add($"{info.FullName}|{start}|{count}|{info.Length}|{revision}");
                     paths.Add(info.FullName);
                 }
                 return new("read_many " + string.Join("\u001f", entries), RelatedPaths: string.Join("\n", paths));
@@ -60,8 +62,10 @@ partial class AgentRunner
             tools.Context.GuardSecrets(path);
             var file = new FileInfo(PathHelper.FinalPath(path));
             if (!file.Exists) return null;
+            var stamp = PathHelper.Revision(file.FullName);
+            if (stamp == 0) return null;
             var (offset, limit) = FileTools.ReadRange(args);
-            return new($"read_file {file.FullName}|{offset}|{limit}", file.FullName, file.Length, file.LastWriteTimeUtc, file.CreationTimeUtc);
+            return new($"read_file {file.FullName}|{offset}|{limit}|{file.Length}|{stamp}", file.FullName);
         }
         catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -87,6 +91,30 @@ partial class AgentRunner
 
     bool ResultInContext(string id, string output) => _sent.Any(node => Role(node) == "tool" && Str(node["tool_call_id"]) == id &&
         Str(node["content"])?.StartsWith(output, StringComparison.Ordinal) == true);
+
+    HashSet<string> StaleReads()
+    {
+        var stale = new HashSet<string>(StringComparer.Ordinal);
+        var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (call, result, _) in CurrentActions().Reverse())
+        {
+            if (FileChangeOf(result) is { } edit) changed.Add(edit.Path);
+            if (changed.Count == 0 || ArgsOf(call) is not { } args) continue;
+            var paths = call.Name switch
+            {
+                "read_file" => new[] { Str(args["path"]) },
+                "read_many" => (args["files"] as JsonArray)?.OfType<JsonObject>().Select(item => Str(item["path"])) ?? [],
+                _ => [],
+            };
+            foreach (var path in paths.OfType<string>())
+                try
+                {
+                    if (changed.Contains(PathHelper.FinalPath(tools.Context.Resolve(path)))) { stale.Add(call.Id); break; }
+                }
+                catch (ToolException) { }
+        }
+        return stale;
+    }
 
     void InvalidateReads(ToolCallEvent call, string? changedPath)
     {

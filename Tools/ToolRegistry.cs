@@ -12,10 +12,10 @@ public sealed class ToolRegistry
     static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName, ScriptRegistry.Name, BrowserTools.Name];
     static readonly HashSet<string> ReadOnly =
         ["read_file", "read_many", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin", LocalContractEngine.Name, LocalResearchEngine.Name];
-    static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано"];
+    static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано", "Error:"];
     readonly Dictionary<string, AgentTool> _byName;
     readonly List<AgentTool> _tools;
-    readonly Dictionary<(bool Sandbox, bool Computer), JsonArray> _definitions = [];
+    readonly Dictionary<(bool Sandbox, bool Computer, bool Russian), JsonArray> _definitions = [];
 
     public ToolContext Context { get; }
 
@@ -23,10 +23,16 @@ public sealed class ToolRegistry
     {
         get
         {
-            var key = (Sandbox: Context.SandboxRoot != null, Computer: Context.ComputerUse);
+            var key = (Sandbox: Context.SandboxRoot != null, Computer: Context.ComputerUse, Russian: UiLanguage.Current.Value.IsRussian);
             if (!_definitions.TryGetValue(key, out var definitions))
                 _definitions[key] = definitions = BuildDefinitions(_tools.Where(t =>
-                    !(key.Sandbox && UnsafeInSandbox.Contains(t.Name) || ComputerTools.IsControl(t.Name) && !key.Computer)));
+                    !(key.Sandbox && UnsafeInSandbox.Contains(t.Name) || ComputerTools.IsControl(t.Name) && !key.Computer)).Select(tool => tool.Name switch
+                    {
+                        LocalResearchEngine.Name => LocalResearchEngine.Tool(),
+                        LocalContractEngine.Name => LocalContractEngine.Tool(),
+                        LocalTestTools.Name => LocalTestTools.Tool(),
+                        _ => tool,
+                    }));
             return definitions;
         }
     }

@@ -14,6 +14,7 @@ static class AppCache
             Prune(AppPaths.TempFolder, TempLimit, TimeSpan.FromDays(2));
             Prune(AppPaths.LogsFolder, LogLimit, TimeSpan.FromDays(CommandLog.KeepDays), toolsOnly: true);
             ProjectIndexStore.Trim(AppPaths.DatabaseFolder, CacheLimit);
+            LocalResearchEngine.Trim(AppPaths.DatabaseFolder, CacheLimit);
         }
         finally { Volatile.Write(ref _running, 0); }
     }

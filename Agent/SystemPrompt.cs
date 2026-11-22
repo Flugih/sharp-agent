@@ -98,8 +98,10 @@ public static class SystemPrompt
         - Приложенные изображения ты видишь сам, если модель это умеет; иначе это обычные файлы.
         - read_file читает текстовые файлы и извлекает текст из .docx, .xlsx и .pptx.
           Для локального поиска по документам, таблицам и PDF используй local_research.
+          Для чтения и поиска внутри файлов сначала используй эти локальные инструменты. Плагины применяй для экспорта, преобразования и функций, которых в них нет.
           У PDF может быть только частичный текстовый слой; при отсутствии текста явно сообщи об ограничении, не выдумывай извлечённое.
         - После изменения файлов проверяй машинно проверяемые условия результата через local_contract, когда они заданы.
+          Обязательное условие со статусом failed, blocked или not_verified означает, что завершение не подтверждено.
 
         Окружение:
         - {Access(context.SandboxRoot)}
@@ -156,8 +158,9 @@ public static class SystemPrompt
         Images and attachments:
         - To draw or generate an image, use generate_image with a detailed description. The result is saved and appears below the response.
         - Use the full paths listed for attached files and directories. If the model cannot see attached images, handle them as files.
-        - read_file extracts text from DOCX, XLSX, and PPTX and reads plain text. For PDF and other binary formats, use run_command
-          when available or explain that you cannot read them.
+        - Use local_research to search or inspect documents, spreadsheets, and PDFs. Report partial extraction when relevant.
+          Use built-in tools for reads and searches. Use plugins for export, conversion, and operations the built-in tools do not provide.
+        - Use local_contract for explicit, machine-checkable acceptance criteria. Failed, blocked, or not_verified required checks mean completion is unconfirmed.
         {EnglishPluginRules(plugins)}{(context.ComputerUse && context.SandboxRoot == null ? EnglishComputerRules : "")}
 
         Environment:

@@ -1,14 +1,16 @@
 namespace SharpAgent.Agent;
 
-sealed record IndexedSource(long Size, long Ticks, string Hash, bool Roslyn, SourceSyntax Syntax, string? ProjectRevision = null);
+sealed record IndexedSource(long Size, long Ticks, string Hash, bool Roslyn, SourceSyntax Syntax, string? ProjectRevision = null,
+    long Revision = 0, string Status = "ready");
 
 static partial class ProjectSourceIndex
 {
-    const int MaxFiles = 6_000, MaxFileBytes = 384_000, MaxChangedBytes = 32_000_000;
+    const int MaxFileBytes = 384_000, MaxChangedBytes = 32_000_000;
     static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".cs", ".fs", ".vb", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".java", ".kt", ".go", ".rs",
-        ".c", ".cpp", ".h", ".hpp", ".swift", ".rb", ".php", ".ps1", ".sql", ".vue", ".svelte", ".xaml",
+        ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".swift", ".rb", ".php", ".ps1", ".psm1", ".sql", ".vue", ".svelte", ".xaml",
+        ".mts", ".cts", ".cjs", ".scala", ".dart", ".lua", ".zig", ".ktm",
     };
     static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -32,46 +34,63 @@ static partial class ProjectSourceIndex
         try { previous = baseline ?? database?.Read(project) ?? Load(cacheFile); }
         catch (Exception ex) when (ex is IOException or JsonException) { previous = Load(cacheFile); }
         var csharp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var affected = baseline == null ? null : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int changedBytes = 0;
         bool changed = false;
-        foreach (var name in files.Distinct(StringComparer.OrdinalIgnoreCase).Where(IsSource).Take(MaxFiles))
+        foreach (var name in files.Distinct(StringComparer.OrdinalIgnoreCase).Where(IsSource))
         {
             ct.ThrowIfCancellationRequested();
-            if (!SafeSource(context, root, name, out var file))
+            affected?.Add(name);
+            if (!SafeSource(context, root, name, out var file, maximumBytes: long.MaxValue))
             {
                 changed |= index.Remove(name);
                 continue;
             }
             try
             {
-                long ticks = file.LastWriteTimeUtc.Ticks, size = file.Length;
+                long ticks = file.LastWriteTimeUtc.Ticks, size = file.Length, stamp = PathHelper.Revision(file.FullName);
                 bool preferRoslyn = version.Length > 0 && name.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
                 var revision = preferRoslyn ? projects.Of(name).Revision : null;
-                var old = previous.GetValueOrDefault(name) is { } cached && (!preferRoslyn || cached.Roslyn && cached.ProjectRevision == revision) ? cached : null;
+                var old = previous.GetValueOrDefault(name) is { } cached &&
+                    (!preferRoslyn || cached.ProjectRevision == revision && (cached.Roslyn || cached.Status == "partial")) ? cached : null;
                 bool force = rebind?.Contains(name) == true;
-                if (old != null && old.Size == size && old.Ticks == ticks && !force)
+                if (old is { Status: "ready" or "partial" } && old.Size == size && old.Ticks == ticks && stamp != 0 && old.Revision == stamp && !force)
                 {
                     index[name] = old;
                     continue;
                 }
                 // Do not serve outdated symbols when a changed file exceeds the pass budget.
                 // A later scan can index the file once unchanged entries have been cached.
-                if (changedBytes + size > MaxChangedBytes) { changed |= index.Remove(name); continue; }
+                if (size > MaxFileBytes || changedBytes + size > MaxChangedBytes)
+                {
+                    index[name] = new(size, ticks, "", false, new([], []), revision, stamp, size > MaxFileBytes ? "partial" : "pending");
+                    changed = true;
+                    continue;
+                }
                 var bytes = File.ReadAllBytes(file.FullName);
                 if (bytes.Length > MaxFileBytes) { changed |= index.Remove(name); continue; }
+                if (stamp != 0 && stamp != PathHelper.Revision(file.FullName))
+                {
+                    index[name] = new(size, ticks, "", false, new([], []), revision, stamp, "pending");
+                    changed = true;
+                    continue;
+                }
                 changedBytes += bytes.Length;
                 var hash = Convert.ToHexString(SHA256.HashData(bytes));
-                if (old != null && old.Hash == hash && !force) index[name] = old with { Size = size, Ticks = ticks };
+                if (old != null && old.Hash == hash && !force) index[name] = old with { Size = size, Ticks = ticks, Revision = stamp };
                 else
                 {
-                    var text = new StreamReader(new MemoryStream(bytes), true).ReadToEnd();
-                    if (text.Contains('\0')) { changed |= index.Remove(name); continue; }
+                    var (text, _) = TextFileIO.Decode(bytes);
                     if (preferRoslyn) csharp[name] = text;
-                    index[name] = new(size, ticks, hash, false, preferRoslyn ? new([], []) : LocalSyntax(text), revision);
+                    index[name] = new(size, ticks, hash, false, preferRoslyn ? new([], []) : LocalSyntax(text), revision, stamp);
                 }
                 changed = true;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { changed |= index.Remove(name); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
+            {
+                index[name] = new(0, 0, "", false, new([], []), Status: "failed");
+                changed = true;
+            }
         }
         var support = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (csharp.Count > 0)
@@ -95,7 +114,7 @@ static partial class ProjectSourceIndex
         {
             try
             {
-                if (database != null) database.Update(project, previous, index);
+                if (database != null) database.Update(project, previous, index, affected);
                 else Save(cacheFile, index);
             }
             catch (IOException) { Save(cacheFile, index); }
@@ -104,7 +123,10 @@ static partial class ProjectSourceIndex
     }
 
     internal static bool Trackable(string relative) => relative != "." && !Path.IsPathRooted(relative) &&
-        !relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]).Any(p => p.StartsWith('.') || SkippedDirectories.Contains(p));
+        !relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]).Any(Skipped);
+
+    static bool Skipped(string name) => SkippedDirectories.Contains(name) || name.StartsWith('.') &&
+        name is not (".github" or ".vscode" or ".editorconfig" or ".gitignore" or ".gitattributes" or ".dockerignore");
 
     static ProjectIndexStore? OpenDatabase(ToolContext context)
     {
@@ -112,7 +134,8 @@ static partial class ProjectSourceIndex
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException) { return null; }
     }
 
-    public static bool SafeSource(ToolContext context, string root, string relative, out FileInfo file, bool allowMissing = false)
+    public static bool SafeSource(ToolContext context, string root, string relative, out FileInfo file, bool allowMissing = false,
+        long maximumBytes = MaxFileBytes)
     {
         file = null!;
         if (!Trackable(relative) || SensitiveName().IsMatch(Path.GetFileName(relative)))
@@ -125,32 +148,39 @@ static partial class ProjectSourceIndex
             context.GuardSecrets(canonical);
             file = new FileInfo(canonical);
             return file.Exists
-                ? file.Length <= MaxFileBytes && (file.Attributes & FileAttributes.ReparsePoint) == 0
+                ? file.Length <= maximumBytes && (file.Attributes & FileAttributes.ReparsePoint) == 0
                 : allowMissing && !Directory.Exists(canonical);
         }
         catch (Exception ex) when (ex is IOException or ToolException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
     }
 
-    public static IEnumerable<string> Walk(string root, CancellationToken ct)
+    public static IEnumerable<string> Walk(string root, CancellationToken ct, bool includeDocuments = false)
     {
         Stack<string> pending = new([root]);
-        int visited = 0;
-        while (pending.TryPop(out var folder) && visited++ < 1800)
+        while (pending.TryPop(out var folder))
         {
             ct.ThrowIfCancellationRequested();
             foreach (var entry in DirectoryEntries(folder))
             {
-                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 || entry.Name.StartsWith('.')) continue;
-                if (entry is DirectoryInfo directory && !SkippedDirectories.Contains(entry.Name)) pending.Push(directory.FullName);
-                else if (entry is FileInfo && IsSource(entry.Name)) yield return Path.GetRelativePath(root, entry.FullName);
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0 || Skipped(entry.Name)) continue;
+                if (entry is DirectoryInfo directory) pending.Push(directory.FullName);
+                else if (entry is FileInfo && (IsSource(entry.Name) || includeDocuments && LocalResearchEngine.Supports(entry.Name)))
+                    yield return Path.GetRelativePath(root, entry.FullName);
             }
         }
     }
 
-    static FileSystemInfo[] DirectoryEntries(string folder)
+    static IEnumerable<FileSystemInfo> DirectoryEntries(string folder)
     {
-        try { return new DirectoryInfo(folder).EnumerateFileSystemInfos().Take(12_000).ToArray(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
+        using var entries = new DirectoryInfo(folder).EnumerateFileSystemInfos("*", new EnumerationOptions
+        { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint }).GetEnumerator();
+        while (true)
+        {
+            FileSystemInfo entry;
+            try { if (!entries.MoveNext()) yield break; entry = entries.Current; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { yield break; }
+            yield return entry;
+        }
     }
 
     static SourceSyntax LocalSyntax(string text)

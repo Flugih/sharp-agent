@@ -11,7 +11,7 @@ static partial class LocalActionRouter
             match.Groups["code"] is { Success: true } code ? code.Value.ToUpperInvariant() : null);
     }
 
-    internal static string? Match(string text) => text.Trim().TrimEnd('.', '!', '?').ToLowerInvariant() switch
+    internal static string? Match(string text) => Explicit(text.Trim()) ?? text.Trim().TrimEnd('.', '!', '?').ToLowerInvariant() switch
     {
         "git status" or "покажи git status" or "покажи статус git" or "show git status" => "git status",
         "git diff" or "покажи git diff" or "покажи изменения git" or "show git diff" => "git diff",
@@ -26,6 +26,17 @@ static partial class LocalActionRouter
         "который час" or "сколько сейчас времени" or "what time is it" => "time",
         var raw => Named(raw),
     };
+
+    static string? Explicit(string text)
+    {
+        var match = LocalRead().Match(text);
+        if (match.Groups["document"].Success) return "inspect " + match.Groups["document"].Value;
+        if (match.Groups["file"].Success) return "read " + match.Groups["file"].Value;
+        return match.Groups["query"].Success ? "research " + match.Groups["query"].Value : null;
+    }
+
+    [GeneratedRegex("^(?:(?:прочитай файл|read file) \"(?<file>[^\"\\r\\n]{1,700})\"|(?:прочитай документ|read document) \"(?<document>[^\"\\r\\n]{1,700})\"|(?:найди в документах|search documents for)[: ]+\"(?<query>[^\"\\r\\n]{2,160})\")$", RegexOptions.IgnoreCase)]
+    private static partial Regex LocalRead();
 
     static string? Named(string text)
     {

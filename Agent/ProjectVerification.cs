@@ -88,9 +88,19 @@ static partial class ProjectVerification
     }
 
     internal static bool Command(string command) => Verification().IsMatch(command);
+    internal static bool Tests(string command) => TestCommand().IsMatch(command) && Command(command);
+    internal static bool TestsExecuted(string output) => TestResults().IsMatch(output) ||
+        Regex.IsMatch(output, @"(?m)^ok\s+\S+\s+(?:\d|\(cached\))");
+    internal static string Transcript(ToolContext context, string output) =>
+        context.LogsFolder != null && CommandLog.IdOf(output) is { } id ? CommandLog.Read(context.LogsFolder, id) ?? output : output;
+
+    [GeneratedRegex(@"^\s*(?:dotnet\s+test|cargo\s+test|go\s+test|(?:npm|pnpm|yarn)\s+(?:run\s+)?test|(?:python\s+-m\s+)?pytest)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex TestCommand();
+    [GeneratedRegex(@"(?im)(?:\b[1-9]\d*\s+passed\b|(?:total(?:\s+tests)?|passed|пройдено|всего)(?:\s+tests)?\s*:\s*[1-9]\d*|tests run\s*:\s*[1-9]\d*)")]
+    private static partial Regex TestResults();
 
     [GeneratedRegex(@"^\s*(?<path>.+?)(?:\((?<line>\d+)(?:,\d+)*\)\s*:|:(?<line>\d+)(?::\d+)?:)\s*(?:(?:error|warning|ошибка|предупреждение)\s+)?(?:(?<code>[A-Z]{1,10}[0-9]{2,8})\s*:?\s*)?(?<message>\S.*)$", RegexOptions.IgnoreCase)]
     private static partial Regex Location();
-    [GeneratedRegex(@"^\s*(?:dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|lint|typecheck)|(?:python\s+-m\s+)?pytest|ruff\s+check|pyright|cargo\s+(?:build|check|clippy|test)|go\s+(?:vet|test)|staticcheck)\b[^\r\n;|&]*$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*(?:dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|lint|typecheck)|(?:python\s+-m\s+)?pytest|ruff\s+check|pyright|cargo\s+(?:build|check|clippy|test)|go\s+(?:build|vet|test)|staticcheck)\b[^\r\n;|&]*$", RegexOptions.IgnoreCase)]
     private static partial Regex Verification();
 }

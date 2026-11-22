@@ -41,24 +41,21 @@ partial class AgentRunner
         ? PromptText("Текущий план:\n", "Current plan:\n") + string.Join("\n", plan.Items.Select(item => (item.Done ? "[x] " : "[ ] ") + item.Step)) : null;
 
     // A local check before the model finishes: one cheap extra step only when work is visibly unfinished or unverified.
-    async Task<(string? Review, string? Verification)> ReviewAsync(ContextRun context, CancellationToken ct)
+    async Task<(string? Review, string? Verification, string? Incomplete)> ReviewAsync(ContextRun context, CancellationToken ct)
     {
         int start = _history.LastIndex(ChatJournal.Flags.User);
-        if (delegated || start < 0) return (null, null);
-        int atReview = start + 1, since = start, reviews = 0;
-        foreach (var message in _history.Range(atReview, _history.Count - atReview))
-        {
-            if (ReviewOf(message) != null)
-            {
-                if (++reviews >= MaxReviews) return (null, null);
-                since = atReview;
-            }
-            atReview++;
-        }
+        if (delegated || start < 0) return (null, null, null);
+        int reviews = _history.Range(start + 1, _history.Count - start - 1).Count(message => ReviewOf(message) != null);
         int lastChange = -1, lastCheck = -1;
         var changed = new List<string>();
         var failed = new Dictionary<string, ToolCallEvent>();
-        foreach (var (call, result, at) in CurrentActions())
+        var actions = CurrentActions().ToArray();
+        var checks = actions.Where(action => action.Call.Name == LocalContractEngine.Name).SelectMany(action =>
+        {
+            try { return ArgsOf(action.Call) is { } arguments ? LocalContractEngine.Parse(new(arguments)) : []; }
+            catch (ToolException) { return []; }
+        }).Distinct().Take(48).ToArray();
+        foreach (var (call, result, at) in actions)
         {
             if (Str(MetaOf(result)?["written_path"]) is { } path && ProjectSourceIndex.IsSource(path) &&
                 !Scripts.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
@@ -71,21 +68,26 @@ partial class AgentRunner
                 lastCheck = at;
                 var key = call.Name == "run_command" ? Str(ArgsOf(call)?["command"])!.Trim() : call.ArgumentsJson;
                 var output = Str(result["content"]) ?? "";
-                if (at > since && (ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output))) failed[key] = call;
+                if (ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output)) failed[key] = call;
                 else foreach (var covered in failed.Keys.Where(earlier => Covers(key, earlier)).ToList()) failed.Remove(covered);
             }
         }
         var notes = new List<string>();
         string? verification = null;
-        if (CurrentPlan() is { } plan && (reviews == 0 || plan.At > since) && plan.Items.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
+        if (WorkMode && CurrentPlan() is { } plan && plan.Items.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
             notes.Add(PromptText("В плане остались невыполненные пункты: ", "The plan has unfinished steps: ") + string.Join("; ", open) +
                       PromptText(". Выполни их или обнови план, если они не нужны.", ". Complete them or update the plan if they are unnecessary."));
-        if (lastChange > since && lastCheck < lastChange && tools.Context.SandboxRoot == null)
+        var task = ExtractText(LastUser()?["content"]) ?? "";
+        bool automatic = WorkMode && tools.Context.SandboxRoot == null &&
+            !Regex.IsMatch(task, @"(?i)(?:\bбез (?:сборки|тестов|проверок)|\bне (?:запускай|выполняй|проверяй|собирай)|\bdo not (?:run|build|test)|\bno tests)\b");
+        if (WorkMode && Regex.IsMatch(task, @"(?i)(?:запусти|выполни|прогони)\s+(?:(?:unit|авто|модульные)\s*)?тест[ыа]|\brun\s+(?:the\s+)?(?:unit\s+)?tests\b") &&
+            !checks.Any(check => check.Kind == "unit_tests")) checks = [.. checks, new("unit_tests", "", "", "", false)];
+        bool missingTest = !actions.Any(action => action.At > lastChange && action.Call.Name == "run_command" &&
+            Str(ArgsOf(action.Call)?["command"]) is { } command && ProjectVerification.Tests(command));
+        if (automatic && lastChange >= 0 && (lastCheck < lastChange || missingTest))
         {
-            var task = ExtractText(LastUser()?["content"]) ?? "";
-            bool automatic = !Regex.IsMatch(task, @"(?i)\b(?:без (?:сборки|тестов|проверок)|не (?:запускай|выполняй|проверяй|собирай)|do not (?:run|build|test)|no tests)\b");
-            if (automatic && context.VerificationAttempts < 2 && lastChange > context.LastVerifiedChange &&
-                changed.LastOrDefault() is { } changedPath && ApplicableRecipe(changedPath) is { } recipe)
+            if (reviews < MaxReviews && context.VerificationAttempts < 2 && lastChange > context.LastVerifiedChange &&
+                changed.LastOrDefault() is { } changedPath && ApplicableRecipe(changedPath, testsOnly: lastCheck > lastChange) is { } recipe)
             {
                 context.VerificationAttempts++;
                 context.LastVerifiedChange = lastChange;
@@ -95,19 +97,103 @@ partial class AgentRunner
                     notes.Add(PromptText("Локальная проверка завершилась без успеха. Учти результат и исправь причину, если она относится к задаче:\n",
                         "Local verification did not pass. Consider the result and fix causes relevant to the task:\n") + verification);
             }
-            else if (automatic && context.LastVerifiedChange < lastChange)
+            else if (context.LastVerifiedChange < lastChange)
                 notes.Add(PromptText("После последних изменений кода не было проверки: ", "The latest code changes were not verified: ") +
                     string.Join(", ", changed.TakeLast(6).Select(Path.GetFileName)) +
                     PromptText(". Проверь изменения или укажи причину.", ". Verify the changes or explain why verification was unavailable."));
         }
-        else if (lastCheck > since && lastCheck > lastChange && failed.Count > 0)
+        else if (WorkMode && lastCheck > lastChange && failed.Count > 0)
             notes.Add(PromptText("Остались ошибки проверки: ", "Verification failures remain: ") +
                       string.Join(", ", failed.Values.TakeLast(4).Select(call => HistoryCompressor.Describe(call.Name, call.ArgumentsJson))) +
                       PromptText(". Исправь причину и проверь снова либо объясни, что помешало.", ". Fix the cause and check again, or explain what blocked verification."));
+        string? incomplete = null;
+        if (checks.Length > 0)
+        {
+            var latest = CurrentActions().ToArray();
+            if (automatic && reviews < MaxReviews && context.VerificationAttempts < 2 &&
+                checks.Any(check => check.Kind is "build" or "unit_tests" && ContractEvidence(check, latest) == null) &&
+                ApplicableRecipe(changed.LastOrDefault(), testsOnly: checks.All(check => check.Kind != "build")) is { } project)
+            {
+                context.VerificationAttempts++;
+                var outcome = await VerifyAsync(project, ct);
+                verification = Clip(outcome.Report, 3000);
+                latest = CurrentActions().ToArray();
+            }
+            foreach (var check in checks.Where(check => check.Kind == "ui_tests" && !check.Optional && check.Key.Length > 0).Take(3))
+                if (automatic && reviews < MaxReviews && ContractEvidence(check, latest) == null)
+                {
+                    await RunLocalToolAsync(LocalTestTools.Name, new() { ["action"] = "run", ["id"] = check.Key }, ct);
+                    latest = CurrentActions().ToArray();
+                }
+            var results = await Task.Run(() => LocalContractEngine.Assess(checks, tools.Context, ct,
+                check => ContractEvidence(check, latest)), ct);
+            var report = LocalContractEngine.Report(results);
+            verification = verification == null ? report : verification + "\n\n" + report;
+            if (results.Any(LocalContractEngine.Unmet))
+            {
+                if (reviews >= MaxReviews || results.Where(LocalContractEngine.Unmet).All(result => result.State == LocalContractEngine.State.Blocked))
+                    incomplete = PromptText("Выполнение задачи не подтверждено.\n\n", "Task completion could not be verified.\n\n") + report;
+                else notes.Add(report);
+            }
+        }
+        if (reviews >= MaxReviews)
+        {
+            if (incomplete == null && WorkMode && notes.Count > 0)
+                incomplete = PromptText("Задача не завершена.\n\n", "The task is incomplete.\n\n") + string.Join("\n", notes);
+            return (null, verification, incomplete);
+        }
+        if (incomplete != null) return (null, verification, incomplete);
         return (notes.Count == 0 ? null
             : PromptText("[Программа: проверка перед завершением] ", "[Application: pre-completion check] ") + string.Join("\n", notes) +
               PromptText("\nСверь результат с запросом пользователя. Если всё уже сделано и проверено, повтори итоговый ответ полностью: пользователь увидит только его.",
-                  "\nCompare the result with the user’s request. If everything is complete and verified, repeat the final answer in full. The user sees only that version."), verification);
+                  "\nCompare the result with the user's request. If everything is complete and verified, repeat the final answer in full. The user sees only that version."), verification, null);
+    }
+
+    LocalContractEngine.Result? ContractEvidence(LocalContractEngine.Check check,
+        (ToolCallEvent Call, JsonObject Result, int At)[] actions)
+    {
+        var path = check.Path.Length == 0 ? null : tools.Context.Resolve(check.Path);
+        if (path != null) tools.Context.GuardSecrets(path);
+        int changed = actions.Where(action => FileChangeOf(action.Result) != null || Str(MetaOf(action.Result)?["written_path"]) != null)
+            .Select(action => action.At).DefaultIfEmpty(-1).Max();
+        foreach (var (call, result, at) in actions.Reverse())
+        {
+            if (at < changed || ArgsOf(call) is not { } args || Str(result["content"]) is not { } output) continue;
+            var command = Str(args["command"]) ?? "";
+            var id = Str(args["id"]) ?? "";
+            bool matches = check.Kind switch
+            {
+                "build" => call.Name == "run_command" && Regex.IsMatch(command, @"(?i)^\s*(?:dotnet|cargo|go)\s+build\b") &&
+                    ProjectVerification.Command(command),
+                "unit_tests" => call.Name == "run_command" && ProjectVerification.Tests(command) ||
+                    call.Name == LocalTestTools.Name && Str(args["action"]) == "run" && check.Key == id && !LocalTestTools.IsUiResult(output),
+                "ui_tests" => call.Name == LocalTestTools.Name && Str(args["action"]) == "run" && check.Key == id,
+                _ => call.Name == "run_command" && check.Key.Length > 0 && command.Trim() == check.Key.Trim(),
+            };
+            if (!matches) continue;
+            if (path != null && call.Name == "run_command" &&
+                !PathHelper.SamePath(path, tools.Context.Resolve(Str(args["working_directory"])))) continue;
+            var state = MetaOf(result)?["command_restricted"] != null || output.StartsWith("Пользователь отклонил", StringComparison.Ordinal) ||
+                result["content"]?.ToString().Contains(CommandRestriction.Prefix, StringComparison.Ordinal) == true
+                ? LocalContractEngine.State.Blocked : ToolRegistry.IsErrorOutput(output) || ToolRegistry.CommandFailed(output)
+                    ? LocalContractEngine.State.Failed : LocalContractEngine.State.Passed;
+            if (state == LocalContractEngine.State.Passed)
+            {
+                var transcript = ProjectVerification.Transcript(tools.Context, output);
+                state = check.Kind switch
+                {
+                    "unit_tests" when !ProjectVerification.TestsExecuted(transcript) && !Regex.IsMatch(transcript, @"(?m)^Passed [1-9]\d*/[1-9]\d*$") =>
+                        LocalContractEngine.State.NotVerified,
+                    "ui_tests" when !LocalTestTools.IsUiResult(output) => LocalContractEngine.State.NotVerified,
+                    "command_result" when CommandLog.ResultOf(output) != "код 0" => LocalContractEngine.State.NotVerified,
+                    "command_result" when check.Expected.Length > 0 && !transcript.Contains(check.Expected, StringComparison.Ordinal) =>
+                        LocalContractEngine.State.Failed,
+                    _ => state,
+                };
+            }
+            return new(check, state, PromptText("Результат текущего запуска: ", "Result from this run: ") + LocalContractEngine.Status(state));
+        }
+        return null;
     }
 
     ProjectVerification.Recipe? ApplicableRecipe(string? path = null, bool testsOnly = false)
@@ -117,8 +203,9 @@ partial class AgentRunner
     }
 
     // A passing check also settles narrower ones (`dotnet build` after `dotnet build App.csproj`) and tests settle builds.
-    static bool Covers(string check, string failed) => failed.StartsWith(check, StringComparison.OrdinalIgnoreCase) ||
-        failed.Replace("build", "test", StringComparison.OrdinalIgnoreCase).StartsWith(check, StringComparison.OrdinalIgnoreCase);
+    static bool Covers(string check, string failed) => check.Equals(failed, StringComparison.OrdinalIgnoreCase) ||
+        !check.Contains("--no-build", StringComparison.OrdinalIgnoreCase) && failed.StartsWith("dotnet build", StringComparison.OrdinalIgnoreCase) &&
+        check.Equals("dotnet test" + failed["dotnet build".Length..], StringComparison.OrdinalIgnoreCase);
 
     HashSet<string> SupersededResults(int currentUser)
     {

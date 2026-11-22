@@ -102,6 +102,42 @@ static class NativeChecks
         var context = new ToolContext { AppFolder = root, WorkingDirectory = root };
         var result = await WindowsOcr.RecognizeAsync(target, "en", "AGENT", context, default);
         if (!result.Contains("SHARP AGENT", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Windows OCR: " + result);
+        var scan = Path.Combine(root, "ocr-fixture.pdf");
+        using var image = new MemoryStream();
+        var jpeg = new JpegBitmapEncoder();
+        jpeg.Frames.Add(BitmapFrame.Create(bitmap));
+        jpeg.Save(image);
+        using (var pdf = File.Create(scan))
+        {
+            var offsets = new List<long> { 0 };
+            void Write(string text) => pdf.Write(Encoding.ASCII.GetBytes(text));
+            void Object(int id, string text) { offsets.Add(pdf.Position); Write($"{id} 0 obj\n{text}\nendobj\n"); }
+            Write("%PDF-1.4\n");
+            Object(1, "<< /Type /Catalog /Pages 2 0 R >>");
+            Object(2, "<< /Type /Pages /Count 1 /Kids [3 0 R] >>");
+            Object(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 640 120] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >>");
+            const string content = "q 640 0 0 120 0 0 cm /Im0 Do Q\n";
+            Object(4, $"<< /Length {content.Length} >>\nstream\n{content}endstream");
+            offsets.Add(pdf.Position);
+            Write($"5 0 obj\n<< /Type /XObject /Subtype /Image /Width 640 /Height 120 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {image.Length} >>\nstream\n");
+            image.WriteTo(pdf);
+            Write("\nendstream\nendobj\n");
+            var xref = pdf.Position;
+            Write("xref\n0 6\n0000000000 65535 f \n");
+            foreach (var offset in offsets.Skip(1)) Write($"{offset:D10} 00000 n \n");
+            Write($"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        }
+        var recognizedPdf = await WindowsOcr.ReadPdfAsync(scan, context, default);
+        if (!recognizedPdf.Contains("SHARP AGENT", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("PDF renderer OCR: " + recognizedPdf);
+        var scanText = await new ToolRegistry(context).ExecuteAsync(LocalResearchEngine.Name,
+            new System.Text.Json.Nodes.JsonObject { ["action"] = "inspect", ["path"] = scan }.ToJsonString(), null, default);
+        if (scanText.IsError || !scanText.Output.Contains("SHARP AGENT", StringComparison.OrdinalIgnoreCase) || !scanText.Output.Contains("partial"))
+            throw new InvalidOperationException("Windows PDF OCR: " + scanText.Output);
+        var constrained = new ToolContext { AppFolder = root, WorkingDirectory = root, SandboxRoot = root };
+        var withoutOcr = await new ToolRegistry(constrained).ExecuteAsync(LocalResearchEngine.Name,
+            new System.Text.Json.Nodes.JsonObject { ["action"] = "inspect", ["path"] = scan }.ToJsonString(), null, default);
+        if (withoutOcr.IsError || !withoutOcr.Output.Contains("partial") || withoutOcr.Output.Contains("SHARP AGENT", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Scanned PDF without OCR should remain partial.");
         Console.WriteLine("Windows OCR passed.");
     }
 

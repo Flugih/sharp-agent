@@ -9,7 +9,9 @@ sealed class ProjectWatcher : IDisposable
         string? root = null;
         try
         {
-            if (context.AppFolder != null) root = LocalProjectContext.ProjectRoot(context, context.Resolve(null));
+            if (context.AppFolder != null && context.Resolve(null) is { } folder && Directory.Exists(folder))
+                root = PathHelper.SamePath(folder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)) ||
+                    PathHelper.SamePath(folder, Path.GetPathRoot(folder)!) ? null : PathHelper.FinalPath(folder);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException) { }
         if (_active is { } current && root != null && PathHelper.SamePath(current.Root, root) &&
@@ -26,6 +28,14 @@ sealed class ProjectWatcher : IDisposable
         return current != null && PathHelper.SamePath(current.Root, root) ? await current.SnapshotAsync(ct) : null;
     }
 
+    internal bool DocumentsReady(string root) => Volatile.Read(ref _active) is { } current &&
+        PathHelper.SamePath(current.Root, root) && current.DocumentsReady;
+
+    internal void Reconcile(string root)
+    {
+        if (Volatile.Read(ref _active) is { } current && PathHelper.SamePath(current.Root, root)) current.Reconcile();
+    }
+
     public void Dispose() => Interlocked.Exchange(ref _active, null)?.Dispose();
 
     sealed class Session : IDisposable
@@ -36,10 +46,14 @@ sealed class ProjectWatcher : IDisposable
         readonly SemaphoreSlim _signal = new(0, 1);
         readonly HashSet<string> _pending = new(StringComparer.OrdinalIgnoreCase);
         readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource _updated = new(TaskCreationOptions.RunContinuationsAsynchronously);
         Dictionary<string, IndexedSource>? _snapshot;
+        Task? _scanOcr;
         bool _rescan;
+        volatile bool _documentsReady;
         internal string Root { get; }
         internal bool UseSdk => _context.SandboxRoot == null;
+        internal bool DocumentsReady => _documentsReady;
 
         internal Session(ToolContext context, string root)
         {
@@ -49,20 +63,21 @@ sealed class ProjectWatcher : IDisposable
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size };
             _watcher.Changed += (_, args) =>
             {
-                if (ProjectSourceIndex.IsSource(args.FullPath) || SourceProjects.Manifest(args.FullPath)) Enqueue(args.FullPath);
+                if (LocalResearchEngine.Supports(args.FullPath)) Enqueue(args.FullPath);
             };
             _watcher.Created += (_, args) => Enqueue(args.FullPath);
             _watcher.Deleted += (_, args) => Enqueue(args.FullPath);
             _watcher.Renamed += (_, args) => { Enqueue(args.OldFullPath); Enqueue(args.FullPath); };
-            _watcher.Error += (_, _) =>
-            {
-                lock (_pending) _rescan = true;
-                Volatile.Write(ref _snapshot, null);
-                Signal();
-            };
+            _watcher.Error += (_, _) => Reconcile();
             try { _watcher.EnableRaisingEvents = true; }
             catch { _watcher.Dispose(); throw; }
             _ = Task.Run(RunAsync);
+        }
+
+        internal void Reconcile()
+        {
+            lock (_pending) { _rescan = true; Invalidate(); }
+            Signal();
         }
 
         void Enqueue(string path)
@@ -73,10 +88,16 @@ sealed class ProjectWatcher : IDisposable
             {
                 if (_pending.Count < 6000) _pending.Add(relative);
                 else _rescan = true;
+                Invalidate();
             }
-            // Pending events invalidate the published snapshot until reindexing finishes.
-            Volatile.Write(ref _snapshot, null);
             Signal();
+        }
+
+        void Invalidate()
+        {
+            if (_updated.Task.IsCompleted) _updated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _snapshot, null);
+            _documentsReady = false;
         }
 
         void Signal()
@@ -101,7 +122,6 @@ sealed class ProjectWatcher : IDisposable
                         {
                             Directory.CreateDirectory(folder);
                             current = await ScanAsync(folder, ct);
-                            Publish(current);
                             _ready.TrySetResult();
                         }
                         // Reconciliation still runs if the OS watcher silently drops events.
@@ -131,8 +151,11 @@ sealed class ProjectWatcher : IDisposable
                                     .Select(entry => entry.Key));
                             }
                             files.UnionWith(related);
-                            if (files.Count == 0) { Publish(current); continue; }
-                            current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related);
+                            if (files.Count > 0)
+                                current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related);
+                            Publish(current);
+                            await RefreshDocumentsAsync(changes.SelectMany(ExpandDocuments), false, ct,
+                                changes.Select(name => Path.Combine(Root, name)).Where(path => !Path.Exists(path)).ToArray());
                         }
                         Publish(current);
                     }
@@ -154,12 +177,41 @@ sealed class ProjectWatcher : IDisposable
         void Publish(Dictionary<string, IndexedSource> current)
         {
             lock (_pending)
-                Volatile.Write(ref _snapshot, _pending.Count == 0 && !_rescan ? current : null);
+                if (_pending.Count == 0 && !_rescan)
+                {
+                    Volatile.Write(ref _snapshot, current);
+                    _updated.TrySetResult();
+                }
         }
 
-        async Task<Dictionary<string, IndexedSource>> ScanAsync(string folder, CancellationToken ct) =>
-            await ProjectSourceIndex.UpdateAsync(_context, Root, folder,
-                await LocalProjectContext.IndexFilesAsync(_context, Root, ct), UseSdk, ct);
+        async Task<Dictionary<string, IndexedSource>> ScanAsync(string folder, CancellationToken ct)
+        {
+            var files = ProjectSourceIndex.Walk(Root, ct, includeDocuments: true).ToArray();
+            var source = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct);
+            Publish(source);
+            _ready.TrySetResult();
+            await RefreshDocumentsAsync(files, true, ct);
+            return source;
+        }
+
+        IEnumerable<string> ExpandDocuments(string relative)
+        {
+            var path = Path.Combine(Root, relative);
+            if (Directory.Exists(path) && PathHelper.SamePath(path, PathHelper.FinalPath(path)))
+                return ProjectSourceIndex.Walk(path, _stop.Token, includeDocuments: true).Select(child => Path.Combine(relative, child));
+            return [relative];
+        }
+
+        async Task RefreshDocumentsAsync(IEnumerable<string> files, bool reconcile, CancellationToken ct, string[]? removed = null)
+        {
+            try
+            {
+                bool ready = await LocalResearchEngine.RefreshAsync(_context, Root, files, reconcile, ct, removed);
+                lock (_pending) _documentsReady = ready && _pending.Count == 0 && !_rescan;
+                if (_scanOcr is not { IsCompleted: false }) _scanOcr = LocalResearchEngine.IndexScanAsync(_context, Root, ct);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException) { _documentsReady = false; }
+        }
 
         HashSet<string> ChangedSources(Dictionary<string, IndexedSource> current, string[] changes, CancellationToken ct)
         {
@@ -200,6 +252,10 @@ sealed class ProjectWatcher : IDisposable
         internal async Task<Dictionary<string, IndexedSource>?> SnapshotAsync(CancellationToken ct)
         {
             await _ready.Task.WaitAsync(ct);
+            Task pending;
+            lock (_pending) pending = _updated.Task;
+            try { await pending.WaitAsync(TimeSpan.FromSeconds(2), ct); }
+            catch (TimeoutException) { }
             return Volatile.Read(ref _snapshot);
         }
 
@@ -208,6 +264,7 @@ sealed class ProjectWatcher : IDisposable
             _watcher.Dispose();
             _stop.Cancel();
             _ready.TrySetResult();
+            lock (_pending) _updated.TrySetResult();
         }
     }
 }

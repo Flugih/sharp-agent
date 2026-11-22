@@ -50,8 +50,14 @@ partial class AgentRunner
         bool readOnly = CurrentDiagnosis() is { Repair: false };
         bool scoped = WorkMode && !readOnly && LastUser() is { } taskUser &&
             ToolDefinitionSelection.Reduce(definitions, ExtractText(taskUser["content"]) ?? "");
-        if (scoped) definitions.Add(ToolDefinitionSelection.EnableDefinition.DeepClone());
         _scopedDefinitions = definitions;
+        if (scoped)
+        {
+            definitions.Add(ToolDefinitionSelection.EnableDefinition());
+            foreach (var (call, result, _) in CurrentActions())
+                if (call.Name == "enable_tools" && !ToolRegistry.IsErrorOutput(Str(result["content"]) ?? "") && ArgsOf(call) is { } group)
+                    EnableToolGroup(group);
+        }
         bool simple = !WorkMode && LastUser() is { } current && Attachment.ListFrom(current).Count == 0 &&
             AdaptiveModelRouter.IsSimple(ExtractText(current["content"]) ?? "");
         bool plugins = !simple && AvailablePlugins().Count > 0;
@@ -128,6 +134,17 @@ partial class AgentRunner
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
     {
+        if (call.Name == LocalContractEngine.Name && ArgsOf(call) is { } contract)
+        {
+            var evidence = CurrentActions().ToArray();
+            try
+            {
+                var result = await Task.Run(() => LocalContractEngine.Verify(new(contract), tools.Context, ct,
+                    check => ContractEvidence(check, evidence)), ct);
+                return new(result, false);
+            }
+            catch (ToolException ex) { return new("Ошибка: " + ex.Message, true); }
+        }
         if (delegated || call.Name is not ("ask_user" or "delegate_tasks" or "update_plan" or "enable_tools"))
         {
             var shell = call.Name switch
