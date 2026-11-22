@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    sealed record ReadKey(string Identity, string? Path = null, long Size = 0, DateTime Written = default, DateTime Created = default);
+    sealed record ReadKey(string Identity, string? Path = null, long Size = 0, DateTime Written = default, DateTime Created = default, string? RelatedPaths = null);
     sealed record ToolExecution(Task<ToolOutcome> Task, ReadKey? Key, string? PreviousId = null);
 
     List<ToolExecution> PrepareCalls(List<ToolCallEvent> calls, CancellationToken ct)
@@ -32,11 +32,30 @@ partial class AgentRunner
 
     ReadKey? ReadKeyOf(ToolCallEvent call)
     {
-        if (call.Name is not ("read_file" or "use_plugin") || ArgsOf(call) is not { } parameters) return null;
+        if (call.Name is not ("read_file" or "read_many" or "use_plugin") || ArgsOf(call) is not { } parameters) return null;
         var args = new ToolArgs(parameters);
         try
         {
             if (call.Name == "use_plugin") return new("use_plugin " + args.Required("name").ToUpperInvariant());
+            if (call.Name == "read_many")
+            {
+                var requests = args.Array("files");
+                if (requests.Count is < 1 or > 8 || requests.Any(request => request is not JsonObject)) return null;
+                var entries = new List<string>();
+                var paths = new List<string>();
+                foreach (var request in requests.OfType<JsonObject>())
+                {
+                    var part = new ToolArgs(request);
+                    var resolved = tools.Context.Resolve(part.Required("path"));
+                    tools.Context.GuardSecrets(resolved);
+                    var info = new FileInfo(PathHelper.FinalPath(resolved));
+                    if (!info.Exists) return null;
+                    var (start, count) = FileTools.ReadRange(part);
+                    entries.Add($"{info.FullName}|{start}|{count}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{info.CreationTimeUtc.Ticks}");
+                    paths.Add(info.FullName);
+                }
+                return new("read_many " + string.Join("\u001f", entries), RelatedPaths: string.Join("\n", paths));
+            }
             var path = tools.Context.Resolve(args.Required("path"));
             tools.Context.GuardSecrets(path);
             var file = new FileInfo(PathHelper.FinalPath(path));
@@ -76,7 +95,11 @@ partial class AgentRunner
         {
             var path = unknown ? null : PathHelper.FinalPath(changedPath!);
             tools.Context.Snapshots.Invalidate(path);
-            foreach (var key in _reads.Keys.Where(key => key.Path != null && (path == null || PathHelper.IsInside(key.Path, path))).ToArray()) _reads.Remove(key);
+            foreach (var key in _reads.Keys.Where(key =>
+                key.Path != null && (path == null || PathHelper.IsInside(key.Path, path)) ||
+                key.RelatedPaths != null && (path == null ||
+                    key.RelatedPaths.Split('\n').Any(file => PathHelper.IsInside(file, path)))).ToArray())
+                _reads.Remove(key);
         }
         if (call.Name == "run_command") (_systemMessage, _plugins) = (null, null);
     }

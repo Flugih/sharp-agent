@@ -54,22 +54,24 @@ static partial class ProjectSourceIndex
                     index[name] = old;
                     continue;
                 }
-                if (changedBytes + size > MaxChangedBytes) continue;
+                // Do not serve outdated symbols when a changed file exceeds the pass budget.
+                // A later scan can index the file once unchanged entries have been cached.
+                if (changedBytes + size > MaxChangedBytes) { changed |= index.Remove(name); continue; }
                 var bytes = File.ReadAllBytes(file.FullName);
-                if (bytes.Length > MaxFileBytes) continue;
+                if (bytes.Length > MaxFileBytes) { changed |= index.Remove(name); continue; }
                 changedBytes += bytes.Length;
                 var hash = Convert.ToHexString(SHA256.HashData(bytes));
                 if (old != null && old.Hash == hash && !force) index[name] = old with { Size = size, Ticks = ticks };
                 else
                 {
                     var text = new StreamReader(new MemoryStream(bytes), true).ReadToEnd();
-                    if (text.Contains('\0')) continue;
+                    if (text.Contains('\0')) { changed |= index.Remove(name); continue; }
                     if (preferRoslyn) csharp[name] = text;
                     index[name] = new(size, ticks, hash, false, preferRoslyn ? new([], []) : LocalSyntax(text), revision);
                 }
                 changed = true;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { changed |= index.Remove(name); }
         }
         var support = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (csharp.Count > 0)

@@ -48,6 +48,10 @@ partial class AgentRunner
         if (delegated) return tools.Definitions;
         var definitions = (JsonArray)tools.Definitions.DeepClone();
         bool readOnly = CurrentDiagnosis() is { Repair: false };
+        bool scoped = WorkMode && !readOnly && LastUser() is { } taskUser &&
+            ToolDefinitionSelection.Reduce(definitions, ExtractText(taskUser["content"]) ?? "");
+        if (scoped) definitions.Add(ToolDefinitionSelection.EnableDefinition.DeepClone());
+        _scopedDefinitions = definitions;
         bool simple = !WorkMode && LastUser() is { } current && Attachment.ListFrom(current).Count == 0 &&
             AdaptiveModelRouter.IsSimple(ExtractText(current["content"]) ?? "");
         bool plugins = !simple && AvailablePlugins().Count > 0;
@@ -124,7 +128,7 @@ partial class AgentRunner
 
     async Task<ToolOutcome> ExecuteCallAsync(ToolCallEvent call, CancellationToken ct)
     {
-        if (delegated || call.Name is not ("ask_user" or "delegate_tasks" or "update_plan"))
+        if (delegated || call.Name is not ("ask_user" or "delegate_tasks" or "update_plan" or "enable_tools"))
         {
             var shell = call.Name switch
             {
@@ -140,6 +144,7 @@ partial class AgentRunner
             return outcome;
         }
         if (ArgsOf(call) is not { } args) return new("Ошибка: проверь параметры вызова.", true);
+        if (call.Name == "enable_tools") return EnableToolGroup(args);
         if (call.Name == "update_plan") return UpdatePlan(args);
         if (call.Name == "delegate_tasks" && UseSubagents) return await DelegateAsync(args["tasks"] as JsonArray, ct);
         if (call.Name == "ask_user" && ClarifyAsync is { } ask &&

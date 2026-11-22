@@ -218,9 +218,12 @@ static partial class LocalTestTools
                 passed++;
                 reports.Add($"✓ {check.Target} · {check.Selector ?? check.Text ?? check.State}");
             }
-            catch (ToolException ex) { reports.Add($"✕ {check.Target} · {ex.Message}"); }
+            catch (ToolException ex) { reports.Add($"✕ {check.Target} · {check.Selector ?? check.Text ?? check.State} · {ex.Message}"); }
         }
-        return $"Проверок пройдено: {passed}/{suite.Checks.Length}\n" + string.Join("\n", reports);
+        var report = $"Проверок пройдено: {passed}/{suite.Checks.Length}\n" + string.Join("\n", reports);
+        if (passed != suite.Checks.Length)
+            throw new ToolException("UI-тест не пройден. " + report);
+        return report;
     }
 
     static string SuitePath(ToolArgs args, ToolContext context)

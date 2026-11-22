@@ -212,9 +212,15 @@ partial class AgentRunner
         if (_resumeContext != null) notes.Add(Clip(_resumeContext, harder ? 1800 : 4200));
         foreach (var restriction in _blockedShells.Values) notes.Add(CommandRestriction.Prefix + restriction.Message);
         if (!_blockedShells.ContainsKey(CommandShell.PowerShell))
-            foreach (var (name, instruction) in _activePlugins.TakeLast(harder ? 1 : 3))
-                notes.Add(PromptText($"Активный плагин «{name}». Инструкция уже загружена. Используй указанный ниже скрипт через run_plugin, когда действие ещё не выполнено.\n",
-                    $"Active plugin: {name}. Its instructions are loaded. Use the script below through run_plugin if the action is still pending.\n") + Clip(instruction, harder ? 4000 : 8500));
+            foreach (var (name, instruction) in _activePlugins.TakeLast(harder ? 1 : 2))
+            {
+                var scripts = Regex.Matches(instruction, @"[\w.\/-]+\.ps1", RegexOptions.IgnoreCase)
+                    .Select(m => Path.GetFileName(m.Value)).Distinct(StringComparer.OrdinalIgnoreCase).Take(6);
+                notes.Add(PromptText($"Активный плагин «{name}». Инструкция уже получена через use_plugin. ",
+                    $"Active plugin: {name}. Instructions were loaded with use_plugin. ") +
+                    PromptText("При необходимости вызови use_plugin ещё раз; доступные сценарии: ",
+                    "Reload use_plugin if its instructions are missing; scripts: ") + string.Join(", ", scripts));
+            }
         return notes.Count > 0 ? PromptText("\n\n[Сведения программы о текущем шаге]\n", "\n\n[Application context for this step]\n") + string.Join("\n\n", notes) : null;
     }
 

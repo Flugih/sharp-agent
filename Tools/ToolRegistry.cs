@@ -11,7 +11,7 @@ public sealed class ToolRegistry
     const int MaxToolOutputChars = 100_000;
     static readonly HashSet<string> UnsafeInSandbox = ["run_command", "run_plugin", ComputerTools.Name, ComputerTools.AppName, ScriptRegistry.Name, BrowserTools.Name];
     static readonly HashSet<string> ReadOnly =
-        ["read_file", "read_many", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin"];
+        ["read_file", "read_many", "list_directory", "get_file_info", "search_files", "search_text", "get_system_info", "read_log", "use_plugin", LocalContractEngine.Name, LocalResearchEngine.Name];
     static readonly string[] ErrorPrefixes = ["Ошибка", "Пользователь отклонил", "Отменено", "Выполнение было прервано"];
     readonly Dictionary<string, AgentTool> _byName;
     readonly List<AgentTool> _tools;
@@ -36,6 +36,7 @@ public sealed class ToolRegistry
         Context = context;
         _tools = FileTools.All().Concat(ShellTools.All()).Concat(CommandLog.All()).Concat(ImageTools.All())
             .Concat(PluginTools.All()).Concat(ComputerTools.All()).Concat(AgentKnowledge.All()).Append(ScriptRegistry.Tool()).Append(BrowserTools.Tool()).Append(LocalTestTools.Tool())
+            .Append(LocalResearchEngine.Tool()).Append(LocalContractEngine.Tool())
             .Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
         _byName = _tools.ToDictionary(t => t.Name);
     }

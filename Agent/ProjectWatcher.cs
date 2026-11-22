@@ -57,6 +57,7 @@ sealed class ProjectWatcher : IDisposable
             _watcher.Error += (_, _) =>
             {
                 lock (_pending) _rescan = true;
+                Volatile.Write(ref _snapshot, null);
                 Signal();
             };
             try { _watcher.EnableRaisingEvents = true; }
@@ -73,6 +74,8 @@ sealed class ProjectWatcher : IDisposable
                 if (_pending.Count < 6000) _pending.Add(relative);
                 else _rescan = true;
             }
+            // Pending events invalidate the published snapshot until reindexing finishes.
+            Volatile.Write(ref _snapshot, null);
             Signal();
         }
 
@@ -80,58 +83,78 @@ sealed class ProjectWatcher : IDisposable
         {
             try { _signal.Release(); }
             catch (SemaphoreFullException) { }
+            catch (ObjectDisposedException) { }
         }
 
         async Task RunAsync()
         {
             var ct = _stop.Token;
+            var folder = _context.CodeIndexFolder;
+            Dictionary<string, IndexedSource>? current = null;
             try
             {
-                var folder = _context.CodeIndexFolder;
-                Directory.CreateDirectory(folder);
-                var current = await ScanAsync(folder, ct);
-                Volatile.Write(ref _snapshot, current);
-                _ready.TrySetResult();
-                while (true)
+                while (!ct.IsCancellationRequested)
                 {
-                    await _signal.WaitAsync(ct);
-                    await Task.Delay(280, ct);
-                    string[] changes;
-                    bool rescan;
-                    lock (_pending)
+                    try
                     {
-                        changes = [.. _pending];
-                        rescan = _rescan;
-                        _pending.Clear();
-                        _rescan = false;
-                    }
-                    if (rescan) current = await ScanAsync(folder, ct);
-                    else if (changes.Length > 0)
-                    {
-                        var files = ChangedSources(current, changes, ct);
-                        var related = Related(current, files);
-                        foreach (var manifest in changes.Where(SourceProjects.Manifest))
+                        if (current == null)
                         {
-                            var path = Path.Combine(Root, manifest);
-                            var parent = Path.GetDirectoryName(path)!;
-                            var id = SourceProjects.Id(path) + "|";
-                            related.UnionWith(current.Where(entry => PathHelper.IsInside(Path.Combine(Root, entry.Key), parent) ||
-                                entry.Value.Syntax.Symbols.Any(symbol => symbol.References?.Any(reference => reference.StartsWith(id, StringComparison.Ordinal)) == true))
-                                .Select(entry => entry.Key));
+                            Directory.CreateDirectory(folder);
+                            current = await ScanAsync(folder, ct);
+                            Publish(current);
+                            _ready.TrySetResult();
                         }
-                        files.UnionWith(related);
-                        if (files.Count == 0) continue;
-                        current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related);
+                        // Reconciliation still runs if the OS watcher silently drops events.
+                        bool signalled = await _signal.WaitAsync(TimeSpan.FromSeconds(45), ct);
+                        if (signalled) await Task.Delay(280, ct);
+                        string[] changes;
+                        bool rescan;
+                        lock (_pending)
+                        {
+                            changes = [.. _pending];
+                            rescan = _rescan || !signalled;
+                            _pending.Clear();
+                            _rescan = false;
+                        }
+                        if (rescan) current = await ScanAsync(folder, ct);
+                        else if (changes.Length > 0)
+                        {
+                            var files = ChangedSources(current, changes, ct);
+                            var related = Related(current, files);
+                            foreach (var manifest in changes.Where(SourceProjects.Manifest))
+                            {
+                                var path = Path.Combine(Root, manifest);
+                                var parent = Path.GetDirectoryName(path)!;
+                                var id = SourceProjects.Id(path) + "|";
+                                related.UnionWith(current.Where(entry => PathHelper.IsInside(Path.Combine(Root, entry.Key), parent) ||
+                                    entry.Value.Syntax.Symbols.Any(symbol => symbol.References?.Any(reference => reference.StartsWith(id, StringComparison.Ordinal)) == true))
+                                    .Select(entry => entry.Key));
+                            }
+                            files.UnionWith(related);
+                            if (files.Count == 0) { Publish(current); continue; }
+                            current = await ProjectSourceIndex.UpdateAsync(_context, Root, folder, files, UseSdk, ct, current, related);
+                        }
+                        Publish(current);
                     }
-                    Volatile.Write(ref _snapshot, current);
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException or ArgumentException or InvalidOperationException)
+                    {
+                        // Retry after transient errors instead of losing the watcher forever.
+                        current = null;
+                        Volatile.Write(ref _snapshot, null);
+                        _ready.TrySetResult();
+                        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ToolException)
-            {
-                Volatile.Write(ref _snapshot, null);
-            }
             finally { _ready.TrySetResult(); }
+        }
+
+        void Publish(Dictionary<string, IndexedSource> current)
+        {
+            lock (_pending)
+                Volatile.Write(ref _snapshot, _pending.Count == 0 && !_rescan ? current : null);
         }
 
         async Task<Dictionary<string, IndexedSource>> ScanAsync(string folder, CancellationToken ct) =>

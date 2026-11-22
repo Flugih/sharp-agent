@@ -1057,18 +1057,27 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             ? new FileDiff(diff, (int)Long(meta["added"]), (int)Long(meta["removed"]))
             : null;
 
-    static string? EditPreview(string diff)
+    internal static string? EditPreview(string diff)
     {
-        if (!diff.EndsWith('\n')) return null;
+        if (string.IsNullOrWhiteSpace(diff)) return null;
         var preview = new StringBuilder();
-        int changed = 0;
+        int changes = 0, omitted = 0, displayed = 0;
         foreach (var line in diff.AsSpan().EnumerateLines())
         {
             if (line.IsEmpty || line[0] is not ('@' or '+' or '-')) continue;
-            if ((line[0] != '@' && ++changed > 40) || preview.Length + line.Length + 1 > 2_000) return null;
-            preview.Append(line).Append('\n');
+            if (line[0] != '@') changes++;
+            if (displayed < 40 && preview.Length + line.Length + 1 <= 1_650)
+            {
+                preview.Append(line).Append('\n');
+                displayed++;
+            }
+            else omitted++;
         }
-        return changed > 0 ? preview.ToString().TrimEnd('\n') : null;
+        if (changes == 0) return null;
+        if (omitted > 0 || !diff.EndsWith('\n'))
+            preview.Append("[Показан неполный diff: пропущено строк: ").Append(omitted)
+                .Append(". Для проверки открой исходный файл или полный git diff.]");
+        return preview.ToString().TrimEnd('\n');
     }
 
     public static TimeSpan? ElapsedOf(JsonObject message) =>

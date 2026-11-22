@@ -16,6 +16,8 @@ await LocalWorkflowsAsync(root);
 await WatcherAsync(root);
 await SemanticTestsAsync(root);
 await ContractAndCoverageAsync(root);
+await UiChecksAsync(root);
+await LocalIntelligenceChecksAsync(root);
 MemoryAndCache(root);
 if (Environment.GetEnvironmentVariable("SHARP_AGENT_TEST_NATIVE") == "1") await NativeChecks.RunAsync(root);
 Console.WriteLine("Sharp Agent: migration, DPAPI, file reads, project index, local routing and model budget passed.");
@@ -45,6 +47,14 @@ static void Migration(string root)
     Put(Path.Combine(old, "history", "chat_test.json"), "changed");
     AppPaths.Migrate(old, data, true);
     Check(File.ReadAllText(Path.Combine(data, "history", "chats", "chat_test.json")) == "{}", "completed migration is idempotent");
+    var partial = Path.Combine(root, "partial");
+    Put(Path.Combine(partial, ".env"), "TOKEN=legacy");
+    Put(Path.Combine(partial, "data", "state.json"), "{}");
+    bool incompleteRejected = false;
+    try { AppPaths.Migrate(partial, Path.Combine(partial, "data"), true); }
+    catch (IOException) { incompleteRejected = true; }
+    Check(incompleteRejected && File.Exists(Path.Combine(partial, ".env")) &&
+        File.Exists(Path.Combine(partial, "data", "state.json")), "partial destination is never silently accepted or overwritten");
 }
 
 static async Task ReadsAndIndexAsync(string root)
@@ -70,6 +80,10 @@ static async Task ReadsAndIndexAsync(string root)
     Check(index["Проект.cs"].Syntax.Symbols.Any(symbol => symbol.Name == "ExampleMethod"), "indexed C# symbol");
     Check(!roslynInstalled || index["Проект.cs"].Roslyn, "Roslyn index when SDK is usable");
     Check(File.Exists(Path.Combine(context.DatabaseFolder, "projects.db")), "system SQLite database");
+    var largeDiff = "@@ -1,1 +1,1 @@\n" + string.Concat(Enumerable.Range(0, 80).Select(i => "+value" + i + "\n"));
+    var preview = AgentRunner.EditPreview(largeDiff);
+    Check(preview != null && preview.Contains("неполный diff") && preview.Contains("пропущено"),
+        "large edit previews remain explicitly partial rather than disappearing");
     var secondIndex = await ProjectSourceIndex.UpdateAsync(context, working, context.CodeIndexFolder, ["Проект.cs"], true, default);
     Check(index["Проект.cs"].Hash == secondIndex["Проект.cs"].Hash, "read persisted index");
     Put(path, "class Example\n{\n    public int ExampleMethod() => 22;\n}");
@@ -316,6 +330,65 @@ static async Task ContractAndCoverageAsync(string root)
     Check(coverage?.Contains("Example.Edited: 1/2") == true && coverage.Contains("изменённых покрыто 1/1") &&
         !coverage.Contains("Unrelated") && ChangedCoverage.Latest(context, working, DateTime.UtcNow.AddMinutes(1), edits) == null,
         "fresh Cobertura maps changed lines to their method only");
+}
+
+static async Task UiChecksAsync(string root)
+{
+    var work = Path.Combine(root, "ui-checks");
+    var data = Path.Combine(root, "ui-checks-data");
+    Directory.CreateDirectory(work);
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = data };
+    context.ReadBrowser = (url, selector, text, ct) =>
+        Task.FromResult(new BrowserTools.Snapshot(url ?? "https://example.org", "Test", "", [], selector == "#present", true));
+    var tools = new ToolRegistry(context);
+    const string save = """
+        {"action":"save","id":"regression-ui","mode":"browser",
+         "suite":{"checks":[{"target":"https://example.org","selector":"#present"},
+                            {"target":"https://example.org","selector":"#missing"}]}}
+        """;
+    var stored = await tools.ExecuteAsync(LocalTestTools.Name, save, null, default);
+    Check(!stored.IsError, "UI suite is stored locally");
+    var failed = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"regression-ui"}""", null, default);
+    Check(failed.IsError && failed.Output.Contains("1/2") && failed.Output.Contains("#missing"),
+        "failed UI assertions produce a failed tool outcome, not a false success: " + failed.Output);
+    const string passing = """
+        {"action":"save","id":"passing-ui","mode":"browser",
+         "suite":{"checks":[{"target":"https://example.org","selector":"#present"}]}}
+        """;
+    Check(!(await tools.ExecuteAsync(LocalTestTools.Name, passing, null, default)).IsError, "passing UI suite stored");
+    var succeeded = await tools.ExecuteAsync(LocalTestTools.Name, """{"action":"run","id":"passing-ui"}""", null, default);
+    Check(!succeeded.IsError && succeeded.Output.Contains("1/1"), "passing UI assertions still succeed");
+}
+
+static async Task LocalIntelligenceChecksAsync(string root)
+{
+    var working = Path.Combine(root, "research-project");
+    var data = Path.Combine(root, "research-data");
+    var context = new ToolContext { WorkingDirectory = working, AppFolder = data };
+    var path = Path.Combine(working, "notes.md");
+    Put(path, "# Project\nUniqueResearchMarker: blue sky\n");
+    var tools = new ToolRegistry(context);
+    var indexed = await tools.ExecuteAsync(LocalResearchEngine.Name, """{"action":"index"}""", null, default);
+    Check(!indexed.IsError, "document index created: " + indexed.Output);
+    var found = await tools.ExecuteAsync(LocalResearchEngine.Name, """{"action":"search","query":"UniqueResearchMarker"}""", null, default);
+    Check(!found.IsError && found.Output.Contains("notes.md"), "local FTS5 document search");
+    var pass = await tools.ExecuteAsync(LocalContractEngine.Name, new JsonObject {
+        ["checks"] = new JsonArray(new JsonObject { ["kind"] = "contains", ["path"] = path, ["expected"] = "blue sky" },
+                                    new JsonObject { ["kind"] = "exists", ["path"] = path })
+    }.ToJsonString(), null, default);
+    Check(!pass.IsError && pass.Output.Contains("2/2"), "mandatory contract passes");
+    var fail = await tools.ExecuteAsync(LocalContractEngine.Name, new JsonObject {
+        ["checks"] = new JsonArray(new JsonObject { ["kind"] = "contains", ["path"] = path, ["expected"] = "not present" })
+    }.ToJsonString(), null, default);
+    Check(fail.IsError && fail.Output.Contains("0/1"), "mandatory contract failure is an error");
+    var definitions = (JsonArray)tools.Definitions.DeepClone();
+    Check(ToolDefinitionSelection.Reduce(definitions, "Исправь метод класса в C# проекте") &&
+          definitions.Count < tools.Definitions.Count &&
+          definitions.OfType<JsonObject>().Any(d => (string?)d["function"]?["name"] == LocalContractEngine.Name),
+          "code-task tool schemas are reduced without losing verification");
+    var ambiguous = (JsonArray)tools.Definitions.DeepClone();
+    Check(!ToolDefinitionSelection.Reduce(ambiguous, "Помоги разобраться") && ambiguous.Count == tools.Definitions.Count,
+          "ambiguous tasks retain the full tool set");
 }
 
 static void MemoryAndCache(string root)

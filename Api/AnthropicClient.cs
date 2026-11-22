@@ -86,7 +86,14 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             ["model"] = model, ["messages"] = turns, ["stream"] = true,
             ["max_tokens"] = Math.Min(maxTokens is > 0 ? maxTokens.Value : 16_384, limit > 0 ? limit : int.MaxValue),
         };
-        if (system.Count > 0) body["system"] = string.Join("\n\n", system);
+        // A stable explicit Anthropic cache boundary saves repeated system-token work.
+        // Tool results and dynamic context are intentionally not pinned here.
+        if (system.Count > 0) body["system"] = new JsonArray(new JsonObject
+        {
+            ["type"] = "text",
+            ["text"] = string.Join("\n\n", system),
+            ["cache_control"] = new JsonObject { ["type"] = "ephemeral" },
+        });
         JsonArray definitions = [.. (tools ?? []).OfType<JsonObject>().Select(tool => tool["function"]).OfType<JsonObject>().Select(function => new JsonObject
         {
             ["name"] = function["name"]?.DeepClone(), ["description"] = function["description"]?.DeepClone(),

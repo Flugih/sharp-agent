@@ -58,7 +58,22 @@ public static class AppPaths
 
     internal static void Migrate(string legacy, string destination, bool protect)
     {
-        if (Directory.Exists(destination)) return;
+        if (Directory.Exists(destination))
+        {
+            var completed = Path.Combine(destination, ".migration-version");
+            if (File.Exists(completed))
+            {
+                if ((File.GetAttributes(completed) & FileAttributes.ReparsePoint) != 0 || File.ReadAllText(completed) != "1")
+                    throw new IOException("Версия завершённой миграции повреждена: " + completed);
+                return;
+            }
+            // Do not silently accept a partial target while legacy data still exists.
+            if (MigratedPaths.Any(item => File.Exists(Path.Combine(legacy, item.Old)) ||
+                                           Directory.Exists(Path.Combine(legacy, item.Old))))
+                throw new IOException("Папка данных существует без отметки завершённой миграции. " +
+                    "Исходные данные сохранены; проверьте папку вручную: " + destination);
+            return;
+        }
         var stage = destination + ".migrating";
         var marker = Path.Combine(stage, ".migration-version");
         if (Directory.Exists(stage))
