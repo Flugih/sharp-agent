@@ -48,7 +48,8 @@ public partial class MainWindow
         }
         if (newTool && update.Action is { } call)
         {
-            var label = Activity(call.Name, call.ArgumentsJson).Trim();
+            var description = Describe(call.Name, call.ArgumentsJson);
+            var label = call.Name == LocalResearchEngine.Name ? description.Label : Activity(call.Name, call.ArgumentsJson).Trim();
             var text = new Shimmer { Text = label, TextWrapping = TextWrapping.Wrap, IsActive = true };
             if (call.Name == "search_text")
             {
@@ -59,14 +60,14 @@ public partial class MainWindow
             else row.Activity.Children.Add(new DockPanel
             {
                 Margin = new(0, 6, 0, 7),
-                Children = { GlyphText(Describe(call.Name).Glyph, 16, "TextMuted", new(0, 2, 10, 0), false), text },
+                Children = { GlyphText(description.Glyph, 16, "TextMuted", new(0, 2, 10, 0), false), text },
             });
             row.Tools.Add(call.Id, text);
         }
         if (update.CompletedAction is { } done && row.Tools.Remove(done.Id, out var tool))
         {
             bool failed = done.IsError || done.IsWarning;
-            tool.Text = (done.Name == "search_text" ? tool.Text : Describe(done.Name).Label) + (failed ? " · ошибка" : " · выполнено");
+            tool.Text = (done.Name is "search_text" or LocalResearchEngine.Name ? tool.Text : Describe(done.Name).Label) + (failed ? " · ошибка" : " · выполнено");
             tool.IsActive = false;
             tool.Base = failed ? "Warning" : "TextMuted";
         }

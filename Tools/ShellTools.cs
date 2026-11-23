@@ -56,6 +56,7 @@ public static partial class ShellTools
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         var proxy = AppNetwork.ConfigureCommand(psi);
+        if (saveLog && GitInspectionOf(a) != null) psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
         if (bundled)
         {
             psi.Environment.TryGetValue("PATH", out var path);

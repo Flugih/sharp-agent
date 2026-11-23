@@ -24,6 +24,16 @@ partial class ShellTools
         return commands;
     }
 
+    internal static string? GitInspectionOf(ToolArgs args)
+    {
+        if (args.Optional("session_id") != null) return null;
+        var checks = Commands(args).SelectMany(command => command.Split(';', StringSplitOptions.TrimEntries)).ToArray();
+        return checks.All(check => GitInspection().IsMatch(check)) ? string.Join("; ", checks.Select(check => Regex.Replace(check, @"[ \t]+", " "))) : null;
+    }
+
+    [GeneratedRegex(@"\Agit[ \t]+(?:status(?:[ \t]+(?:--short|--branch|-s|-b|--porcelain(?:=v[12])?))*|diff(?:[ \t]+(?:--stat|--name-only|--name-status|--cached|--staged|--no-ext-diff|--no-textconv))*(?:[ \t]+--(?:[ \t]+[\w.\\/-]+)*)?)\z")]
+    private static partial Regex GitInspection();
+
     internal sealed class Sessions
     {
         (string Id, Task<string> Result, CancellationTokenSource Cancellation, string? Command)? _active;

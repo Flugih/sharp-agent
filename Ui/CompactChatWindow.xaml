@@ -4,7 +4,7 @@
         xmlns:ui="clr-namespace:SharpAgent.Ui"
         Title="{ui:Localized 'Sharp Agent · Компактный режим', 'Sharp Agent · Compact mode'}" Width="360" SizeToContent="Height" WindowStyle="None"
         ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent" Foreground="{DynamicResource Text}"
-        FontFamily="Segoe UI" FontSize="14" Topmost="True" ShowInTaskbar="False"
+        FontFamily="{x:Static ui:Theme.Ui}" FontSize="14" Topmost="True" ShowInTaskbar="False"
         UseLayoutRounding="True" AllowDrop="True" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" PreviewKeyDown="Window_PreviewKeyDown">
     <StackPanel Margin="8,5,8,9">
         <Border x:Name="TranscriptCard" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="16" Padding="14,4,8,4"

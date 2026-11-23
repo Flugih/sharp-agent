@@ -429,7 +429,7 @@ public partial class MainWindow
             "run_plugin" => Tr("Выполнение плагина…", "Running plugin…"),
             ScriptRegistry.Name => Tr("Локальный сценарий…", "Local script…"),
             LocalTestTools.Name => Tr("Локальные проверки…", "Local checks…"),
-            LocalResearchEngine.Name => Tr("Ищу в локальном индексе…", "Searching the local index…"),
+            LocalResearchEngine.Name => Activity(e.Name, e.ArgumentsJson) + "…",
             "local_batch" => Tr("Выполняю локальные проверки…", "Running local checks…"),
             ToolOutputStore.Name => Tr("Дочитываю сохранённый результат…", "Reading the saved result…"),
             LocalContractEngine.Name => Tr("Проверяю, выполнены ли условия задачи…", "Checking whether the task meets its requirements…"),
@@ -500,7 +500,7 @@ public partial class MainWindow
             "run_plugin" => Tr("Запускаю плагин ", "Running plugin ") + Get("name"),
             ScriptRegistry.Name => Tr("Локальный сценарий", "Local script"),
             LocalTestTools.Name => Tr("Локальные проверки", "Local checks"),
-            LocalResearchEngine.Name => Tr("Локальный поиск", "Local research"),
+            LocalResearchEngine.Name => ResearchAction(Get("action")).Activity,
             "local_batch" or ToolOutputStore.Name => Describe(tool).Label,
             LocalContractEngine.Name => Describe(tool).Label,
             AgentKnowledge.Name => Tr("База проверенных решений", "Verified solutions"),
@@ -514,9 +514,19 @@ public partial class MainWindow
             "delegate_tasks" => Tr("Субагенты выполняют поручения", "Subagents are working"),
             "update_plan" => Tr("Обновляю план", "Updating the plan"),
             ComputerTools.Name or ComputerTools.AppName => ComputerActivity(Get("action")) + ((Get("element") ?? Get("path")) is { } target ? " " + OneLine(target) : ""),
-            _ => Tr("Выполняю ", "Running ") + tool,
+            _ => Tr("Выполняю действие", "Running an action"),
         };
     }
+
+    static (string Label, string Activity) ResearchAction(string? action) => action switch
+    {
+        "index" => (Tr("Индексация файлов", "File indexing"), Tr("Обновляю индекс файлов", "Updating the file index")),
+        "search" => (Tr("Поиск по локальным файлам", "Local file search"), Tr("Ищу текст в локальных файлах", "Searching local files")),
+        "inspect" => (Tr("Чтение документа", "Read document"), Tr("Читаю документ", "Reading a document")),
+        "related" => (Tr("Поиск похожих документов", "Related document search"), Tr("Ищу похожие документы", "Finding related documents")),
+        "duplicates" => (Tr("Поиск копий файла", "Duplicate file search"), Tr("Ищу файлы с таким же содержимым", "Finding identical files")),
+        _ => (Tr("Работа с локальными файлами", "Local file research"), Tr("Просматриваю локальные файлы", "Inspecting local files")),
+    };
 
     static string ComputerActivity(string? action) => action switch
     {
@@ -536,13 +546,14 @@ public partial class MainWindow
         _ => Tr("Управляю программой", "Controlling the application"),
     };
 
-    static (string Glyph, string Label) Describe(string tool) => tool switch
+    internal static (string Glyph, string Label) Describe(string tool, string argumentsJson = "{}") => tool switch
     {
         "enable_tools" => (Glyphs.Info, Tr("Подключение инструментов", "Enable tools")),
         "read_file" => (Glyphs.View, Tr("Чтение файла", "Read file")),
         "read_many" => (Glyphs.View, Tr("Чтение файлов", "Read files")),
         ScriptRegistry.Name => (Glyphs.Terminal, Tr("Локальный сценарий", "Local script")),
         LocalTestTools.Name => (Glyphs.Info, Tr("Локальные проверки", "Local checks")),
+        LocalResearchEngine.Name => (Glyphs.Search, ResearchAction(ArgumentOf(argumentsJson, "action")).Label),
         LocalContractEngine.Name => (Glyphs.Check, Tr("Проверка условий задачи", "Task requirements check")),
         "local_batch" => (Glyphs.Check, Tr("Пакет локальных проверок", "Batch of local checks")),
         ToolOutputStore.Name => (Glyphs.View, Tr("Чтение сохранённого результата", "Read saved tool output")),
@@ -572,7 +583,7 @@ public partial class MainWindow
         "update_plan" => (Glyphs.Check, Tr("План", "Plan")),
         ComputerTools.Name => (Glyphs.Open, Tr("Управление программой", "Application control")),
         ComputerTools.AppName => (Glyphs.Open, Tr("Проверка приложения", "Application check")),
-        _ => (Glyphs.Tool, tool),
+        _ => (Glyphs.Tool, Tr("Действие агента", "Agent action")),
     };
 
     ProgressSection? AddFileEditProgress(string name, string? path, UIElement item)
@@ -592,7 +603,7 @@ public partial class MainWindow
 
     ToolRow AddToolRow(string id, string name, string argumentsJson, string? completedCommand = null)
     {
-        var (glyph, label) = Describe(name);
+        var (glyph, label) = Describe(name, argumentsJson);
         var running = new Shimmer { Text = label, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, IsActive = true };
         var status = new TextBlock
         {
@@ -675,6 +686,8 @@ public partial class MainWindow
                 (Get("session_id") is { Length: > 0 } ? Plain(Tr("Получение результата", "Waiting for the result")) : null),
             "search_files" => Plain(OneLine(Get("pattern"))),
             "search_text" => Plain(OneLine(Get("query"))) ?? Plain(Tr("Запрос без текста", "Empty search query")),
+            LocalResearchEngine.Name when Get("action") == "search" => Plain(OneLine(Get("query"))),
+            LocalResearchEngine.Name when Get("action") == "index" => Plain(OneLine(ShortName(Get("directory")))),
             "generate_image" => Plain(OneLine(Get("prompt"))),
             "use_plugin" => Plain(Get("name")),
             "read_log" => Plain(Get("log_id")),
@@ -896,7 +909,7 @@ public partial class MainWindow
                 };
                 footer.Children.Add(journal);
             }
-            details.Children.Add(BlockBox(new StackPanel { Children = { BlockLabel(Describe(row.Name).Label), code, footer } }, new(12)));
+            details.Children.Add(BlockBox(new StackPanel { Children = { BlockLabel(Describe(row.Name, row.ArgumentsJson).Label), code, footer } }, new(12)));
             row.Root.Children.Add(row.Details);
         }
         bool open = !row.Details.IsOpen;

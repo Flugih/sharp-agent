@@ -35,6 +35,9 @@ sealed class ProjectWatcher : IDisposable
     internal bool DocumentsReady(string root) => Volatile.Read(ref _active) is { } current &&
         PathHelper.SamePath(current.Root, root) && current.DocumentsReady;
 
+    internal (Guid Session, long Revision)? InspectionStamp(string root) =>
+        Volatile.Read(ref _active) is { } current && PathHelper.SamePath(current.Root, root) ? current.InspectionStamp : null;
+
     internal void Reconcile(string root)
     {
         if (Volatile.Read(ref _active) is { } current && PathHelper.SamePath(current.Root, root)) current.Reconcile();
@@ -68,6 +71,8 @@ sealed class ProjectWatcher : IDisposable
         readonly CancellationTokenSource _stop = new();
         readonly SemaphoreSlim _signal = new(0, 1);
         readonly HashSet<string> _pending = new(StringComparer.OrdinalIgnoreCase);
+        readonly Guid _inspectionSession = Guid.NewGuid();
+        long _inspectionRevision;
         readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource _updated = new(TaskCreationOptions.RunContinuationsAsynchronously);
         Dictionary<string, IndexedSource>? _snapshot;
@@ -78,6 +83,7 @@ sealed class ProjectWatcher : IDisposable
         internal string Root { get; }
         internal bool UseSdk => _context.SandboxRoot == null;
         internal bool DocumentsReady => _documentsReady;
+        internal (Guid Session, long Revision) InspectionStamp => (_inspectionSession, Interlocked.Read(ref _inspectionRevision));
         internal IndexProgress? Progress => Volatile.Read(ref _progress) ??
             (Volatile.Read(ref _scanOcr) is { IsCompleted: false } ? Scanning : null);
 
@@ -90,11 +96,12 @@ sealed class ProjectWatcher : IDisposable
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size };
             _watcher.Changed += (_, args) =>
             {
+                TrackInspectionChange(args.FullPath);
                 if (LocalResearchEngine.Supports(args.FullPath)) Enqueue(args.FullPath);
             };
-            _watcher.Created += (_, args) => Enqueue(args.FullPath);
-            _watcher.Deleted += (_, args) => Enqueue(args.FullPath);
-            _watcher.Renamed += (_, args) => { Enqueue(args.OldFullPath); Enqueue(args.FullPath); };
+            _watcher.Created += (_, args) => TrackEntry(args.FullPath);
+            _watcher.Deleted += (_, args) => TrackEntry(args.FullPath);
+            _watcher.Renamed += (_, args) => { TrackEntry(args.OldFullPath); TrackEntry(args.FullPath); };
             _watcher.Error += (_, _) => Reconcile();
             try { _watcher.EnableRaisingEvents = true; }
             catch { _watcher.Dispose(); throw; }
@@ -103,8 +110,21 @@ sealed class ProjectWatcher : IDisposable
 
         internal void Reconcile()
         {
+            Interlocked.Increment(ref _inspectionRevision);
             lock (_pending) { _rescan = true; Invalidate(); }
             Signal();
+        }
+
+        void TrackEntry(string path)
+        {
+            TrackInspectionChange(path);
+            Enqueue(path);
+        }
+
+        void TrackInspectionChange(string path)
+        {
+            if (_context.AppFolder is { } data && !PathHelper.IsInside(Root, data) && PathHelper.IsInside(path, data)) return;
+            Interlocked.Increment(ref _inspectionRevision);
         }
 
         void Enqueue(string path)

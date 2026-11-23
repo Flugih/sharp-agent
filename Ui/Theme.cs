@@ -14,7 +14,10 @@ public static class Theme
 
     public static FontFamily Icons => (FontFamily)Application.Current.Resources["IconFont"];
     public static FontFamily Mono => (FontFamily)Application.Current.Resources["MonoFont"];
-    public static readonly FontFamily Ui = new("Segoe UI");
+    public static readonly FontFamily Ui = new(string.Join(", ", new[]
+    {
+        SystemFonts.MessageFontFamily.Source, "Segoe UI", "Helvetica", "Arial", "Global User Interface"
+    }.Distinct(StringComparer.OrdinalIgnoreCase)));
 
     public static bool AnimationsEnabled => SystemParameters.ClientAreaAnimation;
 

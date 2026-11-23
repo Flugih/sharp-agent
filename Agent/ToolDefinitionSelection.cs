@@ -2,64 +2,71 @@ namespace SharpAgent.Agent;
 
 internal static class ToolDefinitionSelection
 {
-    internal static readonly string[] Groups = ["all", "files", "code", "documents", "browser", "computer", "media", "plugins", "git", "tests", "web"];
+    const string WebScheme = @"https?\\?:(?:\\?/){2}";
+    const string DocumentRequest = @"(?i)\b(?:docx|xlsx|pptx|pdf|csv|json|word|documents?|spreadsheet)\b|документ|таблиц|отч[её]т";
+    internal static readonly string[] Groups = ["all", "files", "code", "documents", "browser", "browser_capture", "computer", "media", "plugins", "git", "tests", "web"];
 
     internal static JsonObject EnableDefinition() => new()
     {
         ["type"] = "function", ["function"] = new JsonObject
         {
             ["name"] = "enable_tools",
-            ["description"] = Tr("Открыть нужный инструмент или группу, когда текущих инструментов недостаточно. Укажи один из аргументов.",
-                "Enable a needed tool or group when the current selection is insufficient. Provide one argument."),
+            ["description"] = Tr("Подключи нужный инструмент или группу по смыслу текущей задачи. Укажи один аргумент. Для чтения сайтов используй web. Если пользователь просит поработать на странице или проверить её интерфейс, подключи browser, а если нужны снимки результата — browser_capture. Для действий в настольных приложениях используй computer.",
+                "Enable the tool or group needed for the current task. Provide one argument. Use web for reading sites. When the user requests work on a page or a visible UI check, enable browser, or browser_capture if they need screenshots of the result. Use computer for desktop apps."),
             ["parameters"] = Schema.Object(new Prop("group", "string", Tr("Группа инструментов.", "Tool group."), Enum: Groups),
                 new Prop("tool", "string", Tr("Точное имя инструмента.", "Exact tool name."))),
         },
     };
 
-    internal static Func<string, bool>? Initial(string request)
+    internal static Func<string, bool> Initial(string request)
     {
         var groups = new List<string>();
+        bool styleChange = Regex.IsMatch(request, @"(?i)\b(?:font|colou?r|padding|margin)\b|шрифт|цвет|отступ") &&
+            Regex.IsMatch(request, @"(?i)\b(?:change|edit|update|modify|replace|set)\b|измени|исправ|поменя|замени|установи|сделай");
         bool review = Regex.IsMatch(request, @"(?i)^\s*(?:review|inspect|изучи|посмотри)\s") &&
             !Regex.IsMatch(request, @"(?i)\b(?:fix|edit|update|change|implement|build|run|test|write|create|delete|move)\b|исправ|измен|реализ|сборк|запусти|тест|созда|удал|перенес");
-        if (review) groups.Add("files");
-        else if (Regex.IsMatch(request, @"(?i)\b(?:refactor|edit|update|modify|implement|methods?|class|project|dotnet|compiler|typescript|python|csharp|endpoint|auth)\b|рефактор|исходник|метод|класс|исправ|измен|сборк|проект|авторизац"))
+        if (review && !styleChange) groups.Add("files");
+        else if (styleChange || Regex.IsMatch(request, @"(?i)\b(?:refactor|edit|update|modify|implement|methods?|class|project|dotnet|compiler|typescript|python|csharp|endpoint|auth)\b|рефактор|исходник|метод|класс|исправ|измен|сборк|проект|авторизац"))
             groups.Add("edit");
-        if (Regex.IsMatch(request, @"(?i)\b(?:docx|xlsx|pptx|pdf|csv|json|documents?|spreadsheet)\b|документ|таблиц|отч[её]т")) groups.Add("documents");
-        if (BrowserInteraction(request)) groups.Add("browser");
+        if (Regex.IsMatch(request, DocumentRequest)) groups.Add("documents");
         if (WebRequest(request)) groups.Add("web");
-        if (Regex.IsMatch(request, @"(?i)\b(?:computer use|click|mouse|window|desktop|screenshot)\b|окн[оае]|мыш[ьюи]|нажми|скриншот")) groups.Add("computer");
         if (Regex.IsMatch(request, @"(?i)\b(?:image|audio|video)\b|картинк|изображен|видео|аудио")) groups.Add("media");
         if (Regex.IsMatch(request, @"(?i)\bplugins?\b|плагин")) groups.Add("plugins");
         if (Regex.IsMatch(request, @"(?i)\b(?:git|commit|branch)\b|коммит|ветк")) groups.Add("git");
         var checks = Regex.Replace(request, @"(?i)\bno tests\b|без тестов", "");
         if (Regex.IsMatch(checks, @"(?i)\b(?:tests?|testing|coverage)\b|тест|покрыти")) groups.Add("tests");
-        if (Regex.IsMatch(checks, @"(?i)\b(?:build|compile|dotnet)\b|сборк|компиляц")) groups.Add("shell");
-        if (groups.Count == 0) return null;
+        if (Regex.IsMatch(checks, @"(?i)\b(?:build|compile|dotnet|powershell|cmd)\b|сборк|компиляц")) groups.Add("shell");
+        if (groups.Count == 0) groups.AddRange(["edit", "web"]);
+        bool styleEdit = styleChange && !groups.Any(group => group is "git" or "tests" or "shell");
         bool contract = Regex.IsMatch(request, @"(?i)acceptance criteria|requirements check|критери[ий]|услови[ея] приёмки");
-        return name => contract && name == LocalContractEngine.Name || name != LocalContractEngine.Name &&
-            (Belongs(name, "files") || groups.Any(group => Belongs(name, group)));
+        return name => (!styleEdit || name != "exec_command") &&
+            (contract && name == LocalContractEngine.Name || name != LocalContractEngine.Name &&
+             (Belongs(name, "files") || groups.Any(group => Belongs(name, group))));
     }
 
-    internal static bool BackgroundResearch(string request) => WebRequest(request) && !BrowserInteraction(request) &&
-        Regex.IsMatch(request, @"(?i)https?://|\b(?:github|internet|online|research|search|review|inspect)\b|интернет|изучи|посмотри|просмотри|поищи|найди|расскажи|объясни|про что|о ч[её]м");
-
-    internal static bool RepositoryOverview(string request) => BackgroundResearch(request) &&
+    internal static bool RepositoryOverview(string request) => WebRequest(request) &&
         Regex.IsMatch(request, @"(?i)\b(?:review|inspect|explain|summari[sz]e|look)\b|просмотри|посмотри|изучи|расскажи|объясни|про что|о ч[её]м") &&
         !Regex.IsMatch(request, @"(?i)\b(?:fix|edit|update|implement|build|clone|pull|test|compare)\b|исправ|измен|реализ|сборк|скачай|клонируй|сравни|запусти|тест");
 
     static bool WebRequest(string request) =>
-        Regex.IsMatch(request, @"(?i)https?://|\b(?:github|repo(?:sitory)?|website|webpage|internet|online)\b|репозитор|\bреп[ауые]\b|интернет|сайт");
+        Regex.IsMatch(request, "(?i)" + WebScheme + @"|\b(?:github|repo(?:sitory)?|website|webpage|internet|online)\b|репозитор|\bреп[ауые]\b|интернет|сайт");
 
-    internal static bool BrowserInteraction(string request) =>
-        !Regex.IsMatch(request, @"(?i)без (?:браузера|webview|вкладок)|не\s+открыва\w*|without (?:a |the )?browser|(?:do not|don't) open") &&
-        (Regex.IsMatch(request, @"(?i)\b(?:in (?:the )?browser|open (?:the )?browser)\b|в (?:браузере|webview)\b|открой\s+(?:браузер|сайт|страниц|вкладк|ссылк|https?://)|open\s+https?://") ||
-         WebRequest(request) && Regex.IsMatch(request, @"(?i)\b(?:click|screenshot)\b|нажми|кликни|скриншот|(?:проверь|протестируй)\s+(?:интерфейс|кнопк|форму|в[её]рстку)"));
+    static bool ScreenshotRequest(string request) =>
+        Regex.IsMatch(request, @"(?i)\b(?:screenshots?|скриншот\w*|скрин[ыа]?|сним(?:и|ок|ки)|сфотка\w*|фотка(?:й|ть)\w*|сфотографир\w*)\b") &&
+        !Regex.IsMatch(request, @"(?i)\b(?:без (?:скринов|скриншотов|снимков)|without screenshots?|не (?:фоткай|сфоткай|снимай|делай скриншот\w*))\b");
+
+    internal static bool BrowserScreenshotDocument(string request) =>
+        Regex.IsMatch(request, DocumentRequest) && ScreenshotRequest(request) && WebRequest(request);
+
+    internal static bool BrowserProhibited(string request) => Regex.IsMatch(request,
+        @"(?i)\b(?:без (?:браузера|webview|вкладок)|не (?:открыва\w*|запуска\w*|использу\w*)\s+(?:браузер|webview|вкладк\w*|ссылк\w*)|without (?:a |the )?(?:browser|tabs)|(?:do not|don't) (?:open|use)\s+(?:(?:a|the) )?(?:browser|tabs|links))\b");
 
     internal static bool Belongs(string name, string group) => group switch
     {
-        "all" => true,
+        "all" => name != BrowserTools.Name,
         "files" or "code" or "documents" or "git" or "tests" when name is ToolOutputStore.Name or "local_batch" => true,
         "browser" => name is BrowserTools.Name or "open_path",
+        "browser_capture" => name is BrowserTools.Name or ComputerTools.Name,
         "web" => name == WebResearch.Name,
         "computer" => ComputerTools.IsControl(name),
         "media" => name is "generate_image" or "image_edit" or "use_plugin" or "run_plugin",
@@ -77,6 +84,7 @@ internal static class ToolDefinitionSelection
 partial class AgentRunner
 {
     JsonArray? _scopedDefinitions;
+    bool BrowserEnabled => _scopedDefinitions?.Any(item => Str(item?["function"]?["name"]) == BrowserTools.Name) == true;
 
     ToolOutcome EnableToolGroup(JsonObject args)
     {
@@ -87,6 +95,8 @@ partial class AgentRunner
             return new(PromptText("Ошибка: неизвестная группа инструментов.", "Error: unknown tool group."), true);
         if (_scopedDefinitions == null || _toolCatalog == null)
             return new(PromptText("Ошибка: список инструментов недоступен.", "Error: the tool list is unavailable."), true);
+        if ((group is "browser" or "browser_capture" || tool == BrowserTools.Name) && !_toolCatalog.ContainsKey(BrowserTools.Name))
+            return new(PromptText("Ошибка: встроенный браузер недоступен в текущем запросе.", "Error: the built-in browser is unavailable for this request."), true);
         var selected = _toolCatalog.Where(item => tool != null ? item.Key == tool : ToolDefinitionSelection.Belongs(item.Key, group!)).ToArray();
         if (tool != null && selected.Length == 0)
             return new(PromptText("Ошибка: инструмент недоступен.", "Error: the tool is unavailable."), true);
@@ -98,7 +108,10 @@ partial class AgentRunner
             foreach (var item in added) expanded.Add(item.Value.DeepClone());
             _scopedDefinitions = expanded;
         }
-        return new(PromptText($"Группа {tool ?? group}: добавлено инструментов {added.Length}.", $"Group {tool ?? group}: {added.Length} tools added."), false);
+        var result = PromptText($"Группа {tool ?? group}: добавлено инструментов {added.Length}.", $"Group {tool ?? group}: {added.Length} tools added.");
+        if (group == "browser_capture" && !_toolCatalog.ContainsKey(ComputerTools.Name))
+            result += PromptText(" Управление компьютером отключено, скриншоты недоступны.", " Computer Use is disabled, so screenshots are unavailable.");
+        return new(result, false);
     }
 
     Dictionary<string, JsonNode>? _toolCatalog;

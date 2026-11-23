@@ -82,6 +82,22 @@ partial class AgentRunner
             notes.Add(PromptText("В плане остались невыполненные пункты: ", "The plan has unfinished steps: ") + string.Join("; ", open) +
                       PromptText(". Выполни их или обнови план, если они не нужны.", ". Complete them or update the plan if they are unnecessary."));
         var task = ExtractText(LastUser()?["content"]) ?? "";
+        bool needsBrowserScreenshots = !ToolDefinitionSelection.BrowserProhibited(task) &&
+            (ToolDefinitionSelection.BrowserScreenshotDocument(task) || actions.Any(action =>
+                action.Call.Name == "enable_tools" && Str(ArgsOf(action.Call)?["group"]) == "browser_capture"));
+        if (needsBrowserScreenshots && !actions.Any(action =>
+                action.Call.Name == ComputerTools.Name && ArgsOf(action.Call) is { } args &&
+                Str(args["action"]) == "screenshot" && string.Equals(Str(args["window"]), "browser", StringComparison.OrdinalIgnoreCase) &&
+                Str(action.Result["content"])?.StartsWith(ComputerTools.ShotPrefix, StringComparison.Ordinal) == true))
+        {
+            var missing = PromptText("Пока нет сохранённых скриншотов результата из встроенного браузера.",
+                "There are no saved screenshots of the result from the built-in browser yet.");
+            notes.Add(missing + (tools.Context.SandboxRoot != null || tools.Context.ReadBrowser == null || !tools.Context.ComputerUse
+                ? PromptText(" Браузер или управление компьютером недоступны в текущем режиме. Укажи, какие шаги остались невыполненными.",
+                    "The browser or Computer Use is unavailable in this mode. Explain which steps remain incomplete.")
+                : PromptText(" Подключи browser_capture при необходимости, выполни работу на указанных сайтах и сохрани снимки через computer с window=\"browser\". Используй снимки в результате, как просил пользователь. Если это не удалось, укажи точную причину.",
+                    "Enable browser_capture if needed, complete the requested work on the sites, and save screenshots with computer and window=\"browser\". Use the screenshots in the deliverable as requested. If blocked, report the exact cause.")));
+        }
         bool automatic = WorkMode && tools.Context.SandboxRoot == null &&
             !Regex.IsMatch(task, @"(?i)(?:\bбез (?:сборки|тестов|проверок)|\bне (?:запускай|выполняй|проверяй|собирай)|\bdo not (?:run|build|test)|\bno tests)\b");
         if (WorkMode && Regex.IsMatch(task, @"(?i)(?:запусти|выполни|прогони)\s+(?:(?:unit|авто|модульные)\s*)?тест[ыа]|\brun\s+(?:the\s+)?(?:unit\s+)?tests\b") &&

@@ -756,7 +756,7 @@
         <Style TargetType="ToolTip">
             <Setter Property="ui:PopupPlacement.InWindow" Value="True"/>
             <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontFamily" Value="{x:Static ui:Theme.Ui}"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="MaxWidth" Value="480"/>
             <Setter Property="Template" Value="{StaticResource ToolTipTemplate}"/>
@@ -778,7 +778,7 @@
             <Setter Property="OverridesDefaultStyle" Value="True"/>
             <Setter Property="SnapsToDevicePixels" Value="True"/>
             <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontFamily" Value="{x:Static ui:Theme.Ui}"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="HasDropShadow" Value="False"/>
             <Setter Property="Grid.IsSharedSizeScope" Value="True"/>

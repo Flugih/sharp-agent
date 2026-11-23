@@ -34,14 +34,35 @@ partial class AgentRunner
     {
         if (ArgsOf(call) is not { } parameters) return null;
         if (call.Name == "use_plugin" && PluginName(call) is { } plugin) return new("use_plugin " + plugin.ToUpperInvariant());
-        if (call.Name != "local_batch" || parameters["operations"] is not JsonArray { Count: > 0 } operations) return null;
-        List<string> identity = [], paths = [];
         try
         {
+            if (call.Name == "exec_command" && tools.Context.SandboxRoot == null)
+            {
+                var shell = new ToolArgs(parameters);
+                if (ShellTools.GitInspectionOf(shell) is not { } command) return null;
+                var folder = PathHelper.FinalPath(tools.Context.Resolve(shell.Optional("working_directory")));
+                return Directory.Exists(Path.Combine(folder, ".git")) && tools.Context.ProjectWatcher.InspectionStamp(folder) is { } gitStamp
+                    ? new($"git {folder}|{gitStamp}|{ShellTools.ShellOf(shell)}|{command}", Path: folder) : null;
+            }
+            if (call.Name != "local_batch" || parameters["operations"] is not JsonArray { Count: > 0 } operations) return null;
+            List<string> identity = [], paths = [];
+            string? workspace = null;
             foreach (var operation in operations.OfType<JsonObject>())
             {
+                var name = Str(operation["name"]);
+                if (name is "git_status" or "git_diff" or "grep" or "search_files")
+                {
+                    var root = PathHelper.FinalPath(tools.Context.Resolve(null));
+                    var options = operation["arguments"] as JsonObject ?? [];
+                    var folder = PathHelper.FinalPath(tools.Context.Resolve(new ToolArgs(options).Optional("directory")));
+                    if (tools.Context.ProjectWatcher.InspectionStamp(root) is not { } stamp || !PathHelper.IsInside(folder, root) ||
+                        name is ("git_status" or "git_diff") && !Directory.Exists(Path.Combine(root, ".git"))) return null;
+                    workspace = root;
+                    identity.Add($"{name}|{root}|{stamp}|{options.ToJsonString()}");
+                    continue;
+                }
                 if (operation["arguments"] is not JsonObject args) return null;
-                var requests = Str(operation["name"]) switch
+                var requests = name switch
                 {
                     "read" => new[] { args },
                     "ranges" => (args["files"] as JsonArray)?.OfType<JsonObject>().ToArray() ?? [],
@@ -56,12 +77,13 @@ partial class AgentRunner
                     var file = new FileInfo(path);
                     long revision = PathHelper.Revision(path);
                     if (!file.Exists || revision == 0) return null;
-                    var (offset, limit) = FileTools.ReadRange(input, Str(operation["name"]) == "ranges" ? 60 : 250);
+                    var (offset, limit) = FileTools.ReadRange(input, name == "ranges" ? 60 : 250);
                     identity.Add($"{path}|{offset}|{limit}|{file.Length}|{revision}");
                     paths.Add(path);
                 }
             }
-            return identity.Count == 0 ? null : new("local_batch " + string.Join("\u001f", identity), RelatedPaths: string.Join("\n", paths));
+            return identity.Count == 0 ? null : new("local_batch " + string.Join("\u001f", identity),
+                Path: workspace, RelatedPaths: paths.Count == 0 ? null : string.Join("\n", paths));
         }
         catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -72,7 +94,8 @@ partial class AgentRunner
     string ResultForModel(ToolCallEvent call, ToolOutcome outcome, int index, List<ToolExecution> batch)
     {
         var execution = batch[index];
-        if (outcome.IsError || outcome.IsWarning) return outcome.Output;
+        if (outcome.IsError || outcome.IsWarning || call.Name == "exec_command" && CommandLog.ResultOf(outcome.Output) != "код 0")
+            return outcome.Output;
         if (ToolOutputStore.Applies(call.Name) && (ResultAlreadySent(outcome.Output) ||
             batch.Take(index).Any(previous => previous.Task.IsCompletedSuccessfully &&
                 !previous.Task.Result.IsError && previous.Task.Result.Output == outcome.Output)))
@@ -134,7 +157,7 @@ partial class AgentRunner
             var path = unknown ? null : PathHelper.FinalPath(changedPath!);
             tools.Context.Snapshots.Invalidate(path);
             foreach (var key in _reads.Keys.Where(key =>
-                key.Path != null && (path == null || PathHelper.IsInside(key.Path, path)) ||
+                key.Path != null && (path == null || PathHelper.IsInside(key.Path, path) || PathHelper.IsInside(path, key.Path)) ||
                 key.RelatedPaths != null && (path == null ||
                     key.RelatedPaths.Split('\n').Any(file => PathHelper.IsInside(file, path)))).ToArray())
                 _reads.Remove(key);

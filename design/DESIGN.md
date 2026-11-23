@@ -15,7 +15,7 @@ The app follows this design; where the app differs, this file wins. `current-ui.
 
 1. Flat neutral grays with almost no borders: surfaces differ by fill (title row and sidebar `#202020`, main `#181818`, raised `#292929`–`#353535`).
 2. One blue for actions (`#2A64C3`), a brighter blue for highlights (`#3881F5`), a deep blue for the user's bubble (`#173D77`). Primary buttons are white with dark text, not blue.
-3. Segoe UI 14 px Regular nearly everywhere: sidebar, messages, tool rows, menus, composer. Hierarchy comes from color (white / `#D2D3D4` / `#8A8A8A`), not size.
+3. System UI font at 14 px Regular nearly everywhere: sidebar, messages, tool rows, menus, composer. Hierarchy comes from color (white / `#D2D3D4` / `#8A8A8A`), not size.
 4. A large rounded composer (radius 18) at the bottom of a 736 px column; rows and inputs use radius 8, cards and menus 12, dialogs 16.
 5. Interactions are instant: hover, press, select, menus, tooltips, dialogs, panels and pages change in one frame. Motion is kept for the composer popover, streamed text and the "working" shimmer (§4).
 6. Agent work is quiet: gray 14 px rows with an icon, no boxes or chips, collapsible groups, a shimmering status line instead of spinners.
@@ -81,7 +81,7 @@ Effort slider: fill AccentText, track Track, dots at 50 %, white thumb with a 1 
 
 ### 2.2 Typography
 
-`Segoe UI` everywhere; mono stays `Cascadia Mono, Consolas`.
+WPF uses the Windows system message font with `Segoe UI, Helvetica, Arial, Global User Interface` as fallbacks. Code uses the `MonoFont` resource.
 
 | Use | Size / weight / color | Line height |
 |---|---|---|

@@ -542,7 +542,7 @@ public partial class MainWindow
             ProgressSection.AddSearch(ref progress.Searches, progress.Items, item);
             return;
         }
-        if (name is not ("run_command" or "run_plugin"))
+        if (name is not ("exec_command" or "run_command" or "run_plugin"))
         {
             _chatView.Commands = null;
             AddProgressItem(item);
@@ -554,5 +554,7 @@ public partial class MainWindow
             AddProgressItem(commands.View);
         }
         _chatView.Commands.Items.Children.Add(item);
+        int count = _chatView.Commands.Items.Children.Count;
+        if (count > 1) _chatView.Commands.SetTitle(Tr($"Команды · {count}", $"Commands · {count}"), animate: false);
     }
 }

@@ -80,7 +80,7 @@ public sealed partial class ToolRegistry
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
         var toolArgs = new ToolArgs(args) { BrowserAllowed = allowBrowser };
         if (!allowBrowser && (name == BrowserTools.Name || name == "open_path" && FileTools.IsWebUrl(toolArgs.Optional("path") ?? "")))
-            return Error("Ошибка: открытие вкладок доступно по запросу пользователя. Для чтения интернет-источников используй web_search.");
+            return Error("Ошибка: доступ к браузеру для этого запроса не подключён. Используй web_search для чтения сайтов или enable_tools с группой browser, если пользователь просит выполнить действие на странице.");
         bool opaque = name is "exec_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName or ScriptRegistry.Name ||
             name == LocalTestTools.Name && toolArgs.Optional("action") == "run";
         try

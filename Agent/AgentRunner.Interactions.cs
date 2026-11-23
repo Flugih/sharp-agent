@@ -38,14 +38,12 @@ partial class AgentRunner
             AdaptiveModelRouter.IsSimple(request);
         var initial = !readOnly && !simple ? ToolDefinitionSelection.Initial(request) : null;
         bool plugins = !simple && AvailablePlugins().Count > 0;
-        bool allowBrowser = ToolDefinitionSelection.BrowserInteraction(request);
-        bool background = ToolDefinitionSelection.BackgroundResearch(request);
+        bool canEnableBrowser = !readOnly && tools.Context.ReadBrowser != null && !ToolDefinitionSelection.BrowserProhibited(request);
         var catalog = _toolCatalog = tools.Definitions.OfType<JsonObject>()
             .Where(tool => !simple && (Str(tool["function"]?["name"]) switch
         {
             "use_plugin" or "run_plugin" => !readOnly && plugins,
-            "open_path" or ComputerTools.Name or ComputerTools.AppName when background => false,
-            BrowserTools.Name => allowBrowser && tools.Context.ReadBrowser != null,
+            BrowserTools.Name => canEnableBrowser,
             { } name => !readOnly || ToolRegistry.IsReadOnly(name),
             null => false,
         })).ToDictionary(tool => Str(tool["function"]?["name"])!, tool => (JsonNode)tool, StringComparer.Ordinal);
@@ -107,10 +105,8 @@ partial class AgentRunner
             if (shell is { } known && _blockedShells.TryGetValue(known, out var restriction))
                 return new("Ошибка запуска. " + CommandRestriction.Prefix + restriction.Message, true) { Restriction = restriction };
             var request = ExtractText(LastUser()?["content"]) ?? "";
-            bool allowBrowser = !delegated && (ToolDefinitionSelection.BrowserInteraction(request) ||
+            bool allowBrowser = !delegated && (BrowserEnabled ||
                 call.Name == LocalTestTools.Name && LocalActionRouter.Match(request)?.StartsWith("suite run ", StringComparison.Ordinal) == true);
-            if (ComputerTools.IsControl(call.Name) && !allowBrowser && ToolDefinitionSelection.BackgroundResearch(request))
-                return new("Ошибка: для фонового изучения используй web_search или читай рабочий репозиторий локально.", true);
             var outcome = await tools.ExecuteAsync(call.Name, call.ArgumentsJson, ConfirmAsync, ct,
                 call.Name == ComputerTools.Name ? ComputerUseStarted : null, allowBrowser);
             if (outcome.Restriction is { UnavailableShell: { } blocked } denied) _blockedShells[blocked] = denied;

@@ -20,7 +20,9 @@ await AgentBudgetAsync(root);
 await DelegatedStepsAsync(root);
 await ChatTitlesAsync(root);
 RequestComponents();
+ResearchLabels();
 await ToolExpansionAsync(root);
+await RepeatedInspectionAsync(root);
 await WebResearchChecks.RunAsync(root);
 await SavedOutputsAsync(root);
 await CodexWorkflowAsync(root);
@@ -191,6 +193,25 @@ static async Task ChatTitlesAsync(string root)
     await run;
     Check(delayed.TitleCalls == 1 && agent.Title == "Моё название" && store.Load(agent.ChatPath!).Title == agent.Title && changes == 1,
         "a pending automatic title allows the answer and preserves a manual rename");
+    const string greeting = "але тут тыт?";
+    using var echo = new TitleProvider(Task.FromResult(new ChatResult(new JsonObject { ["content"] = "«але тут тыт»" }, "stop", null, null)));
+    agent.NewChat();
+    agent.Api = echo;
+    agent.Provider = AgentProvider.ChatGpt;
+    agent.RussianLanguage = true;
+    await agent.RunAsync(greeting, [], "fake", default);
+    var path = agent.ChatPath!;
+    Check(echo.TitleCalls == 1 && echo.TitleTokenLimit == null && echo.TitlePrompt?.Contains("use Russian.") == true &&
+        echo.ReplyPrompt?.Contains("use Russian.") == true && agent.Title == "Новый чат" && store.Load(path).Title == agent.Title,
+        "an ambiguous greeting uses the Russian fallback and an echoed prompt keeps the neutral title");
+    using var recovered = new TitleProvider(Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Проверка связи" }, "stop", null, null)));
+    agent.Api = recovered;
+    await agent.OpenAsync(path);
+    await agent.RunAsync("Да, проверяю связь.", [], "fake", default);
+    Check(recovered.Subject == greeting && recovered.TitleCalls == 1 && store.Load(path).Title == "Проверка связи",
+        "a pending title is retried after a reload and the generated topic is saved");
+    await agent.RunAsync("Спасибо.", [], "fake", default);
+    Check(recovered.TitleCalls == 1, "completed titles are not generated again");
 }
 
 static void Put(string path, string value)
@@ -203,6 +224,16 @@ static string LocalBatch(string operation, string arguments) => new JsonObject
 {
     ["operations"] = new JsonArray(new JsonObject { ["name"] = operation, ["arguments"] = JsonNode.Parse(arguments) }),
 }.ToJsonString();
+
+static void ResearchLabels()
+{
+    var names = new[] { "index", "search", "inspect", "related", "duplicates" };
+    var labels = names.Select(action => SharpAgent.MainWindow.Describe(LocalResearchEngine.Name, new JsonObject { ["action"] = action }.ToJsonString())).ToArray();
+    Check(labels.Select(item => item.Label).Distinct().Count() == names.Length &&
+        labels.All(item => item.Glyph == SharpAgent.Ui.Glyphs.Search && !item.Label.Contains(LocalResearchEngine.Name)) &&
+        SharpAgent.MainWindow.Describe("unknown_tool").Label != "unknown_tool",
+        "chat rows show a readable label for each research action and for unrecognized tools");
+}
 
 static async Task CodexWorkflowAsync(string root)
 {
@@ -342,6 +373,37 @@ static async Task ToolExpansionAsync(string root)
     Check(ReferenceEquals(cached, wire.Get(expanded)) && projections == 1 &&
         JsonNode.DeepEquals(JsonNode.Parse(ToolSchemaWire.Serialize(new JsonObject { ["tools"] = null }, cached))?["tools"], expanded),
         "wire schema is encoded once and retains definition order");
+}
+
+static async Task RepeatedInspectionAsync(string root)
+{
+    var selection = ToolDefinitionSelection.Initial("Измени шрифт в App.xaml");
+    Check(selection("local_batch") && selection(PatchTool.Name) && !selection("exec_command") &&
+        ToolDefinitionSelection.Initial("Измени шрифт и выполни сборку")("exec_command"),
+        "a style change starts with targeted reads and a patch, while an explicit build gets shell access");
+    Check(ShellTools.GitInspectionOf(new(new() { ["command"] = "git status --short; git add -- App.xaml" })) == null,
+        "a Git inspection followed by a write never enters the read cache");
+    var work = Path.Combine(root, "repeat-inspection");
+    var data = Path.Combine(root, "repeat-inspection-data");
+    Put(Path.Combine(work, "App.xaml"), "FontFamily=Before\n");
+    if (LocalDeveloperTools.GitExecutable(work) == null) return;
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = data, LogsFolder = Path.Combine(data, "logs") };
+    var registry = new ToolRegistry(context);
+    var init = await registry.ExecuteAsync("exec_command", """{"command":"git init --quiet; git add -- App.xaml"}""", null, default);
+    Check(!init.IsError && !init.IsWarning && Directory.Exists(Path.Combine(work, ".git")), "a local Git fixture is initialized");
+    using var watcher = context.ProjectWatcher;
+    watcher.Watch(context);
+    using var provider = new InspectionProvider();
+    var agent = new AgentRunner(registry, new ChatStore(Path.Combine(data, "chats"), context.LogsFolder!))
+        { Api = provider, AutoChatTitles = false };
+    var checks = new List<string>();
+    agent.ToolCallFinished += result =>
+    {
+        if (result.Name == "exec_command") checks.Add(result.Output);
+    };
+    await agent.RunAsync("Измени шрифт в App.xaml и проверь изменения Git. Без сборки и тестов.", [], "fake", default);
+    Check(provider.Calls == 5 && checks.Count == 2 && !checks[0].Contains("+FontFamily=After") && checks[1].Contains("+FontFamily=After"),
+        $"identical Git inspections run once until the file is changed, got {provider.Calls} requests, {checks.Count} checks:\n{string.Join("\n\n", checks)}");
 }
 
 static async Task SavedOutputsAsync(string root)
@@ -782,10 +844,11 @@ static async Task LocalIntelligenceChecksAsync(string root)
     }.ToJsonString(), null, default);
     Check(fail.IsError && fail.Output.Contains("0/1"), "mandatory contract failure is an error");
     var selection = ToolDefinitionSelection.Initial("Исправь метод класса в C# проекте. Выполни критерии приёмки.");
-    Check(selection != null && selection("apply_patch") && selection(LocalContractEngine.Name) && !selection(LocalTestTools.Name),
+    Check(selection("apply_patch") && selection(LocalContractEngine.Name) && !selection(LocalTestTools.Name),
           "edit tasks with explicit acceptance criteria retain the contract tool");
-    Check(ToolDefinitionSelection.Initial("Помоги разобраться") == null,
-          "ambiguous tasks retain the full tool set");
+    var ambiguous = ToolDefinitionSelection.Initial("Помоги разобраться");
+    Check(ambiguous("local_batch") && ambiguous(WebResearch.Name) && !ambiguous(BrowserTools.Name) && !ambiguous(ComputerTools.Name),
+          "ambiguous tasks start with compact local and web tools");
 }
 
 static void MemoryAndCache(string root)
@@ -850,6 +913,30 @@ static void Check(bool condition, string name)
     if (!condition) throw new InvalidOperationException(name);
 }
 
+sealed class InspectionProvider : IChatProvider
+{
+    public int Calls { get; private set; }
+    public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
+    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
+    {
+        if (++Calls >= 5) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Verified." }, "stop", null, null));
+        var command = Calls == 2 ? "git status --short;  git diff --stat; git diff -- App.xaml" : "git status --short; git diff --stat; git diff -- App.xaml";
+        var args = Calls == 3
+            ? new JsonObject { ["patch"] = "*** Begin Patch\n*** Update File: App.xaml\n@@\n-FontFamily=Before\n+FontFamily=After\n*** End Patch" }
+            : new JsonObject { ["command"] = command };
+        return Task.FromResult(new ChatResult(new JsonObject
+        {
+            ["tool_calls"] = new JsonArray(new JsonObject
+            {
+                ["id"] = $"inspection_{Calls}", ["function"] = new JsonObject
+                    { ["name"] = Calls == 3 ? PatchTool.Name : "exec_command", ["arguments"] = args.ToJsonString() },
+            }),
+        }, "tool_calls", null, null));
+    }
+    public void Dispose() { }
+}
+
 sealed class FakeProvider(long? fixedInput, int toolCalls) : IChatProvider
 {
     public int Calls { get; private set; }
@@ -890,13 +977,22 @@ sealed class TitleProvider(Task<ChatResult> title) : IChatProvider
 {
     public int TitleCalls { get; private set; }
     public string? Subject { get; private set; }
+    public string? TitlePrompt { get; private set; }
+    public string? ReplyPrompt { get; private set; }
+    public int? TitleTokenLimit { get; private set; }
     public Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct) => Task.FromResult<List<ModelInfo>>([]);
     public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools = true, Action<int, int>? retrying = null)
     {
-        if (callTools) return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Ответ" }, "stop", null, null));
+        if (callTools)
+        {
+            ReplyPrompt = messages[0]["content"]?.ToString();
+            return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Ответ" }, "stop", null, null));
+        }
         TitleCalls++;
         Subject = messages[1]["content"]?.ToString();
+        TitlePrompt = messages[0]["content"]?.ToString();
+        TitleTokenLimit = maxTokens;
         return title.WaitAsync(ct);
     }
     public void Dispose() { }

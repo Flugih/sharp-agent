@@ -469,7 +469,7 @@ public sealed class ChatGptAuth(string path)
     {
         var body = Encoding.UTF8.GetBytes(
             "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\"><title>Sharp Agent</title><style>body{margin:0;height:100vh;display:flex;" +
-            "align-items:center;justify-content:center;background:#1c1c1e;color:#ececee;font:16px 'Segoe UI',sans-serif}main{max-width:440px;padding:24px;" +
+            "align-items:center;justify-content:center;background:#1c1c1e;color:#ececee;font:16px ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif}main{max-width:440px;padding:24px;" +
             "text-align:center}h1{font-size:22px;font-weight:600;margin:0 0 12px}p{color:#c9c9ce;line-height:1.5;margin:0}</style></head><body><main>" +
             $"<h1>{WebUtility.HtmlEncode(title)}</h1><p>{WebUtility.HtmlEncode(text)}</p></main></body></html>");
         var reason = status switch { 200 => "OK", 400 => "Bad Request", _ => "Not Found" };
