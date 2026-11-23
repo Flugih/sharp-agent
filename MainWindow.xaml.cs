@@ -99,7 +99,7 @@ public partial class MainWindow
         AutomationProperties.SetName(element, hint);
     }
 
-    void Window_Loaded(object s, RoutedEventArgs e)
+    async void Window_Loaded(object s, RoutedEventArgs e)
     {
         if (_agent != null) return;
         _config = AppConfig.Load();
@@ -107,7 +107,7 @@ public partial class MainWindow
         ApplyConfig();
         UpdateConfirmToggle();
         ApplySidebar();
-        _ = OpenStartupChatAsync();
+        var startupChat = OpenStartupChatAsync();
         UpdateTrashCount();
         _ = LoadChatsAsync();
         _ = Task.Run(AppCache.Maintain);
@@ -118,8 +118,9 @@ public partial class MainWindow
             FolderBanner("readonly", Tr($"Папка {FolderKind} недоступна для записи", $"The {FolderKind} folder is read-only"), Tr("Настройки и переписка не сохранятся. ", "Settings and conversations cannot be saved. ") +
                 (AppPaths.IsInstalled ? Tr("Проверьте права доступа к этой папке.", "Check the permissions for this folder.") : Tr("Перенесите папку Sharp Agent, например, на Рабочий стол.", "Move the Sharp Agent folder to a location you can write to, such as the Desktop.")));
         UpdateSendButton();
-        if (_provider == null) Dispatcher.InvokeAsync(ShowSettings, DispatcherPriority.Loaded);
-        else InputBox.Focus();
+        if (_provider != null) InputBox.Focus();
+        await startupChat;
+        if (_provider == null) ShowSettings();
         void FolderBanner(string key, string title, string text) =>
             ShowBanner(key, Glyphs.Warning, title, text, Tr("Открыть папку", "Open folder"), () => FileActions.OpenFolder(AppPaths.AppFolder), true);
     }
@@ -134,7 +135,7 @@ public partial class MainWindow
     void SaveState()
     {
         _state.Window = CapturePlacement();
-        _state.Draft = _agent?.IsTemporary != true && InputBox.Text.Length > 0 ? InputBox.Text : null;
+        _state.Draft = _agent?.IsTemporary != true && ComposerDraft is { Length: > 0 } draft ? draft.ReplaceLineEndings("\n") : null;
         _state.CurrentChat = Path.GetFileName(_agent?.ChatPath);
         _state.Save();
     }
@@ -310,15 +311,24 @@ public partial class MainWindow
     void InputBox_TextChanged(object s, TextChangedEventArgs e)
     {
         UpdateInputHint();
-        UpdateSendButton();
+        if (_compactChat == null) ComposerDraftChanged();
     }
 
     void UpdateInputHint() => InputHint.Visibility = VisibleIf(InputBox.Text.Length == 0 && IsShown(InputBox));
 
+    bool _composerHasText;
+
+    void ComposerDraftChanged()
+    {
+        bool hasText = !string.IsNullOrWhiteSpace(ComposerDraft);
+        if (_composerHasText != hasText) UpdateSendButton();
+    }
+
     void UpdateSendButton()
     {
         var loading = UpdateComposerLoading();
-        bool hasDraft = !string.IsNullOrWhiteSpace(InputBox.Text) || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
+        _composerHasText = !string.IsNullOrWhiteSpace(ComposerDraft);
+        bool hasDraft = _composerHasText || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
         SendButton.IsEnabled = loading == null && (hasDraft || resume);
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
         SendButton.ToolTip = loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
@@ -345,7 +355,7 @@ public partial class MainWindow
             ShowToast(Tr("Агент ещё работает. Дождитесь ответа или остановите его (Esc)", "The agent is still working. Wait for the response or stop it (Esc)."), ToastKind.Warning);
             return;
         }
-        var text = InputBox.Text.Trim();
+        var text = ComposerDraft.Trim().ReplaceLineEndings("\n");
         var attachments = _pendingAttachments.ToList();
         if (text.Length == 0 && attachments.Count == 0)
         {
@@ -358,7 +368,7 @@ public partial class MainWindow
         var history = _agent.HistoryView;
         if (Enumerable.Range(_renderedHistory.Count, Math.Max(0, history.Count - _renderedHistory.Count)).Count(history.IsUser) >= HistoryPageSize)
             RenderCurrentChat();
-        InputBox.Clear();
+        ComposerDraft = "";
         ClearPendingAttachments();
         ClearSubagents();
         ScrollToLatest();

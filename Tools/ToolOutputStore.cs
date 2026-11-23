@@ -54,17 +54,24 @@ static class ToolOutputStore
     internal static string Preview(string output, string? reference)
     {
         if (reference == null || output.Length <= PreviewChars) return output;
+        int start = BatchBodyStart(output);
+        var status = output[..start];
+        output = output[start..];
         var important = CommandLog.Details(output, 1700);
-        return reference + "\n" + HistoryCompressor.Excerpt(output, 3300) + (important.Length > 0 ? "\nВажные строки:\n" + important : "");
+        return status + reference + "\n" + HistoryCompressor.Excerpt(output, 3300) + (important.Length > 0 ? "\nВажные строки:\n" + important : "");
     }
 
     internal static string? ReferenceOf(string output)
     {
-        var first = output.Split('\n', 2)[0].TrimEnd();
+        int start = BatchBodyStart(output);
+        int end = output.IndexOf('\n', start);
+        var first = output[start..(end < 0 ? output.Length : end)].TrimEnd();
         return first.StartsWith(ReferencePrefix, StringComparison.Ordinal) && first.Length > ReferencePrefix.Length + 64 &&
             first[ReferencePrefix.Length + 64] == ',' && first.AsSpan(ReferencePrefix.Length, 64).IndexOfAnyExcept("0123456789abcdef") < 0
             ? first : null;
     }
+
+    static int BatchBodyStart(string output) => ToolRegistry.HasBatchStatus(output) ? output.IndexOf('\n') + 1 : 0;
 
     static string Read(ToolArgs args, ToolContext context, CancellationToken ct)
     {

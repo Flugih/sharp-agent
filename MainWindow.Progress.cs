@@ -196,7 +196,8 @@ public partial class MainWindow
         }
         else if (_attachmentImports > 0) load = new(Tr("Подготовка вложений…", "Preparing attachments…"));
         else if (_chatOperation != null) load = new(Tr("Загрузка данных чата…", "Loading chat data…"));
-        if (!Equals(ComposerLoadingStatus.Content, load)) ComposerLoadingStatus.Content = load;
+        var status = IsShown(ChatSkeleton) && load is { IsIndexing: false } ? null : load;
+        if (!Equals(ComposerLoadingStatus.Content, status)) ComposerLoadingStatus.Content = status;
         return load?.Label;
     }
 

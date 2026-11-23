@@ -369,6 +369,22 @@ static async Task SavedOutputsAsync(string root)
         {"operations":[{"name":"search_files","arguments":{"pattern":"sample.txt"}},{"name":"diagnostics"}]}
         """, null, default);
     Check(!batch.IsError && batch.Output.Contains("sample.txt") && batch.Output.Contains("diagnostics"), "mixed local operations return ordered independent results");
+    var missing = await tools.ExecuteAsync("local_batch", LocalBatch("read", """{"path":"missing.txt"}"""), null, default);
+    Check(missing.IsError && !missing.IsWarning && ToolRegistry.IsErrorOutput(missing.Output) && missing.Output.Contains("missing.txt"),
+        "a failed batch reports failure and keeps the missing-file error");
+    var partial = await tools.ExecuteAsync("local_batch", """
+        {"operations":[{"name":"read","arguments":{"path":"sample.txt"}},{"name":"read","arguments":{"path":"missing.txt"}}]}
+        """, null, default);
+    Check(!partial.IsError && partial.IsWarning && ToolRegistry.IsPartialBatch(partial.Output) &&
+        partial.Output.Contains("row 000") && partial.Output.Contains("missing.txt") && ToolOutputStore.ReferenceOf(partial.Output) != null,
+        "a partial batch preserves its status, readable results and saved-output reference in a compact preview");
+    var ranges = await tools.ExecuteAsync("local_batch", LocalBatch("ranges", """
+        {"files":[{"path":"missing.txt"},{"path":"sample.txt","limit":1}]}
+        """), null, default);
+    Check(!ranges.IsError && ranges.IsWarning && ranges.Output.Contains("row 000") && ranges.Output.Contains("missing.txt"),
+        "a ranges operation with partial results marks the batch with a warning");
+    var failedGit = await allowed.ExecuteAsync("local_batch", """{"operations":[{"name":"git_status"}]}""", null, default);
+    Check(failedGit.IsError && failedGit.Output.Contains("режиме песочницы"), "an unavailable Git check is a failed batch operation");
     var logs = Path.Combine(root, "saved-command-output");
     context.LogsFolder = logs;
     var command = new JsonObject

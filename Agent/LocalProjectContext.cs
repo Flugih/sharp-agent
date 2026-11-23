@@ -64,12 +64,12 @@ static partial class LocalProjectContext
         catch (Exception ex) when (ex is IOException or ToolException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
     }
 
-    internal static async Task<string> DiagnosticsAsync(ToolContext context, CancellationToken ct)
+    internal static async Task<ToolOutcome> DiagnosticsAsync(ToolContext context, CancellationToken ct)
     {
         var folder = PathHelper.FinalPath(context.Resolve(null));
         if (context.AppFolder == null || PathHelper.SamePath(folder, Path.GetPathRoot(folder)!) ||
             PathHelper.SamePath(folder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
-            return "Индекс проекта недоступен для этой папки.";
+            return new("Индекс проекта недоступен для этой папки.", true);
         var snapshot = await context.ProjectWatcher.SnapshotAsync(folder, ct);
         if (snapshot == null)
         {
@@ -80,23 +80,23 @@ static partial class LocalProjectContext
         var diagnostics = snapshot.Where(entry => ProjectSourceIndex.SafeSource(context, folder, entry.Key, out var file) &&
                 entry.Value.Revision == PathHelper.Revision(file.FullName))
             .SelectMany(entry => entry.Value.Syntax.Diagnostics.Select(line => $"{entry.Key}: {Clip(line, 280)}")).Take(25).ToArray();
-        return diagnostics.Length > 0 ? string.Join("\n", diagnostics) : "В индексированных файлах синтаксических ошибок не найдено.";
+        return new(diagnostics.Length > 0 ? string.Join("\n", diagnostics) : "В индексированных файлах синтаксических ошибок не найдено.", false);
     }
 
-    public static async Task<string> RunGitRequestAsync(ToolContext context, string command, CancellationToken ct)
+    public static async Task<ToolOutcome> RunGitRequestAsync(ToolContext context, string command, CancellationToken ct)
     {
-        if (context.SandboxRoot != null) return "Команды Git недоступны в режиме песочницы.";
-        if (ProjectRoot(context, context.WorkingDirectory, gitOnly: true) is not { } root) return "В рабочей папке не найден репозиторий Git.";
+        if (context.SandboxRoot != null) return new("Команды Git недоступны в режиме песочницы.", true);
+        if (ProjectRoot(context, context.WorkingDirectory, gitOnly: true) is not { } root) return new("В рабочей папке не найден репозиторий Git.", true);
         if (await OpenRepository(root, ct) is not { } repo)
-            return "Локальная проверка Git недоступна. Проверьте установку Git и настройки фильтров репозитория.";
+            return new("Локальная проверка Git недоступна. Проверьте установку Git и настройки фильтров репозитория.", true);
         var (exitCode, output) = await repo.Run(command switch
         {
             "git status" => ["status", "--short", "--branch", "--ignore-submodules=all"],
             "git diff --staged" => ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all"],
             _ => ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all"],
         }, 12_000, ct);
-        return exitCode != 0 ? "Git не смог получить результат. Проверьте доступ к рабочей папке."
-            : output.Length == 0 ? "Изменений нет." : "```text\n" + Clip(output.TrimEnd(), 11_800) + "\n```";
+        return exitCode != 0 ? new("Git не смог получить результат. Проверьте доступ к рабочей папке.", true)
+            : new(output.Length == 0 ? "Изменений нет." : "```text\n" + Clip(output.TrimEnd(), 11_800) + "\n```", false);
     }
 
     internal static string? ProjectRoot(ToolContext context, string folder, bool gitOnly = false)

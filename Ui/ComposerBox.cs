@@ -32,7 +32,8 @@ public sealed partial class ComposerBox : RichTextBox
 
     public string Text
     {
-        get => _text ??= Join(Parts());
+        get => _text ??= Document.Blocks.FirstBlock is Paragraph { NextBlock: null, Inlines.FirstInline: Run { NextInline: null } run }
+            ? run.Text : Join(Parts());
         set
         {
             var normalized = value.ReplaceLineEndings("\n");
@@ -55,8 +56,6 @@ public sealed partial class ComposerBox : RichTextBox
 
     public string SelectedText { set => Selection.Text = value.ReplaceLineEndings("\n"); }
 
-    public void Clear() => Text = "";
-
     public void Select(int start, int length)
     {
         var parts = Parts();
@@ -69,7 +68,7 @@ public sealed partial class ComposerBox : RichTextBox
         base.OnTextChanged(e);
         if (_replacing) return;
         _links.Stop();
-        if (e.UndoAction is not (UndoAction.Undo or UndoAction.Redo)) _links.Start();
+        if (e.UndoAction is not (UndoAction.Undo or UndoAction.Redo) && Text.Contains("http", StringComparison.OrdinalIgnoreCase)) _links.Start();
     }
 
     void CopySelection(object sender, ExecutedRoutedEventArgs e)

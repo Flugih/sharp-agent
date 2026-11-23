@@ -70,16 +70,24 @@ public partial class MainWindow
         if (!e.HeightChanged) return;
         double inset = ComposerPanel.ActualHeight + ComposerPanel.Margin.Bottom;
         ChatScroll.Padding = new(0, 0, 0, inset);
-        ChatContent.Margin = new(24, 58, 24, inset + 24);
+        ChatContent.Margin = ChatContent.Margin with { Bottom = inset + 24 };
         ScrollDownButton.Margin = new(0, 0, 0, inset + 12);
     }
 
     void UpdateComposerPlacement()
     {
-        bool empty = _agent.History.Count == 0 && ChatPanel.Children.Count == 0;
+        bool loading = IsShown(ChatSkeleton);
+        bool empty = !loading && _agent.History.Count == 0 && ChatPanel.Children.Count == 0;
         ChatModePicker.Visibility = VisibleIf(empty && _agent.ChatPath == null);
         TemporaryChatButton.Visibility = VisibleIf(empty && _agent.ChatPath == null);
-        SaveTemporaryChatButton.Visibility = VisibleIf(_agent.IsTemporary && !empty);
+        SaveTemporaryChatButton.Visibility = VisibleIf(_agent.IsTemporary && !empty && !loading);
+        double top = IsShown(ChatModePicker) || IsShown(SaveTemporaryChatButton) ? 58 : 12;
+        if (ChatContent.Margin.Top != top || ChatStickyHost.Margin.Top != top)
+        {
+            ChatContent.Margin = ChatContent.Margin with { Top = top };
+            ChatStickyHost.Margin = ChatStickyHost.Margin with { Top = top };
+            UpdateStickyClip();
+        }
         ComposerIntro.Visibility = VisibleIf(empty);
         Grid.SetRow(ComposerHost, empty ? 1 : 2);
         Grid.SetRowSpan(ComposerHost, empty ? 2 : 1);

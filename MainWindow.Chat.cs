@@ -155,9 +155,8 @@ public partial class MainWindow
 
     void PutIntoInput(string text)
     {
-        InputBox.Text = text;
-        InputBox.CaretIndex = text.Length;
-        InputBox.Focus();
+        ComposerDraft = text;
+        FocusAttachmentInput();
     }
 
     void RenderNextActions()
@@ -696,7 +695,9 @@ public partial class MainWindow
             row.Status.Text = isError ? Glyphs.Cancel : Glyphs.Warning;
             row.Status.Paint(ForegroundProperty, isError ? "DangerText" : "Warning");
             row.Status.Visibility = Visibility.Visible;
-            row.Status.ToolTip = isError ? Tr("Не выполнено", "Failed") : "Команда завершилась с ошибкой или по таймауту — раскройте подробности";
+            row.Status.ToolTip = isError ? Tr("Не выполнено", "Failed") : row.Name == "local_batch"
+                ? Tr("Пакет выполнен частично", "Batch partially completed")
+                : "Команда завершилась с ошибкой или по таймауту — раскройте подробности";
             var line = output.Split('\n')[0].Trim();
             row.Root.Children.Add(new TextBlock
             {
@@ -878,7 +879,9 @@ public partial class MainWindow
                 code.Children.Insert(0, line);
             }
             TextBlock.SetLineHeight(code, 19);
-            var state = BlockLabel(IsShown(row.Status) ? Tr("Не выполнено", "Failed") : Tr("Выполнено", "Completed"));
+            var state = BlockLabel(row.Name == "local_batch" && ToolRegistry.IsPartialBatch(output)
+                ? Tr("Выполнено частично", "Partially completed")
+                : IsShown(row.Status) ? Tr("Не выполнено", "Failed") : Tr("Выполнено", "Completed"));
             DockPanel.SetDock(state, Dock.Right);
             var footer = new DockPanel { LastChildFill = false, Margin = new(0, 8, 0, 0), Children = { state } };
             if (log != null)
@@ -987,8 +990,9 @@ public partial class MainWindow
                             }
                             var row = AddToolRow(id, name, arguments, JsonUtil.Str(meta?["completed_command"]));
                             if (result == null) continue;
-                            CompleteToolRow(row, output, isError,
-                                row.Name is "exec_command" or "run_plugin" && ToolRegistry.CommandFailed(output), AgentRunner.DiffOf(result),
+                            bool warning = name == "local_batch" && ToolRegistry.IsPartialBatch(output) ||
+                                name is "exec_command" or "run_plugin" && ToolRegistry.CommandFailed(output);
+                            CompleteToolRow(row, output, isError, warning, AgentRunner.DiffOf(result),
                                 AgentRunner.FileChangeOf(result), AgentRunner.FileChangeUndone(result));
                             foreach (var (change, undone) in AgentRunner.PatchChangesOf(result))
                                 NoteProduced(change.Path, FileChanges.NetDiff(_toolContext, change), change.Created, change, undone);
@@ -1050,6 +1054,8 @@ public partial class MainWindow
         if (!IsShown(ChatStickyHost)) return;
         ChatStickyHost.Visibility = Visibility.Collapsed;
         BindingOperations.ClearBinding(ChatStickyTitle, TextBlock.TextProperty);
+        BindingOperations.ClearBinding(ChatStickyHost, Expander.IsExpandedProperty);
+        BindingOperations.ClearBinding(ChatStickyHost, AutomationProperties.NameProperty);
         UpdateStickyClip();
         ChatStickyTitle.IsActive = false;
         var plan = ChatStickyPanel.Children.Count > 0 ? ChatStickyPanel.Children[0] : null;
@@ -1065,7 +1071,7 @@ public partial class MainWindow
 
     void UpdateStickyProgress()
     {
-        if (!IsShown(ChatPanel) || _chatView.Progress is not { IsRunning: true, View.IsExpanded: true } progress || !progress.View.IsDescendantOf(ChatScroll) ||
+        if (!IsShown(ChatPanel) || _chatView.Progress is not { IsRunning: true } progress || !progress.View.IsDescendantOf(ChatScroll) ||
             progress.View.TransformToAncestor(ChatScroll).Transform(default).Y > ChatStickyHost.Margin.Top)
         {
             ReleaseStickyProgress();
@@ -1074,6 +1080,8 @@ public partial class MainWindow
         if (!IsShown(ChatStickyHost))
         {
             ChatStickyTitle.SetBinding(TextBlock.TextProperty, new Binding { Source = progress.Label, Path = new(TextBlock.TextProperty) });
+            ChatStickyHost.SetBinding(Expander.IsExpandedProperty, new Binding(nameof(Expander.IsExpanded)) { Source = progress.View, Mode = BindingMode.TwoWay });
+            ChatStickyHost.SetBinding(AutomationProperties.NameProperty, new Binding { Source = progress.View, Path = new(AutomationProperties.NameProperty) });
             ChatStickyHost.Visibility = Visibility.Visible;
             ChatStickyTitle.IsActive = true;
             UpdateStickyClip();

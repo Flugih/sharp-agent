@@ -6,6 +6,20 @@ public partial class MainWindow
 {
     CompactChatWindow? _compactChat;
 
+    string ComposerDraft
+    {
+        get => _compactChat?.Draft ?? InputBox.Text;
+        set
+        {
+            if (_compactChat is { } compact) compact.Draft = value;
+            else
+            {
+                InputBox.Text = value;
+                InputBox.CaretIndex = InputBox.Text.Length;
+            }
+        }
+    }
+
     internal Window ActiveChatWindow => _compactChat is { IsVisible: true } compact ? compact : this;
 
     internal void ActivateChatWindow()
@@ -40,11 +54,7 @@ public partial class MainWindow
         var compact = _compactChat = new CompactChatWindow(AnswerView) { Draft = InputBox.Text };
         compact.FontSize = 14 + ChatTextSize.Extra;
         compact.ChangesPill.Click += ChangesPill_Click;
-        compact.DraftChanged += text =>
-        {
-            var normalized = text.ReplaceLineEndings("\n");
-            if (InputBox.Text != normalized) InputBox.Text = normalized;
-        };
+        compact.DraftChanged += ComposerDraftChanged;
         compact.Send += () => _ = SendAsync();
         compact.Stop += StopAgent;
         compact.ChooseFiles += PickAttachmentFiles;
@@ -75,6 +85,8 @@ public partial class MainWindow
             compact.QuestionSlot.Content = null;
             _compactChat = null;
             if (Dispatcher.HasShutdownStarted) return;
+            var draft = compact.Draft.ReplaceLineEndings("\n");
+            if (InputBox.Text != draft) ComposerDraft = draft;
             ActivateChatWindow();
             if (CurrentRun?.Question == null) InputBox.Focus();
         };
@@ -116,9 +128,9 @@ public partial class MainWindow
     {
         if (_compactChat is not { } compact) return;
         compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content is ComposerLoad { IsIndexing: false } load ? load : null;
-        compact.Draft = InputBox.Text;
-        compact.UpdateAction(_cts != null, _cts is { } running ? !running.IsCancellationRequested : SendButton.IsEnabled,
-            _agent.CanContinue && string.IsNullOrWhiteSpace(InputBox.Text) && _pendingAttachments.Count == 0);
+        var running = _cts;
+        compact.UpdateAction(running != null, running != null ? !running.IsCancellationRequested : SendButton.IsEnabled,
+            Equals(SendButton.Content, Glyphs.Play));
     }
 
     void PlaceQuestion()

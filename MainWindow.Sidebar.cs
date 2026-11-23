@@ -158,17 +158,30 @@ public partial class MainWindow
         return busy;
     }
 
-    async Task RunChatOperationAsync(Func<Task> operation)
+    async Task RunChatOperationAsync(Func<Task> operation, bool showSkeleton = false)
     {
         if (WaitForChatFile(ChatFileBusy)) return;
-        var task = _chatOperation = Dispatcher.InvokeAsync(operation).Task.Unwrap();
+        var task = _chatOperation = Dispatcher.InvokeAsync(operation, showSkeleton ? DispatcherPriority.Background : DispatcherPriority.Normal).Task.Unwrap();
+        if (showSkeleton) SetChatLoading(true);
         UpdateSendButton();
-        try { await task; }
+        try
+        {
+            await task;
+            if (showSkeleton) await Dispatcher.Yield(DispatcherPriority.Background);
+        }
         finally
         {
             _chatOperation = null;
+            if (showSkeleton) SetChatLoading(false);
             UpdateSendButton();
         }
+    }
+
+    void SetChatLoading(bool loading)
+    {
+        ChatTranscript.Visibility = loading ? Visibility.Hidden : Visibility.Visible;
+        ChatSkeleton.Visibility = VisibleIf(loading);
+        UpdateComposerPlacement();
     }
 
     Task OpenStartupChatAsync() => RunChatOperationAsync(async () =>
@@ -184,9 +197,8 @@ public partial class MainWindow
         });
         if (path != null) await OpenChatAsync(path);
         else RenderCurrentChat();
-        InputBox.Text = _state.Draft ?? "";
-        InputBox.CaretIndex = InputBox.Text.Length;
-    });
+        ComposerDraft = _state.Draft ?? "";
+    }, showSkeleton: true);
 
     async Task LoadChatsAsync()
     {
@@ -370,7 +382,7 @@ public partial class MainWindow
         if (!IsCurrent(path))
         {
             CloseOverlay();
-            await RunChatOperationAsync(() => OpenChatAsync(path));
+            await RunChatOperationAsync(() => OpenChatAsync(path), showSkeleton: true);
         }
         else CloseOverlay();
         InputBox.Focus();
@@ -437,7 +449,7 @@ public partial class MainWindow
         _chatDrafts.Remove(chat.Path);
         if (current)
         {
-            InputBox.Clear();
+            ComposerDraft = "";
             ClearPendingAttachments();
             SelectChat(CreateAgent());
         }

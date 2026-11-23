@@ -38,7 +38,7 @@ partial class AgentRunner
         string text;
         if (command == "pwd") text = tools.Context.WorkingDirectory;
         else if (command == "time") text = DateTimeOffset.Now.ToString("HH:mm (zzz)", CultureInfo.InvariantCulture);
-        else if (command.StartsWith("git ", StringComparison.Ordinal)) text = await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct);
+        else if (command.StartsWith("git ", StringComparison.Ordinal)) text = (await LocalProjectContext.RunGitRequestAsync(tools.Context, command, ct)).Output;
         else if (command.Split(' ', 2) is [("read" or "read_many" or "inspect" or "research" or "search") and var kind, var value])
         {
             var args = kind switch

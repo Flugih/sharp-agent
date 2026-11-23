@@ -107,12 +107,12 @@ public static partial class FileTools
         return sb.ToString();
     }
 
-    internal static string ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
+    internal static ToolOutcome ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
     {
         var files = args.Array("files");
         if (files.Count is < 1 or > 8 || files.Any(file => file is not JsonObject))
             throw new ToolException("Укажите от одного до восьми диапазонов файлов.");
-        var pages = new List<string>();
+        var pages = new List<ToolOutcome>();
         var ranges = new Dictionary<string, List<(int Start, int Count)>>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files.OfType<JsonObject>())
         {
@@ -125,7 +125,7 @@ public static partial class FileTools
                 if (!ranges.TryGetValue(path, out var requested)) ranges[path] = requested = [];
                 requested.Add(ReadRange(request, 60));
             }
-            catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+            catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add(new("Ошибка: " + ex.Message, true)); }
         }
         foreach (var (path, requested) in ranges)
         {
@@ -140,11 +140,12 @@ public static partial class FileTools
             foreach (var (start, count) in merged)
             {
                 var request = new ToolArgs(new JsonObject { ["path"] = path, ["offset"] = start, ["limit"] = count });
-                try { pages.Add(ReadFile(request, context, ct, Math.Max(6_000, MaxReadChars / files.Count), 60)); }
-                catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add("Ошибка: " + ex.Message); }
+                try { pages.Add(new(ReadFile(request, context, ct, Math.Max(6_000, MaxReadChars / files.Count), 60), false)); }
+                catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add(new("Ошибка: " + ex.Message, true)); }
             }
         }
-        return string.Join("\n\n", pages);
+        int failed = pages.Count(page => page.IsError);
+        return new(string.Join("\n\n", pages.Select(page => page.Output)), failed == pages.Count, failed > 0 && failed < pages.Count);
     }
 
     internal static string ReadFile(ToolArgs a, ToolContext c, CancellationToken ct) => ReadFile(a, c, ct, MaxReadChars, DefaultReadLines);

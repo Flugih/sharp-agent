@@ -994,6 +994,11 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     string? ToolPreview(JsonNode original, string output, int chars, string? state, ContextRun context)
     {
         var full = Str(original["content"]) ?? output;
+        if (ToolRegistry.HasBatchStatus(full) && full.IndexOf('\n') is >= 0 and var statusEnd)
+        {
+            state = full[..statusEnd] + (state == null ? "" : "\n" + state);
+            full = full[(statusEnd + 1)..];
+        }
         var id = Str(original["tool_call_id"]) ?? "";
         var journal = CommandLog.IdOf(full);
         string? reference;
@@ -1064,8 +1069,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         var attachments = Attachment.ListFrom(message);
         if (attachments.Count > 0)
         {
-            text += (text.Length > 0 ? "\n\n" : "") + PromptText("[Пользователь приложил к сообщению файлы и папки. Работай с ними по этим путям:]",
-                "[The user attached these files and folders. Use the listed paths to work with them:]");
+            text += (text.Length > 0 ? "\n\n" : "") + PromptText("[Вложения пользователя:]",
+                "[User attachments:]");
             foreach (var attachment in attachments)
             {
                 var note = "";
@@ -1080,7 +1085,12 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             }
         }
         int images = content.Count;
-        if (images > 0) content.Insert(0, new JsonObject { ["type"] = "text", ["text"] = text });
+        if (images > 0)
+        {
+            text += PromptText("\nЧитай текст и детали прямо на приложенных изображениях. Для этого не открывай просмотрщик и не снимай экран через Computer Use.",
+                "\nRead text and details directly from the attached images. Do not open an image viewer or take a Computer Use screenshot to read them.");
+            content.Insert(0, new JsonObject { ["type"] = "text", ["text"] = text });
+        }
         return (new JsonObject { ["role"] = "user", ["content"] = images > 0 ? content : text }, images);
     }
 

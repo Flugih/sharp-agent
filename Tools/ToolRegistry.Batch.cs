@@ -2,6 +2,11 @@ namespace SharpAgent.Tools;
 
 partial class ToolRegistry
 {
+    const string FailedBatchPrefix = "Ошибка: пакет не выполнен", PartialBatchPrefix = "Пакет выполнен частично";
+
+    internal static bool IsPartialBatch(string output) => output.StartsWith(PartialBatchPrefix, StringComparison.Ordinal);
+    internal static bool HasBatchStatus(string output) => output.StartsWith(FailedBatchPrefix, StringComparison.Ordinal) || IsPartialBatch(output);
+
     AgentTool BatchTool() => new()
     {
         Name = "local_batch",
@@ -23,34 +28,33 @@ partial class ToolRegistry
             (Name: Str(operation["name"]) ?? "", Args: operation["arguments"] as JsonObject ?? [])).ToArray();
         if (work.Any(operation => operation.Name is not ("read" or "ranges" or "search_files" or "grep" or "git_status" or "git_diff" or "diagnostics")))
             throw new ToolException("В пакет можно включать только указанные операции чтения и диагностики.");
-        var results = await Task.WhenAll(work.Select(async operation =>
+        var results = await Task.WhenAll(work.Select(operation => Task.Run(async () =>
         {
-            var result = operation.Name switch
+            ToolOutcome result;
+            try
             {
-                "git_status" => await LocalProjectContext.RunGitRequestAsync(context, "git status", ct),
-                "git_diff" => await LocalProjectContext.RunGitRequestAsync(context, "git diff", ct),
-                "diagnostics" => await LocalProjectContext.DiagnosticsAsync(context, ct),
-                "read" or "ranges" or "grep" => await Task.Run(() =>
+                var local = new ToolArgs(operation.Args);
+                result = operation.Name switch
                 {
-                    var local = new ToolArgs(operation.Args);
-                    try
-                    {
-                        return operation.Name switch
-                        {
-                            "read" => FileTools.ReadFile(local, context, ct),
-                            "ranges" => FileTools.ReadMany(local, context, ct),
-                            _ => FileTools.SearchText(local, context, ct),
-                        };
-                    }
-                    catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException)
-                    {
-                        return "Ошибка: " + ex.Message;
-                    }
-                }, ct),
-                _ => (await ExecuteAsync(operation.Name, operation.Args.ToJsonString(), null, ct)).Output,
-            };
-            return operation.Name + "\n" + result;
-        }));
-        return string.Join("\n\n", results);
+                    "git_status" => await LocalProjectContext.RunGitRequestAsync(context, "git status", ct),
+                    "git_diff" => await LocalProjectContext.RunGitRequestAsync(context, "git diff", ct),
+                    "diagnostics" => await LocalProjectContext.DiagnosticsAsync(context, ct),
+                    "read" => new(FileTools.ReadFile(local, context, ct), false),
+                    "ranges" => FileTools.ReadMany(local, context, ct),
+                    "grep" => new(FileTools.SearchText(local, context, ct), false),
+                    _ => await ExecuteAsync(operation.Name, operation.Args.ToJsonString(), null, ct),
+                };
+            }
+            catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException)
+            {
+                result = Error("Ошибка: " + ex.Message);
+            }
+            return result with { Output = operation.Name + "\n" + result.Output };
+        }, ct)));
+        int completed = results.Count(result => !result.IsError && !result.IsWarning);
+        var output = string.Join("\n\n", results.Select(result => result.Output));
+        if (completed == results.Length) return output;
+        var status = results.All(result => result.IsError) ? FailedBatchPrefix : PartialBatchPrefix;
+        return $"{status}. Операций без ошибок: {completed} из {results.Length}.\n{output}";
     }
 }

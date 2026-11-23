@@ -163,7 +163,7 @@ public partial class MainWindow
     async void OpenChatSearchMatch(SearchMatch match)
     {
         if (WaitForChatFile(ChatFileBusy)) return;
-        await RunChatOperationAsync(() => OpenChatAsync(match.Path));
+        await RunChatOperationAsync(() => OpenChatAsync(match.Path), showSkeleton: true);
         if (!IsCurrent(match.Path) || match.Query.Length == 0) return;
         var history = _agent.History;
         bool Matches(int at) => at >= 0 && at < history.Count && JsonUtil.Str(history[at]["role"]) is "user" or "assistant" &&

@@ -8,8 +8,7 @@ public partial class CompactChatWindow : Window
     JsonObject[] _shown = [];
     double? _anchorBottom;
 
-    internal event Action<string>? DraftChanged;
-    internal event Action? Send, Stop, ChooseFiles;
+    internal event Action? DraftChanged, Send, Stop, ChooseFiles;
 
     internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView)
     {
@@ -189,7 +188,7 @@ public partial class CompactChatWindow : Window
 
     void FullWindow_Click(object sender, RoutedEventArgs e) => Close();
 
-    void PromptInput_TextChanged(object sender, TextChangedEventArgs e) => DraftChanged?.Invoke(Draft);
+    void PromptInput_TextChanged(object sender, TextChangedEventArgs e) => DraftChanged?.Invoke();
 
     void PromptInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {

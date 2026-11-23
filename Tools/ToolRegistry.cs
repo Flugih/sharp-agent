@@ -108,15 +108,17 @@ public sealed partial class ToolRegistry
             {
                 var pending = FileChanges.Capture(Context, name, toolArgs);
                 var output = await tool.Handler(toolArgs, Context, ct);
-                bool warning = name is "exec_command" or "run_plugin" or ScriptRegistry.Name or LocalTestTools.Name && CommandFailed(output);
-                var (change, diff) = warning ? (null, null) :
+                bool error = name == "local_batch" && IsErrorOutput(output);
+                bool warning = name == "local_batch" && IsPartialBatch(output) ||
+                    name is "exec_command" or "run_plugin" or ScriptRegistry.Name or LocalTestTools.Name && CommandFailed(output);
+                var (change, diff) = error || warning ? (null, null) :
                     FileChanges.Complete(Context, pending, name == "generate_image" ? ImageTools.SavedPath(output) : null);
                 var saved = (output.Length > 2400 && ToolOutputStore.Applies(name) || output.Length > MaxToolOutputChars)
                     ? ToolOutputStore.Save(Context, output) : null;
                 output = ToolOutputStore.Preview(output, saved);
                 if (output.Length > MaxToolOutputChars)
                     output = output[..MaxToolOutputChars] + $"\n... (результат обрезан до {MaxToolOutputChars} символов)";
-                return new ToolOutcome(output, false, warning, diff) { Change = change, SavedOutput = saved,
+                return new ToolOutcome(output, error, warning, diff) { Change = change, SavedOutput = saved,
                     Changes = toolArgs.PatchChanges?.Select(item => FileChanges.RecordPatch(Context, item)).ToArray(),
                     CompletedCommand = toolArgs.CompletedCommand };
             }, ct);

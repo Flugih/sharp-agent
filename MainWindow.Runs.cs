@@ -120,16 +120,16 @@ public partial class MainWindow
         if (!_agent.IsTemporary)
         {
             var previous = _agent.ChatPath ?? "";
-            if (InputBox.Text.Length > 0 || _pendingAttachments.Count > 0)
-                _chatDrafts[previous] = (InputBox.Text, _pendingAttachments.ToArray());
+            var text = ComposerDraft;
+            if (text.Length > 0 || _pendingAttachments.Count > 0)
+                _chatDrafts[previous] = (text.ReplaceLineEndings("\n"), _pendingAttachments.ToArray());
             else _chatDrafts.Remove(previous);
         }
         _agent = agent;
         abandoned?.Cancellation.Cancel();
         if (leavingTemporary && VoiceShown) CancelVoice();
         var draft = agent.IsTemporary ? default : _chatDrafts.GetValueOrDefault(agent.ChatPath ?? "");
-        InputBox.Text = draft.Text ?? "";
-        InputBox.CaretIndex = InputBox.Text.Length;
+        ComposerDraft = draft.Text ?? "";
         _pendingAttachments.Clear();
         if (draft.Files != null) _pendingAttachments.AddRange(draft.Files);
         RenderPendingAttachments();
