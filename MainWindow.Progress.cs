@@ -16,7 +16,7 @@ public partial class MainWindow
         public readonly StackPanel Items = new();
         public readonly Expander View = new() { Style = Theme.Style("ProgressSection") };
         public PlanCard? Plan;
-        public ProgressSection? Searches;
+        public ProgressSection? Searches, Computer;
         public bool IsRunning => _label.IsActive;
         public Shimmer Label => _label;
         public string? ReconnectStatus { get; private set; }
@@ -259,6 +259,7 @@ public partial class MainWindow
     {
         FlushModelProgress();
         _chatView.Commands = null;
+        if (_chatView.Progress != null) _chatView.Progress.Computer = null;
         _chatView.ReasoningRow = _chatView.CommentaryRow = null;
     }
 
@@ -510,7 +511,9 @@ public partial class MainWindow
     void AddProgressItem(UIElement item)
     {
         SetProgressHint(null);
-        EnsureProgress().Items.Children.Add(item);
+        var progress = EnsureProgress();
+        progress.Computer = null;
+        progress.Items.Children.Add(item);
     }
 
     void CompletePlan(string id, string argumentsJson, string output, bool isError)
@@ -534,6 +537,16 @@ public partial class MainWindow
 
     void AddProgressTool(string name, UIElement item)
     {
+        var current = EnsureProgress();
+        if (ComputerTools.IsControl(name))
+        {
+            SetProgressHint(null);
+            _chatView.Commands = null;
+            current.Computer ??= ProgressSection.Collapsed(Tr("Использование компьютера", "Computer use"), Glyphs.Laptop, current.Items);
+            current.Computer.Items.Children.Add(item);
+            return;
+        }
+        current.Computer = null;
         if (name == "search_text")
         {
             var progress = EnsureProgress();

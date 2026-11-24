@@ -15,7 +15,7 @@ public partial class MainWindow
         public readonly StackPanel Activity = new();
         public readonly Dictionary<string, Shimmer> Tools = new();
         public TextBlock? Commentary;
-        public ProgressSection? Searches;
+        public ProgressSection? Searches, Computer;
     }
 
     readonly Dictionary<string, SubagentRow> _subagentRows = new();
@@ -48,6 +48,7 @@ public partial class MainWindow
         }
         if (newTool && update.Action is { } call)
         {
+            if (!ComputerTools.IsControl(call.Name)) row.Computer = null;
             var description = Describe(call.Name, call.ArgumentsJson);
             var label = call.Name == LocalResearchEngine.Name ? description.Label : Activity(call.Name, call.ArgumentsJson).Trim();
             var text = new Shimmer { Text = label, TextWrapping = TextWrapping.Wrap, IsActive = true };
@@ -57,11 +58,20 @@ public partial class MainWindow
                 text.Margin = new(0, 3, 0, 3);
                 ProgressSection.AddSearch(ref row.Searches, row.Activity, text);
             }
-            else row.Activity.Children.Add(new DockPanel
+            else
             {
-                Margin = new(0, 6, 0, 7),
-                Children = { GlyphText(description.Glyph, 16, "TextMuted", new(0, 2, 10, 0), false), text },
-            });
+                var item = new DockPanel
+                {
+                    Margin = new(0, 6, 0, 7),
+                    Children = { GlyphText(description.Glyph, 16, "TextMuted", new(0, 2, 10, 0), false), text },
+                };
+                if (ComputerTools.IsControl(call.Name))
+                {
+                    row.Computer ??= ProgressSection.Collapsed(Tr("Использование компьютера", "Computer use"), Glyphs.Laptop, row.Activity);
+                    row.Computer.Items.Children.Add(item);
+                }
+                else row.Activity.Children.Add(item);
+            }
             row.Tools.Add(call.Id, text);
         }
         if (update.CompletedAction is { } done && row.Tools.Remove(done.Id, out var tool))

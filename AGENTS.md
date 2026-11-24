@@ -2,11 +2,6 @@
 
 Rules for every change to Sharp Agent.
 
-## Main rule: built-in tools only
-- No NuGet packages, vendored DLLs or downloaded tools. Use the .NET 8 BCL and WPF, Win32/COM through P/Invoke, and what ships with Windows (PowerShell 5.1, cmd).
-- Plugins may call optional tools the user installed (FFmpeg, Tesseract), but the app never downloads or bundles them.
-- The app itself only starts the sing-box executable the user picked in the network settings and uses the installed WebView2 Runtime for the built-in browser; it never downloads or bundles them either.
-
 ## .NET 8
 - Target `net8.0-windows`, C# 12. No .NET 9+ APIs (`System.Threading.Lock`, `Task.WhenEach`, ...) and no C# 13+ syntax (`field`, `\e`, partial properties).
 
