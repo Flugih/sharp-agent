@@ -5,6 +5,7 @@ public sealed class PathRefs(Func<string> workingDirectory)
     const int MaxPathLength = 400;
     const string Forbidden = "<>\"|?*\n\r\t`", TrailingPunctuation = ".,;:!?)]}»\"'… \u00A0";
     static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    static readonly Regex DrivePath = new(@"(?<![\w\\/:])[A-Za-z]:[\\/]");
     readonly HashSet<char> _localDrives = [];
 
     public string? Resolve(string candidate, bool allowRelative)
@@ -45,6 +46,22 @@ public sealed class PathRefs(Func<string> workingDirectory)
             candidate = trimmed[..space];
         }
         return null;
+    }
+
+    internal string? FindWorkspace(string text)
+    {
+        string? workspace = null;
+        foreach (Match match in DrivePath.Matches(text))
+        {
+            int start = match.Index;
+            char quote = start > 0 ? text[start - 1] : '\0';
+            int end = quote is '"' or '\'' or '`' or '«' ? text.IndexOf(quote == '«' ? '»' : quote, start) : -1;
+            var folder = end >= 0 ? Resolve(text[start..end], allowRelative: false) : MatchBarePath(text, start)?.FullPath;
+            if (folder == null || !Directory.Exists(folder)) continue;
+            if (workspace != null && !PathHelper.SamePath(workspace, folder)) return null;
+            workspace = folder;
+        }
+        return workspace;
     }
 
     public static int PlainTokenLength(string text, int start)

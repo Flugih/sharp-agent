@@ -56,7 +56,7 @@ public static class Theme
     // Light values for every palette brush; dark ones are the App.xaml originals captured on first use.
     static readonly Dictionary<string, Color> LightColors = new[]
     {
-        ("Bg", "#FFFFFF"), ("ChromeBg", "#F3F3F3"), ("Surface", "#F4F4F4"),
+        ("Bg", "#FFFFFF"), ("ChromeBg", "#F3F3F3"), ("Surface", "#F4F4F4"), ("CompactTranscriptBg", "#FFFFFF"),
         ("ChatModeTrack", "#F3F3F3"), ("ChatModeSelected", "#FFFFFF"), ("ChatModeShadow", "#E0E0E0"), ("ChatModeText", "#5E5E5E"),
         ("SearchGlass", "#EBFAFAFA"), ("SearchHighlight", "#D7C896"),
         ("Surface2", "#FFFFFF"), ("Surface3", "#E6E6E6"), ("BlockBg", "#F4F4F4"), ("Raised", "#FFFFFF"), ("RaisedLine", "#D9D9D9"),

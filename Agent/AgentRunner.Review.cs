@@ -2,7 +2,7 @@ namespace SharpAgent.Agent;
 
 partial class AgentRunner
 {
-    const string ReviewField = "review", AlreadySent = "Полный результат этого действия уже передан.";
+    const string ReviewField = "review", AlreadySent = "Полный результат этого действия уже передан.", PlanUpdated = "План обновлён:";
     // Standalone scripts are not pushed toward a check: the only check is to run them, and that may change data.
     static readonly string[] Scripts = [".ps1", ".sql", ".py"];
 
@@ -16,7 +16,7 @@ partial class AgentRunner
     {
         var items = PlanItems(args);
         return items.Count == 0 ? new("Ошибка: укажи пункты плана со статусами pending, in_progress или done.", true)
-            : new($"План обновлён: выполнено {items.Count(item => item.Done)} из {items.Count}.", false);
+            : new($"{PlanUpdated} выполнено {items.Count(item => item.Done)} из {items.Count}.", false);
     }
 
     internal readonly record struct PlanItem(string Step, string? Status)
@@ -28,16 +28,12 @@ partial class AgentRunner
         (args?["items"] as JsonArray)?.OfType<JsonObject>().Select(item => new PlanItem(TextArg(item["step"]) ?? "", Str(item["status"])))
         .Where(item => item.Step.Length > 0).Take(20).ToList() ?? [];
 
-    (List<PlanItem> Items, int At)? CurrentPlan()
-    {
-        for (int i = _history.Count - 1; i >= 0 && Role(_history[i]) != "user"; i--)
-            if ((_history[i]["tool_calls"] as JsonArray)?.OfType<JsonObject>().Select(ParseCall).LastOrDefault(call => call.Name == "update_plan") is { } plan)
-                return (PlanItems(ArgsOf(plan)), i);
-        return null;
-    }
+    List<PlanItem>? CurrentPlan() => CurrentActions().LastOrDefault(action => action.Call.Name == "update_plan" &&
+        Str(action.Result["content"])?.StartsWith(PlanUpdated, StringComparison.Ordinal) == true).Call is { } plan
+        ? PlanItems(ArgsOf(plan)) : null;
 
-    string? PlanNote() => CurrentPlan() is { Items.Count: > 0 } plan
-        ? PromptText("Текущий план:\n", "Current plan:\n") + string.Join("\n", plan.Items.Select(item => (item.Done ? "[x] " : "[ ] ") + item.Step)) : null;
+    string? PlanNote() => CurrentPlan() is { Count: > 0 } plan
+        ? PromptText("Текущий план:\n", "Current plan:\n") + string.Join("\n", plan.Select(item => (item.Done ? "[x] " : "[ ] ") + item.Step)) : null;
 
     // A local check before the model finishes: one cheap extra step only when work is visibly unfinished or unverified.
     async Task<(string? Review, string? Verification, string? Incomplete)> ReviewAsync(ContextRun context, CancellationToken ct)
@@ -78,7 +74,7 @@ partial class AgentRunner
         }
         var notes = new List<string>();
         string? verification = null;
-        if (WorkMode && CurrentPlan() is { } plan && plan.Items.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
+        if (WorkMode && CurrentPlan() is { } plan && plan.Where(item => !item.Done).Select(item => item.Step).ToList() is { Count: > 0 } open)
             notes.Add(PromptText("В плане остались невыполненные пункты: ", "The plan has unfinished steps: ") + string.Join("; ", open) +
                       PromptText(". Выполни их или обнови план, если они не нужны.", ". Complete them or update the plan if they are unnecessary."));
         var task = ExtractText(LastUser()?["content"]) ?? "";

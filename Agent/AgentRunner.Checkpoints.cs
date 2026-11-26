@@ -9,7 +9,7 @@ partial class AgentRunner
     {
         if (change != null)
             EnsureMeta(message)["file_change"] = ChangeJson(change);
-        if (call.Name is not ("write_file" or "edit_file" or "run_plugin" or AgentKnowledge.Name) || (change?.Path ?? WriteTarget(call)) is not { } path ||
+        if (call.Name is not ("write_file" or "edit_file" or "run_plugin" or AgentKnowledge.Name or WordEdits.Name) || (change?.Path ?? WriteTarget(call)) is not { } path ||
             (change?.AfterHash ?? FileChanges.CurrentHash(path)) is not { } hash) return;
         var meta = EnsureMeta(message);
         meta["written_path"] = path;
@@ -45,7 +45,7 @@ partial class AgentRunner
 
     string? WriteTarget(ToolCallEvent call)
     {
-        if (call.Name is not ("write_file" or "edit_file" or "run_plugin") || ArgsOf(call) is not { } args) return null;
+        if (call.Name is not ("write_file" or "edit_file" or "run_plugin" or WordEdits.Name) || ArgsOf(call) is not { } args) return null;
         try
         {
             var raw = call.Name == "run_plugin" ? PluginTools.TargetOf(new ToolArgs(args), tools.Context) : Str(args["path"]);

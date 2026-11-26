@@ -24,6 +24,7 @@ public partial class MainWindow
         public ProgressSection(string title, string? glyph = null)
         {
             if (glyph != null) _header.Children.Add(GlyphText(glyph, 16, "TextMuted", new(0, 0, 8, 0)));
+            _label.AlwaysAnimate = glyph == null;
             _header.Children.Add(_label);
             View.Header = _header;
             // Children sit 34 in, with a guide line under the centre of the group glyph.
@@ -31,7 +32,7 @@ public partial class MainWindow
             {
                 BorderThickness = new(1, 0, 0, 0), Margin = new(7, 0, 0, 0), Padding = new(26, 0, 0, 0), Child = Items,
             }.Paint(BorderBrushProperty, "Line");
-            SetTitle(title);
+            SetTitle(title, animate: false);
         }
 
         public void SetTitle(string title, string? label = null, bool animate = true)
@@ -90,9 +91,20 @@ public partial class MainWindow
             Plan?.Update(IsRunning);
         }
 
+        public void SetPlan(List<AgentRunner.PlanItem> items, bool animate)
+        {
+            if (items.Count == 0) return;
+            if (Plan == null)
+            {
+                Plan = new();
+                Items.Children.Insert(0, Plan.View);
+            }
+            Plan.Update(IsRunning, items, animate: IsRunning && animate);
+        }
+
         public void Finish(string title)
         {
-            SetTitle(title);
+            SetTitle(title, animate: false);
             _label.IsActive = false;
             SetReconnectStatus(null);
             View.IsExpanded = false;
@@ -102,7 +114,7 @@ public partial class MainWindow
 
     sealed class PlanCard
     {
-        readonly ProgressSection _section = new("", Glyphs.Check) { View = { IsExpanded = true } };
+        readonly ProgressSection _section = new("", Glyphs.Check) { View = { IsExpanded = true }, Label = { AlwaysAnimate = true } };
         readonly ProgressBar _meter = new() { Style = Theme.Style("Meter"), Margin = new(0, 8, 0, 6) };
         readonly StackPanel _tasks = new();
         List<AgentRunner.PlanItem> _items = [];
@@ -117,25 +129,26 @@ public partial class MainWindow
 
         public void Update(bool running, List<AgentRunner.PlanItem>? items = null, bool animate = false)
         {
-            if (items == null && !running && !_showingSpinner) return;
-            _items = items ?? _items;
-            items = _items;
-            int done = items.Count(item => item.Done);
+            items ??= _items;
             int current = items.FindIndex(item => item.Status == "in_progress");
             if (current < 0) current = items.FindIndex(item => !item.Done);
+            bool showingSpinner = running && current >= 0;
+            if (_showingSpinner == showingSpinner && _items.SequenceEqual(items)) return;
+            _items = items;
+            _showingSpinner = _section.Label.IsActive = showingSpinner;
+            int done = items.Count(item => item.Done);
             var step = current >= 0 ? items[current].Step : Tr("План выполнен", "Plan complete");
             var summary = Tr($"План. Выполнено {done} из {items.Count}", $"Plan. {done} of {items.Count} completed");
             _section.SetTitle(summary, $"{done}/{items.Count} · {step}", animate);
             AutomationProperties.SetName(_meter, summary);
             _meter.Maximum = items.Count;
             _meter.Value = done;
-            _showingSpinner = running && current >= 0;
             _tasks.Children.Clear();
             for (int i = 0; i < items.Count; i++)
             {
                 var item = items[i];
                 bool active = _showingSpinner && i == current;
-                FrameworkElement mark = active ? MakeSpinner(16) : new CheckBox
+                FrameworkElement mark = active ? MakeSpinner(16, alwaysAnimate: true) : new CheckBox
                 {
                     Style = Theme.Style("PlanCheck"), IsChecked = item.Done,
                 };
@@ -153,12 +166,11 @@ public partial class MainWindow
         }
     }
 
-    const int ToolStatusGraceMs = 900, WorkStatusDelayMs = 400;
+    const int ToolStatusGraceMs = 900;
     readonly StringBuilder _draftText = new();
     DispatcherTimer? _draftTimer;
     DispatcherTimer? _modelProgressTimer;
     DispatcherTimer? _workStatusTimer;
-    (string Text, long Since)? _pendingWorkStatus;
     ModelProgress? _pendingModelProgress;
     RichTextBox? _draftView;
     int _draftShown;
@@ -166,7 +178,8 @@ public partial class MainWindow
 
     sealed record ComposerLoad(string Label, string? Remaining = null, double Percent = 0, bool IsIndeterminate = true, bool IsIndexing = false);
     int _loadingRefreshQueued;
-    bool ChatSubmitBusy => ChatFileBusy || _toolContext.ProjectWatcher.Progress != null;
+    ProjectWatcher.IndexProgress? IndexProgress => _agent?.WorkMode == true ? _toolContext.ProjectWatcher.Progress : null;
+    bool ChatSubmitBusy => ChatFileBusy || IndexProgress != null;
 
     void OnIndexProgressChanged()
     {
@@ -181,7 +194,7 @@ public partial class MainWindow
     string? UpdateComposerLoading()
     {
         ComposerLoad? load = null;
-        if (_toolContext.ProjectWatcher.Progress is { } progress)
+        if (IndexProgress is { } progress)
         {
             var label = progress.Phase switch
             {
@@ -217,7 +230,6 @@ public partial class MainWindow
         _chatView.FinishedToolStatus = null;
         _chatView.ContextStatus = null;
         _chatView.Compacting = false;
-        _pendingWorkStatus = null;
         EnsureProgress().Start();
         SetProgressHint(Tr("Подготовка запроса…", "Preparing request…"));
         UpdateWorkStatus();
@@ -228,7 +240,7 @@ public partial class MainWindow
 
     void SetProgressHint(string? text)
     {
-        if (text != null && _cts != null && !_suppressAnimation) _compactChat?.SetStatus(text);
+        if (text != null && _cts != null && !_suppressAnimation) _compactChat?.SetStatus(text, animate: true);
         if (_chatView.ProgressHint != null)
         {
             _chatView.Progress?.Items.Children.Remove(_chatView.ProgressHint);
@@ -259,6 +271,7 @@ public partial class MainWindow
     {
         FlushModelProgress();
         _chatView.Commands = null;
+        _chatView.SingleCommand = null;
         if (_chatView.Progress != null) _chatView.Progress.Computer = null;
         _chatView.ReasoningRow = _chatView.CommentaryRow = null;
     }
@@ -280,17 +293,6 @@ public partial class MainWindow
         else if (_chatView.FinishedToolStatus is { } previous && previous.Until <= now) _chatView.FinishedToolStatus = null;
         status ??= _chatView.Compacting ? Tr("Сжатие контекста…", "Compacting context…") : _chatView.ContextStatus ??
             (_preparingAnswer ? Tr("Рассуждаю…", "Reasoning…") : Tr("Думаю…", "Thinking…"));
-        if (!_suppressAnimation && !reconnecting && !confirming && progress.Label.Text != status)
-        {
-            if (_pendingWorkStatus?.Text != status) _pendingWorkStatus = (status, now);
-            long remaining = WorkStatusDelayMs - (now - _pendingWorkStatus.Value.Since);
-            if (remaining > 0)
-            {
-                delay = delay > 0 ? Math.Min(delay, remaining) : remaining;
-                status = progress.Label.Text;
-            }
-        }
-        else _pendingWorkStatus = null;
         if (delay > 0 && !_suppressAnimation)
         {
             var interval = TimeSpan.FromMilliseconds(delay);
@@ -298,8 +300,9 @@ public partial class MainWindow
             _workStatusTimer.Interval = interval;
             _workStatusTimer.Start();
         }
-        if (progress.Label.Text != status) progress.SetTitle(status, animate: true);
-        _compactChat?.SetStatus(status, reconnecting ? "Text" : "TextMuted");
+        bool animate = !_suppressAnimation && !reconnecting && !confirming;
+        if (!animate || progress.Label.TargetText != status) progress.SetTitle(status, animate: animate);
+        _compactChat?.SetStatus(status, reconnecting ? "Text" : "TextMuted", animate);
     }
 
     void ShowReconnect(int attempt, int total)
@@ -441,7 +444,7 @@ public partial class MainWindow
         if (chunk.Length == 0) return;
         var paragraph = (Paragraph)_draftView!.Document.Blocks.FirstBlock;
         var settled = (Run)paragraph.Inlines.LastInline;
-        if (!Theme.AnimationsEnabled)
+        if (!Theme.AnimationsEnabled || (bool)GetValue(Shimmer.MotionSuspendedProperty))
         {
             settled.ContentEnd.InsertTextInRun(chunk);
             return;
@@ -513,6 +516,8 @@ public partial class MainWindow
         SetProgressHint(null);
         var progress = EnsureProgress();
         progress.Computer = null;
+        _chatView.Commands = null;
+        _chatView.SingleCommand = null;
         progress.Items.Children.Add(item);
     }
 
@@ -526,13 +531,7 @@ public partial class MainWindow
         var items = AgentRunner.PlanItems(ParseObject(argumentsJson));
         if (items.Count == 0) return;
         SetProgressHint(null);
-        var progress = EnsureProgress();
-        if (progress.Plan == null)
-        {
-            progress.Plan = new();
-            progress.Items.Children.Insert(0, progress.Plan.View);
-        }
-        progress.Plan.Update(progress.IsRunning, items, animate: progress.IsRunning && !_suppressAnimation);
+        EnsureProgress().SetPlan(items, animate: !_suppressAnimation);
     }
 
     void AddProgressTool(string name, UIElement item)
@@ -542,6 +541,7 @@ public partial class MainWindow
         {
             SetProgressHint(null);
             _chatView.Commands = null;
+            _chatView.SingleCommand = null;
             current.Computer ??= ProgressSection.Collapsed(Tr("Использование компьютера", "Computer use"), Glyphs.Laptop, current.Items);
             current.Computer.Items.Children.Add(item);
             return;
@@ -549,25 +549,36 @@ public partial class MainWindow
         current.Computer = null;
         if (name == "search_text")
         {
-            var progress = EnsureProgress();
             SetProgressHint(null);
-            if (progress.Searches == null) _chatView.Commands = null;
-            ProgressSection.AddSearch(ref progress.Searches, progress.Items, item);
+            _chatView.Commands = null;
+            _chatView.SingleCommand = null;
+            ProgressSection.AddSearch(ref current.Searches, current.Items, item);
             return;
         }
         if (name is not ("exec_command" or "run_command" or "run_plugin"))
         {
-            _chatView.Commands = null;
             AddProgressItem(item);
             return;
         }
-        if (_chatView.Commands == null)
+        var rows = current.Items.Children;
+        var last = rows.Count > 0 ? rows[^1] : null;
+        var commands = _chatView.Commands;
+        if (commands == null || last != commands.View)
         {
-            var commands = _chatView.Commands = new(Tr("Команды", "Commands"), Glyphs.Terminal) { View = { IsExpanded = true } };
-            AddProgressItem(commands.View);
+            if (_chatView.SingleCommand is not { } first || first != last)
+            {
+                AddProgressItem(item);
+                _chatView.SingleCommand = item;
+                return;
+            }
+            commands = _chatView.Commands = new(Tr("Команды · 2", "Commands · 2"), Glyphs.Terminal) { View = { IsExpanded = true } };
+            _chatView.SingleCommand = null;
+            rows.RemoveAt(rows.Count - 1);
+            rows.Add(commands.View);
+            commands.Items.Children.Add(first);
         }
-        _chatView.Commands.Items.Children.Add(item);
-        int count = _chatView.Commands.Items.Children.Count;
-        if (count > 1) _chatView.Commands.SetTitle(Tr($"Команды · {count}", $"Commands · {count}"), animate: false);
+        commands.Items.Children.Add(item);
+        int count = commands.Items.Children.Count;
+        commands.SetTitle(Tr($"Команды · {count}", $"Commands · {count}"), animate: false);
     }
 }

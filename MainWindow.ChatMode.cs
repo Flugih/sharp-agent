@@ -61,8 +61,16 @@ public partial class MainWindow
         InputHint.Text = work ? Tr("Работайте в Sharp Agent", "Work with Sharp Agent") : Tr("Обсудить с Sharp Agent", "Discuss with Sharp Agent");
         ComposerIntro.Text = work ? Tr("Над чем поработаем?", "What shall we work on?") : Tr("Что обсудим?", "What’s on your mind?");
         RenderNextActions();
+        UpdateProjectWatcher();
         UpdateSendButton();
         UpdateComposerPlacement();
+    }
+
+    void UpdateProjectWatcher()
+    {
+        if (!_startupChatReady) return;
+        if (_agent.WorkMode) _toolContext.ProjectWatcher.Watch(_toolContext);
+        else _toolContext.ProjectWatcher.Dispose();
     }
 
     void ComposerPanel_SizeChanged(object sender, SizeChangedEventArgs e)

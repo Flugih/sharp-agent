@@ -145,7 +145,7 @@ Section numbers in parentheses point to `current-ui.md`.
 | Popover → model list | Same container; the list fades in and settles upward over 180 ms | Opacity 0→1 with TranslateY +8→0 on the list, same easing as the popover |
 | Streamed answer text | Each new chunk fades in 0→1 over 160 ms, near-linear | Each appended Run gets its own brush with animated Opacity |
 | New messages and rows | Fade in over 160 ms | Keep the existing fade of new chat elements |
-| "Думаю" and running statuses | Base `#838383`; a `#D8D8D8` band about 60 px wide sweeps left→right at 340 px/s; one sweep every 4 s | LinearGradientBrush (Absolute) as Foreground; animate its TranslateTransform.X −60 → 1300 over 4 s, linear, Forever |
+| "Думаю" and running statuses | One contrasting band sweeps across the label in 2 s, then pauses for 5 s | Absolute LinearGradientBrush across the label with a TranslateTransform and repeating keyframes |
 | Loading content and the current plan step | Spinner (0.9 s) | Reuse the existing spinner |
 | Scrolling | Smooth wheel scrolling is optional | Keep the custom wheel and the 340 ms scroll-to-bottom |
 | Tool group expand/collapse | 150 ms or instant | Shorten RevealPanel |

@@ -11,8 +11,10 @@ public sealed class MicrophoneException(string message, bool privacy = false) : 
 public sealed class VoiceRecorder
 {
     public const int MaxMinutes = 10;
-    const int SampleRate = 16_000, BytesPerSecond = SampleRate * 2, MaxBytes = MaxMinutes * 60 * BytesPerSecond;
-    const int BufferBytes = BytesPerSecond / 20, BufferCount = 8, WavHeaderBytes = 44;
+    internal const int SampleRate = 16_000;
+    const int BytesPerSecond = SampleRate * 2, MaxBytes = MaxMinutes * 60 * BytesPerSecond;
+    internal const int WavHeaderBytes = 44;
+    const int BufferBytes = BytesPerSecond / 20, BufferCount = 8;
     const int WaveMapper = -1, CallbackEvent = 0x50000, HeaderDone = 0x1, HeaderInQueue = 0x10;
     const int BadDeviceId = 2, Allocated = 4, NoDriver = 6;
     const int SilenceFloor = 64;
@@ -59,13 +61,15 @@ public sealed class VoiceRecorder
     readonly byte[] _chunk = new byte[BufferBytes];
     readonly MemoryStream _wav = new();
     readonly TaskCompletionSource<byte[]> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly Action<float[]>? _samples;
     nint _device;
     int _next, _loudest;
     volatile int _bytes;
     volatile bool _stop, _discard;
 
-    VoiceRecorder()
+    VoiceRecorder(Action<float[]>? samples = null)
     {
+        _samples = samples;
         var format = new WaveFormat
             { FormatTag = 1, Channels = 1, SamplesPerSecond = SampleRate, AverageBytesPerSecond = BytesPerSecond, BlockAlign = 2, BitsPerSample = 16 };
         int result = waveInOpen(out _device, WaveMapper, ref format, _signal.SafeWaitHandle.DangerousGetHandle(), 0, CallbackEvent);
@@ -99,10 +103,12 @@ public sealed class VoiceRecorder
     public ConcurrentQueue<float> Levels { get; } = new();
     public TimeSpan Length => TimeSpan.FromSeconds((double)_bytes / BytesPerSecond);
     public bool Silent => _loudest < SilenceFloor;
-    public bool Full => _bytes >= MaxBytes;
+    public bool Full => _samples == null && _bytes >= MaxBytes;
     public bool Ended => _done.Task.IsCompleted;
 
     public static VoiceRecorder Start() => new();
+    internal static VoiceRecorder Start(Action<float[]> samples) => new(samples);
+    internal Task<byte[]> Completion => _done.Task;
 
     public Task<byte[]> StopAsync()
     {
@@ -127,7 +133,7 @@ public sealed class VoiceRecorder
             }
             ReturnBuffers();
             Collect(requeue: false);
-            if (!_discard) wav = Finish();
+            if (!_discard && _samples == null) wav = Finish();
         }
         catch (Exception ex) { _done.TrySetException(ex); }
         finally
@@ -144,7 +150,7 @@ public sealed class VoiceRecorder
             var header = _headers[_next];
             int flags = Marshal.ReadInt32(header, FlagsOffset);
             if ((flags & HeaderDone) == 0) return true;
-            Take(Marshal.ReadIntPtr(header), Marshal.ReadInt32(header, RecordedOffset));
+            if (requeue || _samples == null) Take(Marshal.ReadIntPtr(header), Marshal.ReadInt32(header, RecordedOffset));
             Marshal.WriteInt32(header, RecordedOffset, 0);
             Marshal.WriteInt32(header, FlagsOffset, flags & ~HeaderDone);
             _next = (_next + 1) % BufferCount;
@@ -155,42 +161,58 @@ public sealed class VoiceRecorder
 
     void Take(nint data, int count)
     {
-        count = Math.Min(Math.Min(count, BufferBytes), MaxBytes - _bytes) & ~1;
+        count = Math.Min(count, _samples == null ? Math.Min(BufferBytes, MaxBytes - _bytes) : BufferBytes) & ~1;
         if (count <= 0) return;
         Marshal.Copy(data, _chunk, 0, count);
-        _wav.Write(_chunk, 0, count);
+        if (_samples == null) _wav.Write(_chunk, 0, count);
+        var samples = _samples == null ? null : new float[count / 2];
         double power = 0;
         for (int i = 0; i < count; i += 2)
         {
             int sample = (short)(_chunk[i] | _chunk[i + 1] << 8);
+            if (samples != null) samples[i / 2] = sample / 32768f;
             power += (double)sample * sample;
             _loudest = Math.Max(_loudest, Math.Abs(sample));
         }
-        _bytes += count;
+        _bytes = Math.Min(MaxBytes, _bytes + count);
         double decibels = 10 * Math.Log10(power / (count / 2) / (32768.0 * 32768.0) + 1e-10);
         Levels.Enqueue((float)Math.Clamp(1 + decibels / LevelRange, 0, 1));
+        if (samples != null) _samples!(samples);
     }
 
     byte[] Finish()
     {
         int data = (int)_wav.Length - WavHeaderBytes;
         _wav.Position = 0;
-        using (var writer = new BinaryWriter(_wav, Encoding.ASCII, leaveOpen: true))
-        {
-            writer.Write("RIFF"u8);
-            writer.Write(WavHeaderBytes - 8 + data);
-            writer.Write("WAVEfmt "u8);
-            writer.Write(16);
-            writer.Write((short)1);
-            writer.Write((short)1);
-            writer.Write(SampleRate);
-            writer.Write(BytesPerSecond);
-            writer.Write((short)2);
-            writer.Write((short)16);
-            writer.Write("data"u8);
-            writer.Write(data);
-        }
+        using var writer = new BinaryWriter(_wav, Encoding.ASCII, leaveOpen: true);
+        WriteWaveHeader(writer, SampleRate, data);
         return _wav.ToArray();
+    }
+
+    internal static byte[] EncodeWave(float[] samples)
+    {
+        int length = samples.Length * sizeof(short);
+        using var stream = new MemoryStream(WavHeaderBytes + length);
+        using var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true);
+        WriteWaveHeader(writer, SampleRate, length);
+        foreach (var sample in samples) writer.Write((short)(Math.Clamp(sample, -1, 1) * short.MaxValue));
+        return stream.ToArray();
+    }
+
+    internal static void WriteWaveHeader(BinaryWriter writer, int rate, int data)
+    {
+        writer.Write("RIFF"u8);
+        writer.Write(WavHeaderBytes - 8 + data);
+        writer.Write("WAVEfmt "u8);
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write((short)1);
+        writer.Write(rate);
+        writer.Write(rate * 2);
+        writer.Write((short)2);
+        writer.Write((short)16);
+        writer.Write("data"u8);
+        writer.Write(data);
     }
 
     void ReturnBuffers()

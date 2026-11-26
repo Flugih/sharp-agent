@@ -1,0 +1,82 @@
+@waiting
+Yep, one sec.
+Okay, let me think.
+Hmm, give me a second.
+Hang on, I'm still thinking.
+Give me a couple of seconds.
+One sec, I'm thinking it through.
+Yeah, let me think about that.
+Hmm, let me work that out.
+All right, hang on a bit.
+I need another moment.
+Mm-hmm, I'm still with you.
+Just a second. I'm thinking.
+Yep, give me a bit longer.
+Okay, let me work through it.
+Let me think a little more.
+One moment. I'm still mulling that over.
+Give me a moment to put the answer together.
+One second. I'm still working through it.
+Hang on. I need a little more time.
+I'm putting the answer together now.
+
+@retry
+Oops, that didn't work. I'll try again.
+Something went wrong there. Let me give it another go.
+The model's quiet. I'll ask again.
+Hmm, nothing yet. Let me try once more.
+That hit a snag. Hang on, I'll try again.
+Didn't work the first time. I'll give it another shot.
+Still nothing. Give me a second to try again.
+Okay, that didn't go through. Here goes again.
+Oh, the model didn't answer. I'll ask it again.
+Something didn't work. Let me have another go.
+Nothing came back. I'll ask again.
+Hang on a bit. I'll give it one more try.
+Still no answer. I'll try once more.
+Looks like I'll have to ask again. One sec.
+No luck with the model yet. I'll try again now.
+That one didn't go through. Give me a second to try again.
+I didn't get an answer. I'm sending the request again.
+I've got your question. Let me try once more.
+I'll give that another try now.
+
+@unavailable
+No luck for now. Let's try again in a bit.
+The model's still quiet. Want to come back to it later?
+Still nothing. Let's give it a little time.
+That didn't work. Ask me again in a little while.
+Looks like we'll have to leave that one for later.
+It's still not coming through. We can come back to it.
+The model hasn't answered yet. I'm here, though.
+No answer right now. We can try again later.
+Hmm, still quiet. Let's set that question aside for a bit.
+It's not working right now. Want to talk about something else?
+Nothing yet. You can try asking again in a bit.
+That didn't work out. I'm still here if you want to keep talking.
+I didn't get an answer. We can pick it up later.
+The model isn't answering right now. I'd give it a bit.
+No luck. We can switch topics for now if you like.
+I can't get an answer right now. Let's try a little later.
+I couldn't get an answer to that just now. We can come back to it.
+Let's give the service a little time and try later.
+
+@error
+Oops, that didn't work. Check the message on screen.
+Something went wrong there. The notification has more details.
+That hit a snag. Have a look at what's on screen.
+I couldn't answer that. See what the app says.
+Hmm, no luck with that one. There's a note on screen.
+Okay, something went wrong. Take a look at the message.
+I can't answer just yet. Check the notification.
+Oops, something's wrong. The details are on screen.
+That didn't work. The notification explains what happened.
+I couldn't get an answer. There should be a message in the app.
+Looks like we hit a snag. Can you check the message?
+No luck there. You can see what happened in the app.
+It's not working right now. Have a look at the message that popped up.
+Something got in the way. Check the notification in the app.
+Ah, that didn't go through. See what the message says.
+Okay, that didn't work out. The details are already on screen.
+I couldn't finish the reply. The app shows where it stopped.
+There was an error. The notification has the details.

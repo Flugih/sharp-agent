@@ -17,6 +17,9 @@ static class SystemPrompt
         var notes = new List<string> { "[Application environment]", "Working directory: " + context.WorkingDirectory };
         if (context.SandboxRoot is { } root) notes.Add("Sandbox root: " + root + ". Commands are disabled.");
         if (delegated) notes.Add(Subagent.Value);
+        if (names.Contains("update_plan")) notes.Add("For a task with several distinct stages, call update_plan early and before making changes. " +
+            "List the concrete steps in the user's language, mark the current step in progress, and update the list as steps are completed. " +
+            "When the next action is clear, send it after update_plan in the same tool-call batch. Skip planning for simple requests.");
         if (names.Contains(BrowserTools.Name)) notes.Add(Browser.Value);
         if (names.Contains(ComputerTools.Name) || names.Contains(ComputerTools.AppName)) notes.Add(Computer.Value);
         if (names.Contains(LocalResearchEngine.Name)) notes.Add(Documents.Value);

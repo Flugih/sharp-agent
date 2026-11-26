@@ -7,7 +7,7 @@ partial class ShellTools
         var schema = Schema.Object(new Prop("command", "string", "Command to run."),
             new Prop("working_directory", "string", "Working directory."), new Prop("shell", "string", "Shell, defaults to PowerShell.", Enum: ["powershell", "cmd"]),
             new Prop("timeout_seconds", "integer", "Deadline, at most 1800 seconds."),
-            new Prop("yield_ms", "integer", "Optionally return a session ID for a long-running command. Build and test checks wait for their final result."),
+            new Prop("yield_ms", "integer", "Omit to wait for the final result in one call. Set only if you have independent work to do while the command runs. Build and test checks always wait."),
             new Prop("session_id", "string", "Wait for the final result of a running command session."));
         schema["properties"]!["commands"] = new JsonObject { ["type"] = "array", ["maxItems"] = 6,
             ["description"] = "Run independent commands in the same directory.", ["items"] = new JsonObject { ["type"] = "string" } };
@@ -31,11 +31,35 @@ partial class ShellTools
         return checks.All(check => GitInspection().IsMatch(check)) ? string.Join("; ", checks.Select(check => Regex.Replace(check, @"[ \t]+", " "))) : null;
     }
 
+    internal static string? FileInspectionOf(ToolArgs args)
+    {
+        if (ShellOf(args) != CommandShell.PowerShell || args.Optional("session_id") != null || args.Int("yield_ms", 0) > 0 ||
+            args.Array("commands").Count > 0 || args.Optional("command") is not { Length: <= 4096 } command) return null;
+        var match = FileInspection().Match(command);
+        return match.Success ? match.Groups["path"].Value : null;
+    }
+
+    [GeneratedRegex("""
+        \A\s*(?:
+            Get-Content\s+(?:-(?:Literal)?Path\s+)?(?<quote>['"])(?<path>[\p{L}\p{N}._/\\\x20-]+)\k<quote>
+            (?:\s+-Encoding\s+UTF8)?(?:\s*\|\s*Select-Object\s+-Skip\s+\d{1,9}\s+-First\s+\d{1,9})?
+            |
+            \$p\s*=\s*(?<quote>['"])(?<path>[\p{L}\p{N}._/\\\x20-]+)\k<quote>\s*;\s*
+            \$a\s*=\s*Get-Content\s+(?:-(?:Literal)?Path\s+)?\$p(?:\s+-Encoding\s+UTF8)?\s*;\s*
+            for\s*\(\s*\$i\s*=\s*\d{1,9}\s*;\s*\$i\s+-le\s+\d{1,9}\s*;\s*\$i\+\+\s*\)\s*\{\s*
+            (?<guard>if\s*\(\s*\$i\s+-le\s+\$a\.(?:Length|Count)\s*\)\s*\{\s*)?
+            (?:(?<format>['"])\{0(?:,-?\d{1,2})?\}:\s*\{1\}\k<format>\s+-f\s+\$i\s*,\s*\$a\[\s*\$i\s*-\s*1\s*\]
+                |"\$i`:\s*\$\(\$a\[\s*\$i\s*-\s*1\s*\]\)")\s*;?\s*(?(guard)\}\s*)\}
+        )\s*;?\s*\z
+        """, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.IgnorePatternWhitespace)]
+    private static partial Regex FileInspection();
+
     [GeneratedRegex(@"\Agit[ \t]+(?:status(?:[ \t]+(?:--short|--branch|-s|-b|--porcelain(?:=v[12])?))*|diff(?:[ \t]+(?:--stat|--name-only|--name-status|--cached|--staged|--no-ext-diff|--no-textconv))*(?:[ \t]+--(?:[ \t]+[\w.\\/-]+)*)?)\z")]
     private static partial Regex GitInspection();
 
     internal sealed class Sessions
     {
+        const string RunningPrefix = "Команда выполняется. session_id=";
         (string Id, Task<string> Result, CancellationTokenSource Cancellation, string? Command)? _active;
         internal string? PendingOutput => _active is { } active ? Running(active.Id) : null;
 
@@ -84,7 +108,11 @@ partial class ShellTools
             }
         }
 
-        internal static string Running(string id) => $"Команда выполняется. session_id={id}. Получи результат через exec_command.";
+        internal static string Running(string id) => $"{RunningPrefix}{id}. Получи результат через exec_command.";
+
+        internal static string? RunningId(string? output) => output != null && output.StartsWith(RunningPrefix, StringComparison.Ordinal) &&
+            output.Length >= RunningPrefix.Length + 32 && output.Substring(RunningPrefix.Length, 32) is var id &&
+            Guid.TryParseExact(id, "N", out _) && output == Running(id) ? id : null;
 
         internal async Task CancelAsync()
         {

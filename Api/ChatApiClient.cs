@@ -20,7 +20,8 @@ public sealed record UsageInfo(long PromptTokens, long CompletionTokens, long Ca
 public sealed record ModelProgress(string? Reasoning = null, string? Commentary = null);
 public sealed record ChatResult(JsonObject Message, string? FinishReason, UsageInfo? Usage, string? RequestId, ModelProgress? Progress = null,
     string? Phase = null);
-public sealed record ModelInfo(string Id, long? ContextTokens, bool? Vision, bool Chat, bool Images, string[] Efforts, string? Name = null);
+public sealed record ModelInfo(string Id, long? ContextTokens, bool? Vision, bool Chat, bool Images, string[] Efforts, string? Name = null,
+    string[]? VoiceModes = null, int? MaxOutputTokens = null, bool AdaptiveThinking = false);
 public sealed record BalanceInfo(long Balance);
 public sealed record UsageEntry(string Model, bool Success, long TotalTokens, long Cost, DateTime CreatedUtc);
 public sealed record UsagePage(List<UsageEntry> Entries, string? NextCursor);
@@ -40,6 +41,7 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
     public bool Retryable { get; } = retryable;
     public string? Code { get; } = code;
     public string? Parameter { get; init; }
+    internal bool ConnectionInterrupted { get; init; }
     public TimeSpan? RetryAfter { get; } = retryAfter;
 
     public static ApiException FromResponse(HttpStatusCode status, string body, string? requestId, TimeSpan? retryAfter = null)
@@ -77,18 +79,37 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
         string.Join(", ", new[] { status is { } number ? "HTTP " + number : null, code != null ? "код: " + code : null,
             requestId != null ? "request_id: " + requestId : null }.OfType<string>()) is { Length: > 0 } parts ? $"\n[{parts}]" : "";
 
-    internal static async Task<ChatResult> RetryAsync(Func<CancellationToken, Action, Task<ChatResult>> send, Func<ApiException, bool?> fallback,
-        Action reset, Action<int, int>? retrying, CancellationToken ct)
+    internal static async Task<ChatResult> RetryAsync(
+        Func<CancellationToken, Action, Action<string?, bool>, Action<ModelProgress>, Task<ChatResult>> send, Func<ApiException, bool?> fallback,
+        Action<string?, bool> reportText, Action<ModelProgress> reportProgress, Action<int, int>? retrying, CancellationToken ct,
+        bool voice = false, bool recoverConnection = false)
     {
-        const int maxAttempts = 5;
         int requests = 0;
+        bool resetPending = false;
+        void Reset()
+        {
+            resetPending = false;
+            reportText(null, false);
+            reportProgress(new());
+        }
+        void Text(string? text, bool usesTools)
+        {
+            if (resetPending) Reset();
+            reportText(text, usesTools);
+        }
+        void Progress(ModelProgress progress)
+        {
+            if (resetPending) Reset();
+            reportProgress(progress);
+        }
         for (int attempt = 1; ; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
                 requests++;
-                var result = await SendWithTimeoutAsync(send, ct);
+                var result = await SendWithTimeoutAsync((token, activity) => send(token, activity, Text, Progress), voice ? 30 : 90, ct);
+                if (resetPending) Reset();
                 return result.Usage is { } usage ? result with { Usage = usage with { Requests = requests } } : result;
             }
             catch (Exception ex)
@@ -97,20 +118,23 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
                 var adapted = ex is ApiException api ? fallback(api) : false;
                 if (adapted == true)
                 {
+                    if (!resetPending) Reset();
                     attempt--;
                     continue;
                 }
-                if (adapted == null || attempt >= maxAttempts || RetryDelay(ex, attempt, ct) is not { } delay) throw;
-                reset();
+                bool reconnecting = recoverConnection && !voice && IsConnectionInterrupted(ex);
+                int maxAttempts = voice ? 2 : reconnecting ? 15 : 5;
+                if (adapted == null || attempt >= maxAttempts || RetryDelay(ex, attempt, voice, reconnecting) is not { } delay) throw;
+                if (reconnecting) resetPending = true;
+                else if (!resetPending) Reset();
                 retrying?.Invoke(attempt + 1, maxAttempts);
                 await Task.Delay(delay, ct);
             }
         }
     }
 
-    static async Task<ChatResult> SendWithTimeoutAsync(Func<CancellationToken, Action, Task<ChatResult>> send, CancellationToken ct)
+    static async Task<ChatResult> SendWithTimeoutAsync(Func<CancellationToken, Action, Task<ChatResult>> send, int idleSeconds, CancellationToken ct)
     {
-        const int idleSeconds = 90;
         var idleTimeout = TimeSpan.FromSeconds(idleSeconds);
         using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
         void ReportActivity() => idle.CancelAfter(idleTimeout);
@@ -121,16 +145,22 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
         }
         catch (OperationCanceledException) when (idle.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            throw new ApiException($"Модель не присылала данные ответа {idleSeconds} секунд. Нажмите «Повторить».", retryable: true);
+            throw new ApiException($"Модель не присылала данные ответа {idleSeconds} секунд. Нажмите «Повторить».", retryable: true)
+            { ConnectionInterrupted = true };
         }
     }
 
-    static TimeSpan? RetryDelay(Exception ex, int attempt, CancellationToken ct) => ex switch
+    internal static bool IsConnectionInterrupted(Exception ex) => ex is
+        ApiException { ConnectionInterrupted: true } or IOException or TaskCanceledException or NetworkRouteException { InvalidEngine: false } or
+        HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError or HttpRequestError.ResponseEnded };
+
+    static TimeSpan? RetryDelay(Exception ex, int attempt, bool voice, bool reconnecting) => ex switch
     {
         ApiException { Retryable: true, RetryAfter: { } wait } => wait <= MaxWait ? wait : null,
         ApiException { Retryable: true } => TimeSpan.FromSeconds(Math.Min(MaxWait.TotalSeconds, 2 * attempt * attempt)),
+        ApiException { Code: "upstream_error" } when voice => TimeSpan.FromSeconds(2),
         HttpRequestException or IOException => TimeSpan.FromSeconds(2 * attempt),
-        TaskCanceledException when !ct.IsCancellationRequested => TimeSpan.Zero,
+        TaskCanceledException => reconnecting ? TimeSpan.FromSeconds(2 * attempt) : TimeSpan.Zero,
         _ => null,
     };
 
@@ -140,10 +170,11 @@ public sealed class ApiException(string message, HttpStatusCode? status = null, 
 public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider provider = AgentProvider.Tooken) : IChatProvider
 {
     static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(10);
-    static readonly string[] ContextKeys = ["safe_context_tokens", "context_window_tokens", "context_window", "context_length"], StandardEfforts = ["low", "medium", "high"];
+    static readonly string[] ContextKeys = ["safe_context_tokens", "context_window_tokens", "context_window", "context_length"];
     static readonly HttpClient Downloads = AppNetwork.Client(TimeSpan.FromMinutes(2), 64 << 20);
     readonly string _baseUrl = baseUrl.TrimEnd('/');
     readonly bool _groq = provider == AgentProvider.Groq;
+    readonly VoiceEffort _voiceEffort = new();
     readonly HttpClient _http = AppNetwork.Client(RequestTimeout, headers: headers =>
     {
         headers.Authorization = new("Bearer", apiKey);
@@ -156,9 +187,10 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
     public event Action? LimitsChanged;
     public GroqLimits? Limits { get; private set; }
 
-    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+    public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
+        var voice = _voiceEffort.Start(model, ref effort);
         var body = new JsonObject
         {
             ["model"] = model, ["messages"] = RequestMessages(messages),
@@ -170,30 +202,32 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             body["tool_choice"] = callTools ? "auto" : "none";
         }
         if (maxTokens is > 0) body["max_tokens"] = maxTokens.Value;
-        if (effort != null)
+        var effortKey = provider == AgentProvider.OpenRouter ? "reasoning" : "reasoning_effort";
+        void ApplyEffort()
         {
-            if (provider == AgentProvider.OpenRouter) body["reasoning"] = new JsonObject { ["effort"] = effort };
-            else body["reasoning_effort"] = effort;
+            if (effort == null) body.Remove(effortKey);
+            else body[effortKey] = provider == AgentProvider.OpenRouter ? new JsonObject { ["effort"] = effort } : JsonValue.Create(effort);
         }
+        ApplyEffort();
         // Gemini accepts either reasoning_effort or thinking_config, never both.
-        else if (provider == AgentProvider.Gemini && GeminiThinking(model))
+        if (effort == null && voice == null && provider == AgentProvider.Gemini && GeminiThinking(model))
             body["extra_body"] = new JsonObject
             {
                 ["google"] = new JsonObject { ["thinking_config"] = new JsonObject { ["include_thoughts"] = true } },
             };
         bool stream = !_noStreaming.Contains(model), options = provider != AgentProvider.Mistral && stream && !_noStreamOptions.Contains(model);
         if (options) body["stream_options"] = new JsonObject { ["include_usage"] = true };
-        void Reset()
-        {
-            reportText(null, false);
-            reportProgress(new());
-        }
-        return ApiException.RetryAsync((attemptToken, reportActivity) =>
+        var result = await ApiException.RetryAsync((attemptToken, reportActivity, text, progress) =>
         {
             body["stream"] = stream;
-            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas), stream, reportText, reportProgress, attemptToken, reportActivity);
+            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas), stream, text, progress, attemptToken, reportActivity);
         }, ex =>
         {
+            if (voice?.Retry(ex, ref effort) == true)
+            {
+                ApplyEffort();
+                return true;
+            }
             if (options && ex.RejectsStream(options: true))
             {
                 options = false;
@@ -203,12 +237,13 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             {
                 stream = options = false;
                 _noStreaming.Add(model);
-                Reset();
             }
             else return false;
             body.Remove("stream_options");
             return true;
-        }, Reset, retrying, ct);
+        }, reportText, reportProgress, retrying, ct, voice: voice != null, recoverConnection: callTools);
+        voice?.Accept(effort);
+        return result;
     }
 
     JsonArray RequestMessages(IReadOnlyList<JsonNode> messages)
@@ -297,12 +332,13 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
             var endpoints = (caps?["endpoints"] as JsonArray)?.Select(Str).ToList();
             bool images = endpoints?.Contains("images") == true;
             long context = ContextKeys.Select(key => Long(obj?[key])).FirstOrDefault(tokens => tokens > 0);
+            var modes = VoiceEffort.CatalogModes(obj);
             if (provider == AgentProvider.Gemini)
             {
                 bool chat = id.StartsWith("gemini-", StringComparison.OrdinalIgnoreCase) &&
                     !new[] { "embedding", "-tts", "-image", "banana", "live", "robotics", "computer-use", "native-audio", "aqa" }.Any(id.Contains);
                 if (chat) result.Add(new(id, context > 0 ? context : null, true, true, false,
-                    GeminiThinking(id) ? StandardEfforts : [], Str(obj?["name"])));
+                    GeminiThinking(id) ? AppConfig.StandardEffortLevels : [], Str(obj?["name"]), modes));
                 continue;
             }
             if (provider == AgentProvider.OpenRouter)
@@ -314,7 +350,7 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
                 var levels = Values((obj?["reasoning"] as JsonObject)?["supported_efforts"]).Intersect(AppConfig.EffortLevels).ToArray();
                 bool chat = (outputs.Length == 0 || outputs.Contains("text")) && (parameters.Contains("tools") || id == "openrouter/auto");
                 result.Add(new(id, context > 0 ? context : null, inputs.Length == 0 ? null : inputs.Contains("image"), chat, false,
-                    levels.Length > 0 ? levels : parameters.Contains("reasoning") ? StandardEfforts : [], Str(obj?["name"])));
+                    levels.Length > 0 ? levels : parameters.Contains("reasoning") ? AppConfig.StandardEffortLevels : [], Str(obj?["name"]), modes));
                 continue;
             }
             if (provider == AgentProvider.Mistral)
@@ -323,12 +359,13 @@ public sealed class ChatApiClient(string baseUrl, string apiKey, AgentProvider p
                 bool chat = Bool(caps?["completion_chat"]) != false && Bool(caps?["function_calling"]) != false;
                 bool thinking = Bool(caps?["reasoning"]) == true || new[] { "mistral-small-latest", "mistral-small-2603", "mistral-medium-latest", "mistral-medium-3-5" }.Contains(id);
                 result.Add(new(id, context > 0 ? context : null, Bool(caps?["vision"]), chat, false,
-                    thinking ? ["high"] : [], Str(obj?["name"])));
+                    thinking ? ["high"] : [], Str(obj?["name"]), modes));
                 continue;
             }
             result.Add(new(id, context > 0 ? context : null, Bool(caps?["vision"]), (endpoints?.Contains("chat") ?? !images) && Bool(caps?["tools"]) != false,
                 images, _groq ? Groq.EffortsOf(id) : Bool(caps?["reasoning_effort"]) == true &&
-                    (caps?["reasoning_endpoints"] as JsonArray)?.Select(Str).Contains("chat") == true ? StandardEfforts : []));
+                    (caps?["reasoning_endpoints"] as JsonArray)?.Select(Str).Contains("chat") == true ? AppConfig.StandardEffortLevels : [],
+                VoiceModes: modes));
         }
         result.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase));
         return result;

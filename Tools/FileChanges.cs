@@ -19,7 +19,7 @@ internal static class FileChanges
         {
             var target = tool switch
             {
-                "write_file" => context.Resolve(args.Required("path")),
+                "write_file" or WordEdits.Name => context.Resolve(args.Required("path")),
                 "run_plugin" => PluginTools.TargetOf(args, context),
                 AgentKnowledge.Name => AgentKnowledge.TargetOf(args, context),
                 "copy_path" => FileTools.ResolveSourceAndTarget(args, context) is var (source, copy) && File.Exists(source) ? copy : null,

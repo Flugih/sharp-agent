@@ -39,9 +39,19 @@ partial class AgentRunner
             if (call.Name == "exec_command" && tools.Context.SandboxRoot == null)
             {
                 var shell = new ToolArgs(parameters);
-                if (ShellTools.GitInspectionOf(shell) is not { } command) return null;
+                if (tools.PendingCommandOutput != null || CurrentDiagnosis() is { Repair: false }) return null;
                 var folder = PathHelper.FinalPath(tools.Context.Resolve(shell.Optional("working_directory")));
-                return Directory.Exists(Path.Combine(folder, ".git")) && tools.Context.ProjectWatcher.InspectionStamp(folder) is { } gitStamp
+                if (ShellTools.FileInspectionOf(shell) is { } fileName)
+                {
+                    var path = PathHelper.FinalPath(tools.Context.Resolve(Path.Combine(folder, fileName)));
+                    if (!PathHelper.IsInside(path, folder) || tools.Context.IsForeignShare(path) || !File.Exists(path)) return null;
+                    tools.Context.GuardSecrets(path);
+                    tools.Context.GuardAppFiles(path);
+                    long revision = PathHelper.Revision(path);
+                    return revision == 0 ? null : new($"shell-read {folder}|{path}|{revision}|{shell.Required("command")}", Path: path);
+                }
+                return ShellTools.GitInspectionOf(shell) is { } command && Directory.Exists(Path.Combine(folder, ".git")) &&
+                    tools.Context.ProjectWatcher.InspectionStamp(folder) is { } gitStamp
                     ? new($"git {folder}|{gitStamp}|{ShellTools.ShellOf(shell)}|{command}", Path: folder) : null;
             }
             if (call.Name != "local_batch" || parameters["operations"] is not JsonArray { Count: > 0 } operations) return null;

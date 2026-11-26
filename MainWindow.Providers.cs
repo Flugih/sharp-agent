@@ -6,8 +6,10 @@ namespace SharpAgent;
 public partial class MainWindow
 {
     private readonly Dictionary<AgentProvider, Dictionary<string, string>> _modelNames = new();
+    readonly Dictionary<(AgentProvider Provider, string Connection), Task<List<ModelInfo>>> _modelCatalogRequests = [];
     private string? _selectedModel;
     private bool _loadingModelCatalog;
+    (AgentRunner Chat, (AgentProvider Provider, string? Model, string? Name) Previous)? _pendingModelChange;
 
     private static string ProviderName(AgentProvider provider) => provider switch
     {
@@ -16,13 +18,6 @@ public partial class MainWindow
     };
 
     static IEnumerable<AgentProvider> ProvidersByName() => Enum.GetValues<AgentProvider>().OrderBy(ProviderName, StringComparer.OrdinalIgnoreCase);
-
-    private static string[] DefaultModelsOf(AgentProvider provider) =>
-        provider switch
-        {
-            AgentProvider.ChatGpt => ChatGptModels, AgentProvider.Groq => GroqModels, AgentProvider.Tooken => DefaultModels,
-            _ => [AppConfig.DefaultModelOf(provider)],
-        };
 
     private bool IsReady(AgentProvider provider) =>
         provider == AgentProvider.ChatGpt ? _chatGpt.PlanAllowed : _config.ApiKeyFor(provider) != null;
@@ -34,22 +29,25 @@ public partial class MainWindow
         _ => Tr("Сначала укажите API-ключ в настройках", "Enter an API key in settings first"),
     };
 
+    IChatProvider? CreateProvider(AgentProvider provider, string? key, string tookenBaseUrl) => provider switch
+    {
+        AgentProvider.ChatGpt => _chatGpt.PlanAllowed ? new ChatGptClient(_chatGpt) : null,
+        _ when string.IsNullOrEmpty(key) => null,
+        AgentProvider.OpenAI => new OpenAiResponsesClient(key),
+        AgentProvider.Anthropic => new AnthropicClient(key),
+        AgentProvider.Tooken => new ChatApiClient(tookenBaseUrl, key),
+        _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
+    };
+
     private void ApplyProvider()
     {
         if (AnyRunning) return;
         var provider = _config.Provider;
+        _pendingModelChange = null;
         if (!ReferenceEquals(_provider, _tooken)) _provider?.Dispose();
         _tooken?.Dispose();
         _tooken = _config.HasApiKey ? new ChatApiClient(_config.BaseUrl, _config.ApiKey!) : null;
-        _provider = provider switch
-        {
-            AgentProvider.ChatGpt when _chatGpt.PlanAllowed => new ChatGptClient(_chatGpt),
-            AgentProvider.OpenAI when _config.ApiKeyFor(provider) is { } openAiKey => new OpenAiResponsesClient(openAiKey),
-            AgentProvider.Anthropic when _config.ApiKeyFor(provider) is { } anthropicKey => new AnthropicClient(anthropicKey),
-            AgentProvider.Tooken => _tooken,
-            _ when _config.ApiKeyFor(provider) is { } key => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
-            _ => null,
-        };
+        _provider = provider == AgentProvider.Tooken ? _tooken : CreateProvider(provider, _config.ApiKeyFor(provider), _config.BaseUrl);
         if (_provider is ChatGptClient chat) chat.LimitsChanged += OnLimitsChanged;
         else if (provider == AgentProvider.Groq && _provider is ChatApiClient groq) groq.LimitsChanged += OnLimitsChanged;
         _agent.Api = _provider;
@@ -61,15 +59,14 @@ public partial class MainWindow
         _models = new(StringComparer.OrdinalIgnoreCase);
         _modelLists.Remove(provider);
         _modelNames.Remove(provider);
-        if (ModelCatalogKey(provider) is { } catalogKey &&
-            _state.ModelCatalogs?.GetValueOrDefault(provider) is { Models.Count: > 0 } cached && cached.Connection == catalogKey)
-            ApplyModelCatalog(provider, cached.Models);
+        var cached = CachedModelCatalog(provider, ModelCatalogKey(provider));
+        if (cached != null) ApplyModelCatalog(provider, cached.Models);
         else
         {
             if (provider == AgentProvider.Tooken) _imageModels = null;
-            ModelButton.Tag = DefaultModelsOf(provider);
+            ModelButton.Tag = null;
         }
-        _loadingModelCatalog = _provider != null;
+        _loadingModelCatalog = false;
         _selectedModel = _config.Model;
         ModelButton.ToolTip = ProviderName(provider) + (_provider is ChatGptClient ? "\nЗапросы расходуют вашу подписку ChatGPT" : "");
         UpdateModelEffort();
@@ -90,7 +87,8 @@ public partial class MainWindow
         UpdateBalanceIndicator();
         if (_provider is not ChatGptClient) _ = _chatGpt.RenewAsync();
         if (_provider == null) return;
-        _ = LoadModelListAsync(_provider);
+        if (cached?.UpdatedUtc is not { } updated || DateTimeOffset.UtcNow - updated >= TimeSpan.FromDays(1))
+            _ = LoadModelListAsync();
         _ = RefreshUsageAsync();
     }
 
@@ -113,21 +111,29 @@ public partial class MainWindow
         },
     }, closeText: Tr("Понятно", "OK"));
 
-    private async Task LoadModelListAsync(IChatProvider api)
+    async Task LoadModelListAsync(bool manual = false)
     {
         var provider = _config.Provider;
-        var connection = ModelCatalogKey(provider);
+        if (_loadingModelCatalog || _provider is not { } api || ModelCatalogKey(provider) is not { } connection) return;
+        _loadingModelCatalog = true;
+        UpdateModelEffort();
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            var models = await api.ListModelsAsync(cts.Token);
-            if (models.Count == 0 || !ReferenceEquals(api, _provider)) return;
+            var models = await FetchModelCatalogAsync(provider, connection, _config.ApiKeyFor(provider), _config.BaseUrl);
+            if (!ReferenceEquals(api, _provider)) return;
+            if (models.Count == 0)
+            {
+                if (manual) ShowToast(Tr("Провайдер вернул пустой список моделей.", "The provider returned an empty model list."), ToastKind.Warning);
+                return;
+            }
             ApplyModelCatalog(provider, models);
-            CacheModelCatalog(provider, connection, models);
-            if (SettingsOpen && _settingsProvider == provider && SettingsCatalogKey() == connection)
-                DefaultModelButton.Tag = ChatModelChoices(provider);
             if (_cts == null) EnsureChatModel();
             UpdateContextBanner();
+            if (CurrentModel() != null && _pendingModelChange is { } pending)
+            {
+                _pendingModelChange = null;
+                if (pending.Chat == _agent) await ShowModelChangeAsync(pending.Previous);
+            }
         }
         catch (ApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
@@ -141,7 +147,11 @@ public partial class MainWindow
                     _ => Tr("Сервер не принял API-ключ", "The server rejected the API key"),
                 }, ex.Message.Split('\n')[0], Tr("Открыть настройки", "Open settings"), ShowKeySettings, warning: true);
         }
-        catch { }
+        catch
+        {
+            if (manual && ReferenceEquals(api, _provider))
+                ShowToast(Tr("Не удалось обновить список моделей. Попробуйте ещё раз.", "Could not refresh the model list. Try again."), ToastKind.Warning);
+        }
         finally
         {
             if (ReferenceEquals(api, _provider))
@@ -152,39 +162,60 @@ public partial class MainWindow
         }
     }
 
+    async Task<List<ModelInfo>> FetchModelCatalogAsync(AgentProvider provider, string connection, string? key, string baseUrl)
+    {
+        var slot = (provider, connection);
+        if (_modelCatalogRequests.TryGetValue(slot, out var request)) return await request;
+        async Task<List<ModelInfo>> FetchAsync()
+        {
+            using var client = CreateProvider(provider, key, baseUrl);
+            if (client == null) return [];
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var models = await client.ListModelsAsync(cts.Token);
+            if (connection == ModelCatalogKey(provider)) CacheModelCatalog(provider, connection, models);
+            return models;
+        }
+        _modelCatalogRequests[slot] = request = FetchAsync();
+        try { return await request; }
+        finally { _modelCatalogRequests.Remove(slot); }
+    }
+
     private string? ModelCatalogKey(AgentProvider provider) =>
         ModelCatalogKey(provider, _config.ApiKeyFor(provider), _config.BaseUrl);
 
     private string? ModelCatalogKey(AgentProvider provider, string? key, string tookenBaseUrl) => provider switch
     {
-        AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client => UsageTracker.KeyId(client, "https://api.openai.com/v1/models"),
+        AgentProvider.ChatGpt when _chatGpt.PlanAllowed && _chatGpt.ClientId is { } client =>
+            UsageTracker.KeyId(client, AppConfig.DefaultBaseUrlOf(AgentProvider.OpenAI) + "/models"),
         AgentProvider.ChatGpt => null,
         _ when !string.IsNullOrEmpty(key) => UsageTracker.KeyId(key, provider == AgentProvider.Tooken ? tookenBaseUrl : AppConfig.DefaultBaseUrlOf(provider)),
         _ => null,
     };
 
-    private void CacheModelCatalog(AgentProvider provider, string? connection, List<ModelInfo> models)
+    ModelCatalogCache? CachedModelCatalog(AgentProvider provider, string? connection) =>
+        connection != null && _state.ModelCatalogs?.GetValueOrDefault(provider) is { Models.Count: > 0 } cache && cache.Connection == connection
+            ? cache : null;
+
+    private void CacheModelCatalog(AgentProvider provider, string connection, List<ModelInfo> models)
     {
-        if (connection == null || models.Count == 0) return;
-        (_state.ModelCatalogs ??= new())[provider] = new(connection, models);
+        if (models.Count == 0) return;
+        (_state.ModelCatalogs ??= new())[provider] = new(connection, models, DateTimeOffset.UtcNow);
         _state.Save();
     }
-
-    private IEnumerable<string> ChatModelChoices(AgentProvider provider) =>
-        _modelLists.GetValueOrDefault(provider) is { Count: > 0 } models ? models : DefaultModelsOf(provider);
 
     private void ApplyModelCatalog(AgentProvider provider, List<ModelInfo> models)
     {
         RememberModelList(provider, models);
         _models = new(StringComparer.OrdinalIgnoreCase);
         foreach (var model in models) _models[model.Id] = model;
-        ModelButton.Tag = ChatModelChoices(provider);
+        if (_provider is AnthropicClient claude) claude.ApplyCatalog(_models.Values);
+        ModelButton.Tag = _modelLists.GetValueOrDefault(provider);
     }
 
     private void RememberModelList(AgentProvider provider, List<ModelInfo> models)
     {
         if (models.Count == 0) return;
-        _modelLists[provider] = models.Where(m => m.Chat && string.Equals(m.Id, AppConfig.ChatModelOf(provider, m.Id), StringComparison.OrdinalIgnoreCase))
+        _modelLists[provider] = models.Where(m => m.Chat && !string.IsNullOrWhiteSpace(m.Id))
             .Select(m => m.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var names = _modelNames[provider] = new(StringComparer.Ordinal);
         foreach (var model in models)
@@ -192,21 +223,31 @@ public partial class MainWindow
         if (provider == AgentProvider.Tooken) _imageModels = models.Where(m => m.Images).Select(m => m.Id).ToList();
     }
 
-    private string CurrentModel() => _selectedModel ?? _config.Model;
+    private string? CurrentModel()
+    {
+        if (ModelButton.Tag is not List<string> { Count: > 0 } choices) return null;
+        return choices.FirstOrDefault(model => string.Equals(model, _selectedModel, StringComparison.OrdinalIgnoreCase)) ?? choices[0];
+    }
 
     private string ModelDisplayName(string model) => _modelNames.GetValueOrDefault(_config.Provider)?.GetValueOrDefault(model) ?? model;
 
-    (AgentProvider Provider, string Model, string Name) CurrentModelSelection()
+    (AgentProvider Provider, string? Model, string? Name) CurrentModelSelection()
     {
         var model = CurrentModel();
-        return (_config.Provider, model, ModelDisplayName(model));
+        return (_config.Provider, model, model == null ? null : ModelDisplayName(model));
     }
 
-    async Task ShowModelChangeAsync((AgentProvider Provider, string Model, string Name) previous)
+    async Task ShowModelChangeAsync((AgentProvider Provider, string? Model, string? Name) previous)
     {
         var current = CurrentModelSelection();
         bool providerChanged = previous.Provider != current.Provider;
-        if (_agent.History.Count == 0 || !providerChanged && string.Equals(previous.Model, current.Model, StringComparison.OrdinalIgnoreCase)) return;
+        if (_agent.History.Count == 0 || previous.Name == null ||
+            !providerChanged && string.Equals(previous.Model, current.Model, StringComparison.OrdinalIgnoreCase)) return;
+        if (current.Name == null)
+        {
+            if (_provider != null) _pendingModelChange = (_agent, previous);
+            return;
+        }
         var from = providerChanged ? $"{previous.Name} ({ProviderName(previous.Provider)})" : previous.Name;
         var to = providerChanged ? $"{current.Name} ({ProviderName(current.Provider)})" : current.Name;
         ScrollToLatest();
@@ -219,9 +260,9 @@ public partial class MainWindow
         var menu = ModelMenu(ModelButton, _config.Provider, async model => await RunChatOperationAsync(async () =>
         {
             var previous = CurrentModelSelection();
-            if (_cts != null || string.Equals(previous.Model, model, StringComparison.OrdinalIgnoreCase)) return;
+            if (_cts != null || string.Equals(_selectedModel, model, StringComparison.OrdinalIgnoreCase)) return;
             _selectedModel = model;
-            RememberModel(model);
+            SaveEnvChoice(AppConfig.KeyOf(_config.Provider, "MODEL"), model);
             UpdateModelEffort();
             UpdateContextBanner();
             await ShowModelChangeAsync(previous);
@@ -253,6 +294,13 @@ public partial class MainWindow
             menu.Items.Add(FileActions.Item(current == null ? Tr("Модель для простых запросов…", "Model for simple requests…") :
                 Tr($"Модель для простых запросов · {ModelDisplayName(current)}", $"Simple requests · {ModelDisplayName(current)}"),
                 Glyphs.Lightning, () => Dispatcher.InvokeAsync(OpenEconomyModelMenu)));
+        }
+        if (_provider != null)
+        {
+            var refresh = FileActions.Item(_loadingModelCatalog ? Tr("Загрузка моделей…", "Loading models…")
+                : Tr("Обновить список моделей", "Refresh model list"), Glyphs.Refresh, async () => await LoadModelListAsync(manual: true));
+            refresh.IsEnabled = !_loadingModelCatalog;
+            menu.Items.Add(refresh);
         }
         if (EffortLevelsOf(CurrentModel()) is { Length: > 0 } levels)
         {
@@ -377,9 +425,7 @@ public partial class MainWindow
         return menu;
     }
 
-    private void PickModel(Button picker, AgentProvider provider) => ModelMenu(picker, provider, model => picker.Content = model).IsOpen = true;
-
-    private string[] EffortLevelsOf(string model) => _models.TryGetValue(model, out var info)
+    private string[] EffortLevelsOf(string? model) => model == null ? [] : _models.TryGetValue(model, out var info)
         ? (info.Efforts ?? []).Where(EffortNames.ContainsKey).OrderBy(level => Array.IndexOf(AppConfig.EffortLevels, level)).Distinct().ToArray()
         : _config.Provider == AgentProvider.Groq ? Groq.EffortsOf(model) : [];
 
@@ -395,21 +441,24 @@ public partial class MainWindow
         var model = CurrentModel();
         var levels = EffortLevelsOf(model);
         var effort = _agent.ReasoningEffort = EffectiveEffort(levels);
-        var label = ModelNameText.Text = ModelDisplayName(model);
-        var pending = _loadingModelCatalog && !_models.ContainsKey(model) ? _config.ReasoningEffort : null;
-        bool showEffort = levels.Length > 0 || pending != null || _state.FastMode;
+        bool loading = model == null && _loadingModelCatalog;
+        ModelSkeleton.Visibility = VisibleIf(loading);
+        ModelNameText.Visibility = VisibleIf(!loading);
+        var label = ModelNameText.Text = model != null ? ModelDisplayName(model) : loading ? Tr("Загрузка моделей…", "Loading models…")
+            : _provider != null ? Tr("Модели недоступны", "Models unavailable") : Tr("Выбрать модель", "Choose a model");
+        bool showEffort = model != null && (levels.Length > 0 || _state.FastMode);
         ModelEffortText.Visibility = VisibleIf(showEffort);
-        var level = effort ?? pending;
         ModelEffortText.Text = (_state.FastMode ? Tr("Быстро · ", "Fast · ") : "") +
-            (level != null ? Tr(EffortNames[level].Russian, EffortNames[level].English) : Tr("Обычное", "Default")) + (effort == null && pending != null ? "…" : "");
-        AutomationProperties.SetName(ModelButton, showEffort ? Tr($"Модель {label}, рассуждение: {ModelEffortText.Text}", $"Model {label}, reasoning: {ModelEffortText.Text}") : Tr($"Модель {label}", $"Model {label}"));
+            (effort != null ? Tr(EffortNames[effort].Russian, EffortNames[effort].English) : Tr("Обычное", "Default"));
+        AutomationProperties.SetName(ModelButton, showEffort ? Tr($"Модель {label}, рассуждение: {ModelEffortText.Text}", $"Model {label}, reasoning: {ModelEffortText.Text}")
+            : model != null ? Tr($"Модель {label}", $"Model {label}") : label);
     }
 
     private MenuItem EffortMenuItem(string[] levels, Func<bool> toggleModels)
     {
         string?[] values = [null, .. levels];
         int committed = Array.IndexOf(values, EffectiveEffort(levels));
-        var modelName = ModelDisplayName(CurrentModel());
+        var modelName = ModelNameText.Text;
         var heading = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 1) };
         heading.SetResourceReference(ForegroundProperty, "AccentText");
         var chevron = new TextBlock
@@ -514,34 +563,16 @@ public partial class MainWindow
         UpdateModelEffort();
     }
 
-    private bool DrawsOnly(string model) => _models.TryGetValue(model, out var info) && !info.Chat;
-
     private void EnsureChatModel()
     {
-        var model = CurrentModel();
         var provider = _config.Provider;
-        if (provider != AgentProvider.Tooken)
-        {
-            if (_modelLists.GetValueOrDefault(provider) is not { Count: > 0 } known || known.Contains(model, StringComparer.OrdinalIgnoreCase)) return;
-            var fallback = AppConfig.DefaultModelOf(provider);
-            if (!known.Contains(fallback)) fallback = known[0];
-            _selectedModel = fallback;
-            RememberModel(fallback);
-            ShowToast(Tr($"Модели {model} нет у {ProviderName(provider)}, выбрана {fallback}.", $"{ProviderName(provider)} does not offer {model}. Selected {fallback}."));
-            return;
-        }
-        if (!DrawsOnly(model)) return;
-        var chat = _models.GetValueOrDefault(AppConfig.DefaultModel)?.Chat == true ? AppConfig.DefaultModel : _models.Values.FirstOrDefault(m => m.Chat)?.Id;
-        if (chat == null) return;
-        _selectedModel = chat;
-        var values = new Dictionary<string, string?> { ["TOOKEN_MODEL"] = chat };
-        if (_config.ImageModel == null && _models[model].Images) values["TOOKEN_IMAGE_MODEL"] = model;
+        if (_selectedModel is not { } model || _modelLists.GetValueOrDefault(provider) is not { Count: > 0 } known ||
+            known.Contains(model, StringComparer.OrdinalIgnoreCase)) return;
+        _selectedModel = null;
+        var values = new Dictionary<string, string?> { [AppConfig.KeyOf(provider, "MODEL")] = null };
+        if (provider == AgentProvider.Tooken && _config.ImageModel == null && _models.GetValueOrDefault(model)?.Images == true)
+            values["TOOKEN_IMAGE_MODEL"] = model;
         SaveEnv(values);
-        ShowToast($"{model} рисует картинки, но не ведёт чат, поэтому для разговора выбрана {chat}. Попросите нарисовать — агент сделает это сам.");
-    }
-
-    private void RememberModel(string model)
-    {
-        if (model != _config.Model) SaveEnv(new() { [AppConfig.KeyOf(_config.Provider, "MODEL")] = model });
+        ShowToast(Tr($"Модель {model} недоступна для чата. Выбрана {known[0]}.", $"{model} is unavailable for chat. Selected {known[0]}."));
     }
 }

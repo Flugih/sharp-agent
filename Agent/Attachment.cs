@@ -15,6 +15,8 @@ public sealed record Attachment(string Path, AttachmentKind Kind, long Size)
 
     public static bool IsImagePath(string path) => ImageExtensions.Contains(GetExtension(path));
 
+    internal bool IsWord => Kind == AttachmentKind.File && GetExtension(Path).Equals(".docx", StringComparison.OrdinalIgnoreCase);
+
     public static Attachment? FromPath(string path)
     {
         try

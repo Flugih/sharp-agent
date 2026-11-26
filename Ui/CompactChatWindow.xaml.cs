@@ -8,7 +8,7 @@ public partial class CompactChatWindow : Window
     JsonObject[] _shown = [];
     double? _anchorBottom;
 
-    internal event Action? DraftChanged, Send, Stop, ChooseFiles;
+    internal event Action? DraftChanged, Send, ActivateAction, Stop, EndTalk, ChooseFiles, DismissToast;
 
     internal CompactChatWindow(Func<string, DateTimeOffset?, StackPanel> answerView)
     {
@@ -64,29 +64,49 @@ public partial class CompactChatWindow : Window
         return 0;
     }
 
-    internal void SetStatus(string text, string color = "TextMuted")
+    internal void SetStatus(string text, string color = "TextMuted", bool animate = false)
     {
-        if (StatusText.Base == color && StatusText.HasText(text)) return;
+        if (animate && StatusText.Base == color && StatusText.TargetText == text) return;
         StatusText.Base = color;
         ShimmerStatus();
         StatusText.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.SetAnimatedText(text, animate: true);
         UpdateTranscript(scroll: true);
+        StatusText.SetAnimatedText(text, animate);
     }
 
-    internal void UpdateAction(bool running, bool enabled, bool resume)
+    internal void UpdateAction(Button action, Button stop, bool talking)
     {
-        ActionButton.Content = running ? "\uE71A" : resume ? Glyphs.Play : Glyphs.Send;
-        var label = running ? Tr("Остановить агента", "Stop agent") : resume ? Tr("Продолжить задачу", "Resume task") : Tr("Отправить", "Send");
-        ActionButton.ToolTip = !running && resume ? label : null;
-        AutomationProperties.SetName(ActionButton, label);
-        ActionButton.IsEnabled = enabled;
+        SyncAction(ActionButton, action);
+        SyncAction(StopActionButton, stop);
+        TalkPanel.Visibility = talking ? Visibility.Visible : Visibility.Collapsed;
         ShimmerStatus();
-        UpdateTranscript(scroll: running);
+        UpdateTranscript(scroll: StopActionButton.Visibility == Visibility.Visible);
     }
+
+    static void SyncAction(Button target, Button source)
+    {
+        target.Content = source.Content;
+        target.ContentTemplate = source.ContentTemplate;
+        target.Visibility = source.Visibility;
+        target.IsEnabled = source.IsEnabled;
+        target.Margin = source.Margin;
+        target.ToolTip = source.ToolTip;
+        AutomationProperties.SetName(target, AutomationProperties.GetName(source));
+    }
+
+    internal void ShowToast(string text, string color, string? action)
+    {
+        ToastText.Text = text;
+        ToastText.Paint(ForegroundProperty, color);
+        ToastAction.Content = action;
+        ToastAction.Visibility = action != null ? Visibility.Visible : Visibility.Collapsed;
+        ToastHost.Visibility = Visibility.Visible;
+    }
+
+    internal void HideToast() => ToastHost.Visibility = Visibility.Collapsed;
 
     // Only a running agent's neutral status shimmers; results and warnings keep their colour.
-    void ShimmerStatus() => StatusText.IsActive = StatusText.Base == "TextMuted" && Equals(ActionButton.Content, "");
+    void ShimmerStatus() => StatusText.IsActive = StatusText.Base == "TextMuted" && StopActionButton.Visibility == Visibility.Visible;
 
     internal void SyncHistory(JsonObject[] messages)
     {
@@ -181,9 +201,16 @@ public partial class CompactChatWindow : Window
 
     void ActionButton_Click(object sender, RoutedEventArgs e)
     {
-        if (Equals(ActionButton.Content, "\uE71A")) Stop?.Invoke();
-        else Send?.Invoke();
+        ActivateAction?.Invoke();
         if (QuestionSlot.Visibility != Visibility.Visible) FocusInput();
+    }
+
+    void StopActionButton_Click(object sender, RoutedEventArgs e) => Stop?.Invoke();
+
+    void ToastHost_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        DismissToast?.Invoke();
     }
 
     void FullWindow_Click(object sender, RoutedEventArgs e) => Close();
@@ -194,7 +221,7 @@ public partial class CompactChatWindow : Window
     {
         if (e.Key != Key.Enter || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) return;
         e.Handled = true;
-        if (!Equals(ActionButton.Content, "\uE71A") && ActionButton.IsEnabled) Send?.Invoke();
+        if (ActionButton is { Visibility: Visibility.Visible, IsEnabled: true, ContentTemplate: null }) Send?.Invoke();
     }
 
     void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -205,9 +232,11 @@ public partial class CompactChatWindow : Window
             ChooseFiles?.Invoke();
             return;
         }
-        if (e.Key != Key.Escape || !Equals(ActionButton.Content, "\uE71A")) return;
+        if (e.Key != Key.Escape) return;
+        if (TalkPanel.Visibility == Visibility.Visible) EndTalk?.Invoke();
+        else if (StopActionButton.IsVisible) Stop?.Invoke();
+        else return;
         e.Handled = true;
-        Stop?.Invoke();
     }
 
     [StructLayout(LayoutKind.Sequential)]

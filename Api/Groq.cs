@@ -21,8 +21,8 @@ public static partial class Groq
 
     public static string[] EffortsOf(string id) =>
         id.StartsWith("openai/gpt-oss-", StringComparison.OrdinalIgnoreCase) || id.StartsWith("qwen/qwen3", StringComparison.OrdinalIgnoreCase)
-            ? ["low", "medium", "high"]
-            : id.Contains("muse-spark", StringComparison.OrdinalIgnoreCase) ? ["low", "medium", "high", "xhigh"] : [];
+            ? [.. AppConfig.StandardEffortLevels]
+            : id.Contains("muse-spark", StringComparison.OrdinalIgnoreCase) ? [.. AppConfig.StandardEffortLevels, "xhigh"] : [];
 
     public static IEnumerable<JsonNode> Clean(IReadOnlyList<JsonNode> messages) => messages.Select(node =>
     {

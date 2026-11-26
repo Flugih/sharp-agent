@@ -217,7 +217,7 @@ public partial class MainWindow
             {
                 Rect position;
                 FrameworkElement view;
-                if (node is RichTextBox rich && FindChatText(rich.Document, query) is { } range)
+                if (node is RichTextBox rich && FindRichTextMatch(rich.Document, query) is { } range)
                 {
                     rich.Focus();
                     rich.Selection.Select(range.Start, range.End);
@@ -245,7 +245,7 @@ public partial class MainWindow
         }
     }
 
-    static TextRange? FindChatText(FlowDocument document, string query)
+    static TextRange? FindRichTextMatch(FlowDocument document, string query, bool selectSentence = true)
     {
         var text = new StringBuilder();
         var segments = new List<(int Offset, string Text, TextPointer Start)>();
@@ -267,7 +267,7 @@ public partial class MainWindow
         var content = text.ToString();
         int at = content.IndexOf(query, StringComparison.OrdinalIgnoreCase);
         if (query.Length == 0 || at < 0) return null;
-        var (start, length) = AppSearch.SentenceRange(content, at, query.Length);
+        var (start, length) = selectSentence ? AppSearch.SentenceRange(content, at, query.Length) : (at, query.Length);
         var first = segments.FirstOrDefault(segment => segment.Offset <= start && start < segment.Offset + segment.Text.Length);
         int end = start + length;
         var last = segments.FirstOrDefault(segment => segment.Offset < end && end <= segment.Offset + segment.Text.Length);
@@ -275,12 +275,12 @@ public partial class MainWindow
         return new(first.Start.GetPositionAtOffset(start - first.Offset), last.Start.GetPositionAtOffset(end - last.Offset));
     }
 
-    static int? HighlightTextMatch(TextBox text, string query)
+    static int? HighlightTextMatch(TextBox text, string query, bool selectSentence = true)
     {
         var content = text.Text;
         int at = content.IndexOf(query, StringComparison.OrdinalIgnoreCase);
         if (query.Length == 0 || at < 0) return null;
-        var (start, length) = AppSearch.SentenceRange(content, at, query.Length);
+        var (start, length) = selectSentence ? AppSearch.SentenceRange(content, at, query.Length) : (at, query.Length);
         text.Focus();
         text.Select(start, length);
         MarkSearchSelection(text);
@@ -341,12 +341,23 @@ public partial class MainWindow
                 if (match.Area == SearchArea.Text)
                 {
                     ShowPreview(path, searchLine: match.Line);
-                    if (PreviewBody.Content is Grid grid && grid.Children.OfType<TextBox>().FirstOrDefault() is { } text)
+                    if (PreviewBody.Content is Grid grid && grid.Children.OfType<TextBoxBase>().FirstOrDefault() is { } view)
                         Dispatcher.InvokeAsync(() =>
                         {
-                            if (!IsShown(PreviewPane) || PreviewBody.Content != grid || HighlightTextMatch(text, match.Query) is not { } start) return;
-                            int line = text.GetLineIndexFromCharacterIndex(start);
-                            if (line >= 0) text.ScrollToLine(line);
+                            if (!IsShown(PreviewPane) || PreviewBody.Content != grid) return;
+                            if (view is RichTextBox rich && FindRichTextMatch(rich.Document, match.Query, selectSentence: false) is { } range)
+                            {
+                                rich.Focus();
+                                rich.Selection.Select(range.Start, range.End);
+                                MarkSearchSelection(rich);
+                                var position = range.Start.GetCharacterRect(LogicalDirection.Forward);
+                                if (!position.IsEmpty) rich.ScrollToVerticalOffset(Math.Max(0, rich.VerticalOffset + position.Top - 2 * PreviewLineHeight));
+                            }
+                            else if (view is TextBox text && HighlightTextMatch(text, match.Query, selectSentence: false) is { } start)
+                            {
+                                int line = text.GetLineIndexFromCharacterIndex(start);
+                                if (line >= 0) text.ScrollToLine(line);
+                            }
                         }, DispatcherPriority.Loaded);
                 }
                 else OpenInApp(path);

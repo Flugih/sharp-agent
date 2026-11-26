@@ -5,7 +5,7 @@ namespace SharpAgent.Tools;
 public sealed class ToolException(string message) : Exception(message);
 
 public sealed record ConfirmRequest(string Title, string Subject, string Action, bool Danger = false, string? Note = null, bool AlwaysAsk = false,
-    string? Revision = null);
+    string? Revision = null, string? CancelAction = null);
 
 public sealed class ToolContext
 {
@@ -98,7 +98,7 @@ public sealed class ToolContext
         new[] { ".env", ".env.tmp", "state.json", "errors.log" }.Any(name => SamePath(path, Path.Combine(folder, name))) ||
         new[] { "auth", "history", "temp" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
         Path.GetFileName(folder).Equals("data", StringComparison.OrdinalIgnoreCase) &&
-            new[] { "cache", "logs", "checkpoints", "database", "scripts", "models" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
+            new[] { "cache", "logs", "checkpoints", "database", "scripts", "models", "updates" }.Any(name => IsInside(path, Path.Combine(folder, name))) ||
         FinalPath(Path.Combine(folder, "plugins")) is var plugins && (IsInside(path, plugins) || IsInside(plugins, path)) || IsInside(folder, path);
 }
 
@@ -117,6 +117,29 @@ public sealed class AgentTool
 public sealed class ToolArgs(JsonObject obj)
 {
     internal bool BrowserAllowed { get; init; }
+    internal (SemaphoreSlim Gate, Func<string, Task<bool>> Prompt)? RetryBusyDocument { get; init; }
+    internal async Task<T> WithDocumentRetryAsync<T>(Func<Task<T>> operation, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try { return await operation(); }
+        catch (DocumentInUseException) when (RetryBusyDocument != null) { }
+        var (gate, prompt) = RetryBusyDocument!.Value;
+        await gate.WaitAsync(ct);
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                try { return await operation(); }
+                catch (DocumentInUseException ex)
+                {
+                    if (!await prompt(ex.Path))
+                        throw new ToolException(Tr("Операция с занятым документом отменена пользователем.", "The user canceled the operation on the open document."));
+                }
+            }
+        }
+        finally { gate.Release(); }
+    }
     internal PatchTool.Change[]? PatchChanges { get; set; }
     internal string? CompletedCommand { get; set; }
     internal string? ConfirmedRevision { get; set; }

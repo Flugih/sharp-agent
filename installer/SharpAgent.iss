@@ -39,3 +39,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
 [Run]
 Filename: "{app}\SharpAgent.exe"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SharpAgent.exe"; Flags: nowait skipifnotsilent; Check: RestartAfterUpdate
+
+[Code]
+function RestartAfterUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:SHARPAGENTUPDATE|0}') = '1';
+end;

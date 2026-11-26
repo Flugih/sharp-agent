@@ -14,14 +14,22 @@ public partial class MainWindow
 
     async void Mic_Click(object sender, RoutedEventArgs e)
     {
-        if (!_config.HasGroqKey)
+        var mode = _state.VoiceInputMode;
+        if (mode == VoiceRecognitionMode.Groq && !RequireGroqVoiceKey()) return;
+        if (mode != VoiceRecognitionMode.Groq && !VoicePackage.RecognitionReady(mode))
         {
-            ShowToast(Tr("Для голосового ввода нужен бесплатный ключ Groq", "Voice input requires a free Groq API key"), ToastKind.Info, Tr("Указать ключ", "Enter API key"), ShowVoiceKeySettings);
+            ShowToast(Tr("Для голосового ввода скачайте локальный голосовой пакет.", "Download the local voice package for dictation."),
+                ToastKind.Info, Tr("Настройки", "Settings"), () => OpenSettings(VoicePackageButton));
             return;
         }
         VoiceRecorder recorder;
         MicButton.IsEnabled = false;
-        try { recorder = await Task.Run(VoiceRecorder.Start); }
+        try
+        {
+            _localPlaybackStop?.Cancel();
+            await _localPlayback;
+            recorder = await Task.Run(VoiceRecorder.Start);
+        }
         catch (MicrophoneException ex)
         {
             ShowMicrophoneProblem(ex);
@@ -83,7 +91,17 @@ public partial class MainWindow
     {
         try
         {
-            var text = await Groq.TranscribeAsync(_config.GroqApiKey ?? "", wav, session.Token);
+            var mode = _state.VoiceInputMode;
+            var ct = session.Token;
+            var text = mode != VoiceRecognitionMode.Groq
+                ? await Task.Run(() =>
+                {
+                    if (!VoicePackage.RecognitionReady(mode)) throw new IOException(Tr("Не установлен голосовой пакет.", "The voice package is missing."));
+                    using var voice = new LocalVoice(recognize: true, mode: mode);
+                    return voice.RecognizeRecording(wav, ct);
+                }, ct)
+                : await Groq.TranscribeAsync(_config.GroqApiKey ?? throw new ApiException(
+                    Tr("Укажите API-ключ Groq в настройках.", "Enter the Groq API key in settings."), HttpStatusCode.Unauthorized), wav, ct);
             if (_voice != session) return;
             EndVoice(session);
             if (text.Length > 0) InsertDictation(text);
@@ -190,6 +208,14 @@ public partial class MainWindow
 
     void ShowMicrophoneProblem(MicrophoneException problem) => ShowToast(problem.Message, ToastKind.Error,
         problem.Privacy ? Tr("Открыть параметры", "Open settings") : null, problem.Privacy ? () => FileActions.OpenWindowsSettings("privacy-microphone") : null);
+
+    bool RequireGroqVoiceKey()
+    {
+        if (_config.HasGroqKey) return true;
+        ShowToast(Tr("Укажите API-ключ Groq для распознавания речи.", "Enter the Groq API key for speech recognition."),
+            ToastKind.Info, Tr("Указать ключ", "Enter API key"), ShowVoiceKeySettings);
+        return false;
+    }
 
     void ShowVoiceKeySettings() => OpenSettings(_config.Provider == AgentProvider.Groq ? KeyPasswordBox : VoiceKeyBox);
 }

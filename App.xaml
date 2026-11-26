@@ -12,6 +12,7 @@
         <SolidColorBrush x:Key="ComputerBadgeText" Color="#F1F6FF"/>
         <SolidColorBrush x:Key="ChromeBg" Color="#202020"/>
         <SolidColorBrush x:Key="Surface" Color="#222222"/>
+        <SolidColorBrush x:Key="CompactTranscriptBg" Color="#222222"/>
         <SolidColorBrush x:Key="ChatModeTrack" Color="#1B1B1B"/>
         <SolidColorBrush x:Key="ChatModeSelected" Color="#212121"/>
         <SolidColorBrush x:Key="ChatModeShadow" Color="#101010"/>
@@ -344,6 +345,7 @@
         <Style x:Key="SendButton" TargetType="Button" BasedOn="{StaticResource RoundBase}">
             <Setter Property="Background" Value="{DynamicResource Accent}"/>
             <Setter Property="Foreground" Value="{DynamicResource OnAccent}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="Width" Value="32"/>
             <Setter Property="Height" Value="32"/>
             <Setter Property="FontFamily" Value="{StaticResource IconFont}"/>
@@ -847,6 +849,19 @@
         </Style>
 
         <!-- As in menus, the shadow sits on its own layer so the text stays sharp -->
+        <SolidColorBrush x:Key="VoiceOrbBg" Color="#101010"/>
+        <SolidColorBrush x:Key="VoiceOrbFg" Color="#FFFFFF"/>
+        <DataTemplate x:Key="TalkStartIcon">
+            <Path Data="M1,5 V8 M4,3 V10 M7,1 V12 M10,4 V9 M13,5 V8"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+        </DataTemplate>
+        <DataTemplate x:Key="TalkEndIcon">
+            <Path Width="12" Height="12" Stretch="Uniform" Data="M0,0 L10,10 M10,0 L0,10"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+        </DataTemplate>
+        <DataTemplate x:Key="TaskStopIcon">
+            <Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+        </DataTemplate>
         <ControlTemplate x:Key="FlyoutTemplate" TargetType="ContentControl">
             <Grid>
                 <Border Background="{DynamicResource Raised}" CornerRadius="12" Effect="{StaticResource PopupShadow}"/>

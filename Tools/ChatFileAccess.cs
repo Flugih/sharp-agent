@@ -7,9 +7,9 @@ internal sealed class ChatFileAccess
     readonly HashSet<Run> _runs = [];
     Run? _unrestricted;
 
-    public IDisposable Begin()
+    public IDisposable Begin(bool allowConcurrentReads = false)
     {
-        var run = new Run(this, _current.Value);
+        var run = new Run(this, _current.Value, allowConcurrentReads);
         lock (_gate) _runs.Add(run);
         _current.Value = run;
         return run;
@@ -36,14 +36,15 @@ internal sealed class ChatFileAccess
         if (owner == null) return;
         lock (_gate)
         {
-            if (_runs.Count != 1)
+            if (_runs.Any(run => run != owner && (!run.AllowConcurrentReads || run.Paths.Count > 0 || run == _unrestricted)))
                 throw new ToolException("Пока работают другие чаты, действия с неизвестным списком изменений недоступны. Используйте файловые инструменты.");
             if (reserve) _unrestricted = owner;
         }
     }
 
-    sealed class Run(ChatFileAccess access, Run? previous) : IDisposable
+    sealed class Run(ChatFileAccess access, Run? previous, bool allowConcurrentReads) : IDisposable
     {
+        public readonly bool AllowConcurrentReads = allowConcurrentReads;
         public readonly HashSet<string> Paths = new(StringComparer.OrdinalIgnoreCase);
 
         public void Dispose()

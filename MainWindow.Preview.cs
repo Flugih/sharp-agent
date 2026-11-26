@@ -1,11 +1,14 @@
+using System.Windows.Documents;
 using System.Windows.Media.Imaging;
 using System.Windows.Xps.Packaging;
+using Glyphs = SharpAgent.Ui.Glyphs;
 
 namespace SharpAgent;
 
 public partial class MainWindow
 {
-    const int MaxPreviewLines = 5000, InlineDiffLines = 40;
+    const int MaxPreviewLines = 5000, MaxHighlightedPreviewChars = 120_000, InlineDiffLines = 40;
+    const double PreviewLineHeight = 19, PreviewFontSize = 12.5;
     const double ChatMinWidth = 460, PaneMinWidth = 300;
 
     static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -220,10 +223,10 @@ public partial class MainWindow
 
     static FrameworkElement FileView(string path, int searchLine) =>
         !File.Exists(path) ? EmptyState(Tr("Файла больше нет: его переместили или удалили.", "The file was moved or deleted."))
-        : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text, searchLine)
+        : TextFileIO.TryRead(path, 2 * 1024 * 1024) is { } text ? CodeView(text, Path.GetExtension(path), searchLine)
         : EmptyState(Tr("Этот файл здесь не показать. Откройте его в программе — кнопка вверху.", "Preview is unavailable for this file. Use the button above to open it in its app."));
 
-    static FrameworkElement CodeView(string text, int searchLine)
+    static FrameworkElement CodeView(string text, string extension, int searchLine)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
         if (lines.Length > 1 && lines[^1].Length == 0) lines = lines[..^1];
@@ -244,23 +247,46 @@ public partial class MainWindow
         {
             Content = new TextBlock
             {
-                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12, LineHeight = 19,
+                Text = string.Join("\n", lineNumbers), FontFamily = Theme.Mono, FontSize = 12, LineHeight = PreviewLineHeight,
                 LineStackingStrategy = LineStackingStrategy.BlockLineHeight, TextAlignment = TextAlignment.Right, Padding = new Thickness(0, 0, 12, 24),
             }.Paint(ForegroundProperty, "TextMuted"),
             VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Focusable = false, IsHitTestVisible = false,
         };
-        var body = new TextBox
-        {
-            Text = string.Join("\n", lines), IsReadOnly = true, IsReadOnlyCaretVisible = false, BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent, FontFamily = Theme.Mono, FontSize = 12.5,
-            Padding = new Thickness(0), FocusVisualStyle = null, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
-        }.Paint(ForegroundProperty, "Text").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
-        TextBlock.SetLineHeight(body, 19);
+        var content = string.Join('\n', lines);
+        TextBoxBase body = content.Length <= MaxHighlightedPreviewChars && CodeExtensions.Contains(extension)
+            ? HighlightedCodeView(content, extension.ToLowerInvariant(), lines) : new TextBox { Text = content };
+        body.IsReadOnly = true;
+        body.BorderThickness = new(0);
+        body.Background = Brushes.Transparent;
+        body.FontFamily = Theme.Mono;
+        body.FontSize = PreviewFontSize;
+        body.Padding = new(0);
+        body.FocusVisualStyle = null;
+        body.HorizontalScrollBarVisibility = body.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        body.ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"];
+        body.Paint(ForegroundProperty, "Text").Paint(TextBoxBase.SelectionBrushProperty, "Accent");
+        TextBlock.SetLineHeight(body, PreviewLineHeight);
         TextBlock.SetLineStackingStrategy(body, LineStackingStrategy.BlockLineHeight);
         body.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, e) => gutter.ScrollToVerticalOffset(e.VerticalOffset)));
         Grid.SetColumn(body, 1);
         return new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() }, Children = { gutter, body } };
+    }
+
+    static TextBoxBase HighlightedCodeView(string content, string extension, string[] lines)
+    {
+        var longest = lines.MaxBy(line => line.Length + 7 * line.AsSpan().Count('\t'))!;
+        var width = new FormattedText(longest.Replace("\t", "        "), CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface(Theme.Mono, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), PreviewFontSize, Brushes.Transparent,
+            VisualTreeHelper.GetDpi(Application.Current.MainWindow).PixelsPerDip).WidthIncludingTrailingWhitespace;
+        if (width > 100_000) return new TextBox { Text = content };
+        var paragraph = new Paragraph { Margin = new(0) };
+        CodeSyntax.Write(paragraph.Inlines, content, extension, MaxHighlightedPreviewChars);
+        var document = new FlowDocument(paragraph)
+        {
+            PagePadding = new(0), PageWidth = width + 4, LineHeight = PreviewLineHeight,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight, TextAlignment = TextAlignment.Left,
+        };
+        return new RichTextBox(document) { AutoWordSelection = false };
     }
 
     Button FileCard(string path, FileDiff? diff, bool created)

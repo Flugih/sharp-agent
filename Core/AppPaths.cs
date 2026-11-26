@@ -20,6 +20,7 @@ public static class AppPaths
     public static string AttachmentsFolder => In("attachments");
     public static string TempFolder => In("temp");
     internal static string CacheFolder => In("cache");
+    internal static string UpdatesFolder => In("updates");
     internal static string DatabaseFolder => In("database");
     public static string StatePath => In("state.json");
     public static string ErrorLogPath => In(@"logs\errors\errors.log");

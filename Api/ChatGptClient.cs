@@ -7,8 +7,9 @@ public class OpenAiResponsesClient : IChatProvider
     public const string UsageUrl = "https://chatgpt.com/settings/usage", BaseUrl = "https://api.openai.com/v1";
     internal const string LimitCode = "subscription_sharing_usage_limit_exceeded", InvalidUserCode = "subscription_sharing_invalid_user";
     const string Namespace = "functions", IneligibleCode = "subscription_sharing_user_not_eligible";
-    static readonly string[] Gpt6Efforts = ["low", "medium", "high", "xhigh", "max"];
+    static readonly string[] Gpt6Efforts = [.. AppConfig.StandardEffortLevels, "xhigh", "max"];
     readonly HashSet<string> _noSummaries = new(StringComparer.OrdinalIgnoreCase), _noStreaming = new(StringComparer.OrdinalIgnoreCase);
+    readonly VoiceEffort _voiceEffort = new();
     readonly ChatGptAuth? _auth;
     readonly string? _apiKey;
     readonly string _baseUrl;
@@ -41,8 +42,9 @@ public class OpenAiResponsesClient : IChatProvider
         if (_auth == null)
         {
             if (root["data"] is not JsonArray data) throw new ApiException("OpenAI API не вернул список моделей.");
-            return data.OfType<JsonObject>().Select(item => Str(item["id"])).OfType<string>().Where(IsApiChatModel)
-                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(ApiModelInfo).ToList();
+            return data.OfType<JsonObject>().Where(item => Str(item["id"]) is { } id && IsApiChatModel(id))
+                .Select(item => ApiModelInfo(Str(item["id"])!, VoiceEffort.CatalogModes(item)))
+                .DistinctBy(model => model.Id, StringComparer.Ordinal).OrderBy(model => model.Id, StringComparer.Ordinal).ToList();
         }
         List<ModelInfo> models = [];
         foreach (var item in (root["models"] as JsonArray)?.OfType<JsonObject>() ?? [])
@@ -50,37 +52,39 @@ public class OpenAiResponsesClient : IChatProvider
                 models.Add(new(slug, Long(item["context_window"]) is > 0 and var context ? context : null,
                     item["input_modalities"] is JsonArray kinds ? kinds.Any(kind => Str(kind) == "image") : null, true, false,
                     (item["supported_reasoning_levels"] as JsonArray)?.Select(level => Str(level is JsonObject entry ? entry["effort"] : level) ?? "")
-                        .Where(AppConfig.EffortLevels.Contains).Distinct().ToArray() ?? [], Str(item["display_name"])));
+                        .Where(AppConfig.EffortLevels.Contains).Distinct().ToArray() ?? [], Str(item["display_name"]), VoiceEffort.CatalogModes(item)));
         return models;
     }
 
-    static bool IsApiChatModel(string id) => Regex.IsMatch(id, @"^(?:gpt-(?:4o|4\.1|5(?:\.\d+)?|6(?:\.\d+)?)|o[134])(?:-|$)") &&
+    static bool IsApiChatModel(string id) => Regex.IsMatch(id, @"^(?:gpt-(?:4o|4\.1|[5-9](?:\.\d+)?)|o\d+)(?:-|$)") &&
         !Regex.IsMatch(id, @"-(?:audio|realtime|transcribe|tts|image|search|cyber|bio|chat|preview)(?:-|$)");
 
     static bool IsGpt6ReasoningModel(string id) => Regex.IsMatch(id, @"^gpt-6(?:\.\d+)?-(?:astra|sol|terra|luna)(?:-|$)");
 
-    static ModelInfo ApiModelInfo(string id) => new(id, null, null, true, false, IsGpt6ReasoningModel(id) ? Gpt6Efforts : []);
+    static ModelInfo ApiModelInfo(string id, string[]? voiceModes) =>
+        new(id, null, null, true, false, IsGpt6ReasoningModel(id) ? Gpt6Efforts : [], VoiceModes: voiceModes);
 
     public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
-        bool summary = (_auth != null || IsGpt6ReasoningModel(model)) && !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
+        var voice = _voiceEffort.Start(model, ref effort);
+        bool summary = voice == null && (_auth != null || IsGpt6ReasoningModel(model)) && !_noSummaries.Contains(model), streaming = !_noStreaming.Contains(model);
         var schemas = _auth == null ? ToolSchemas.Get(tools) : null;
         var additional = _auth != null ? AdditionalTools.Get(tools) : null;
         var body = Request(model, messages, schemas != null, maxTokens, effort, summary);
         if (!callTools && (_auth != null || schemas != null)) body["tool_choice"] = "none";
-        void Reset()
-        {
-            reportText(null, false);
-            reportProgress(new());
-        }
-        var result = await ApiException.RetryAsync((attemptToken, reportActivity) =>
+        var result = await ApiException.RetryAsync((attemptToken, reportActivity, text, progress) =>
         {
             body["stream"] = streaming;
-            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas, additional), streaming, reportText, reportProgress, attemptToken, reportActivity);
+            return SendCompletionAsync(ToolSchemaWire.Serialize(body, schemas, additional), streaming, text, progress, attemptToken, reportActivity);
         }, ex =>
         {
-            if (summary && SummaryRejected(ex, effort != null))
+            if (voice?.Retry(ex, ref effort) == true)
+            {
+                if (effort == null) body.Remove("reasoning");
+                else ((JsonObject)body["reasoning"]!)["effort"] = effort;
+            }
+            else if (summary && SummaryRejected(ex, effort != null))
             {
                 _noSummaries.Add(model);
                 summary = false;
@@ -95,13 +99,17 @@ public class OpenAiResponsesClient : IChatProvider
             else
             {
                 if (_auth != null && ex.Code is (LimitCode or IneligibleCode)) SetLimit(ex.Message.Split('\n')[0]);
-                else if (ex.Code == "content_filter") Reset();
+                else if (ex.Code == "content_filter")
+                {
+                    reportText(null, false);
+                    reportProgress(new());
+                }
                 else return false;
                 return null;
             }
-            Reset();
             return true;
-        }, Reset, retrying, ct);
+        }, reportText, reportProgress, retrying, ct, voice: voice != null, recoverConnection: callTools);
+        voice?.Accept(effort);
         SetLimit(null);
         return result;
     }
@@ -275,7 +283,8 @@ public class OpenAiResponsesClient : IChatProvider
                     throw Failed(data["error"] as JsonObject ?? data, requestId);
             }
         }
-        throw new ApiException($"Связь с {ServiceName} оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
+        throw new ApiException($"Связь с {ServiceName} оборвалась до конца ответа. Нажмите «Повторить».", retryable: true)
+        { ConnectionInterrupted = true };
     }
 
     ChatResult FinishResponse(List<JsonObject> items, JsonObject? answer, string? requestId, IEnumerable<string>? summaries = null,

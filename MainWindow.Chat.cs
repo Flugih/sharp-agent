@@ -35,6 +35,7 @@ public partial class MainWindow
         public FrameworkElement? LastStopNotice;
         public ProgressSection? Progress;
         public ProgressSection? Commands;
+        public UIElement? SingleCommand;
         public RichTextBox? ReasoningRow, CommentaryRow;
         public TextBlock? ProgressHint;
         public ToolCallEvent? PendingPlan;
@@ -243,7 +244,7 @@ public partial class MainWindow
         }, "Ctrl+A"));
         menu.Opened += (_, _) => copySelection.IsEnabled = !document.Selection.IsEmpty;
         document.ContextMenu = menu;
-        var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 4, 0, 0), Children = { copy } };
+        var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 4, 0, 0), Children = { copy, ReadAloudButton(document) } };
         footer.Children.Add(new TextBlock
         {
             Text = sentAt?.ToLocalTime().ToString("HH:mm", UiLanguage.Culture) ?? "—",
@@ -603,6 +604,16 @@ public partial class MainWindow
 
     ToolRow AddToolRow(string id, string name, string argumentsJson, string? completedCommand = null)
     {
+        if (name == "exec_command" && ArgumentOf(argumentsJson, "session_id") is { } session)
+        {
+            var pending = ShellTools.Sessions.Running(session);
+            var previous = _chatView.ToolRows.FirstOrDefault(entry => entry.Value.Name == name && entry.Value.Output == pending);
+            if (previous.Value is { } source)
+            {
+                _chatView.ToolRows.Remove(previous.Key);
+                return _chatView.ToolRows[id] = source;
+            }
+        }
         var (glyph, label) = Describe(name, argumentsJson);
         var running = new Shimmer { Text = label, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center, IsActive = true };
         var status = new TextBlock
@@ -625,11 +636,7 @@ public partial class MainWindow
             DockPanel.SetDock(tail, Dock.Right);
             header.Children.Add(tail);
         }
-        var command = name == "exec_command" ? CommandText(argumentsJson, completedCommand, session =>
-        {
-            var pending = ShellTools.Sessions.Running(session);
-            return _chatView.ToolRows.Values.FirstOrDefault(row => row.Name == "exec_command" && row.Output == pending)?.CommandText;
-        }) : null;
+        var command = name == "exec_command" ? CommandText(argumentsJson, completedCommand) : null;
         var subject = MakeSubject(name, argumentsJson, command);
         if (subject != null) header.Children.Add(subject);
         var root = new StackPanel { Children = { header } };
@@ -650,7 +657,7 @@ public partial class MainWindow
         catch { return null; }
     }
 
-    internal static string? CommandText(string argumentsJson, string? completed = null, Func<string, string?>? sourceOfSession = null)
+    internal static string? CommandText(string argumentsJson, string? completed = null)
     {
         var args = ParseObject(argumentsJson);
         if (args == null) return completed;
@@ -663,7 +670,7 @@ public partial class MainWindow
             var text = string.Join("\n", batch);
             if (text.Length != 0) return text;
         }
-        return completed ?? (options.Optional("session_id") is { } session ? sourceOfSession?.Invoke(session) : null);
+        return completed;
     }
 
     string? ResolvePath(string? path)
@@ -702,6 +709,11 @@ public partial class MainWindow
 
     void CompleteToolRow(ToolRow row, string output, bool isError, bool isWarning = false, FileDiff? diff = null, FileChange? change = null, bool undone = false)
     {
+        if (row.Name == "exec_command" && ShellTools.Sessions.RunningId(output) != null)
+        {
+            row.Output = output;
+            return;
+        }
         row.Label.IsActive = false;
         if (isError || isWarning)
         {
@@ -712,11 +724,14 @@ public partial class MainWindow
                 ? Tr("Пакет выполнен частично", "Batch partially completed")
                 : "Команда завершилась с ошибкой или по таймауту — раскройте подробности";
             var line = output.Split('\n')[0].Trim();
-            row.Root.Children.Add(new TextBlock
+            if (!line.StartsWith(CommandLog.ExitPrefix, StringComparison.Ordinal))
             {
-                Text = Shorten(line, 220), TextWrapping = TextWrapping.Wrap, Margin = new(24, 0, 0, 6),
-            }.Paint(ForegroundProperty, isError ? "DangerText" : "Warning"));
-            if (isError) row.EditGroup?.ShowError(Shorten(line, 100));
+                row.Root.Children.Add(new TextBlock
+                {
+                    Text = Shorten(line, 220), TextWrapping = TextWrapping.Wrap, Margin = new(24, 0, 0, 6),
+                }.Paint(ForegroundProperty, isError ? "DangerText" : "Warning"));
+                if (isError) row.EditGroup?.ShowError(Shorten(line, 100));
+            }
         }
         else if (row.Name is "move_path" or "copy_path" && ResultTarget(output) is { } target)
         {
@@ -877,7 +892,16 @@ public partial class MainWindow
                 details.Children.Add(view);
             }
             var log = row.Name is "exec_command" or "run_plugin" ? CommandLog.IdOf(output) : null;
-            if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full) output = output.Split('\n', 2)[0] + "\n" + full;
+            bool hasExitCode = output.StartsWith(CommandLog.ExitPrefix, StringComparison.Ordinal);
+            if (log != null && CommandLog.Read(AppPaths.LogsFolder, log) is { } full)
+                output = hasExitCode ? full : output.Split('\n', 2)[0] + "\n" + full;
+            else if (hasExitCode)
+            {
+                int headerEnd = output.IndexOf('\n');
+                output = headerEnd < 0 ? "" : output[(headerEnd + 1)..];
+                if (row.Name == "exec_command" && output.StartsWith("Команда 1\n", StringComparison.Ordinal))
+                    output = Regex.Replace(output, @"(?m)^(Команда [1-6]\r?\n)" + CommandLog.ExitPrefix + @"-?\d+\r?\n", "$1");
+            }
             var command = row.CommandText;
             bool hasCommand = row.Name == "exec_command" && ArgumentOf(row.ArgumentsJson, "command") != null;
             var raw = SelectableText(KeepEnds(hasCommand ? output : Tr($"Параметры:\n{PrettyJson(row.ArgumentsJson)}\n\nРезультат:\n{output}", $"Parameters:\n{PrettyJson(row.ArgumentsJson)}\n\nResult:\n{output}"), 16_000),
@@ -938,7 +962,8 @@ public partial class MainWindow
     void MarkUnfinishedToolRows()
     {
         _chatView.PendingPlan = null;
-        foreach (var row in _chatView.ToolRows.Values.Where(r => r.Output == null)) CompleteToolRow(row, Tr("Выполнение прервано.", "Task interrupted."), isError: true);
+        foreach (var row in _chatView.ToolRows.Values.Where(r => r.Output == null || r.Name == "exec_command" && ShellTools.Sessions.RunningId(r.Output) != null))
+            CompleteToolRow(row, Tr("Выполнение прервано.", "Task interrupted."), isError: true);
     }
 
     static string OneLine(string? value) => Shorten((value ?? "").Replace("\r", "").Replace("\n", " ⏎ ").Trim(), 70);
@@ -1057,7 +1082,7 @@ public partial class MainWindow
     {
         (_chatView.Target ?? ChatPanel).Children.Add(element);
         if (_chatView.Target == null) UpdateComposerPlacement();
-        if (!_suppressAnimation && Theme.AnimationsEnabled)
+        if (!_suppressAnimation && Theme.AnimationsEnabled && !(bool)GetValue(Shimmer.MotionSuspendedProperty))
             element.BeginAnimation(OpacityProperty,
                 new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
     }
@@ -1111,6 +1136,7 @@ public partial class MainWindow
     void ChatScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (_changingHistory || !ReferenceEquals(e.OriginalSource, ChatScroll)) return;
+        if (e.VerticalChange == 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0 && e.ViewportWidthChange == 0) return;
         if (e.ExtentHeightChange != 0 && _autoScroll && _chatMotion == null) ChatScroll.ScrollToEnd();
         else if (e.VerticalChange != 0 && _chatMotion == null) _autoScroll = Mouse.LeftButton != MouseButtonState.Pressed && IsShown(ChatPanel) && ChatScroll.ScrollableHeight - ChatScroll.VerticalOffset < 30;
         if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && _chatMotion == null) CheckHistory(older: e.VerticalChange < 0);
@@ -1127,7 +1153,13 @@ public partial class MainWindow
         // Leave room for the pinned rows without painting a second surface over the chat.
         var margin = ChatStickyHost.Margin;
         double top = Math.Min(margin.Top + ChatStickyHost.ActualHeight + margin.Bottom, viewport.ActualHeight);
-        viewport.Clip = IsShown(ChatStickyHost) ? new RectangleGeometry(new Rect(0, top, viewport.ActualWidth, viewport.ActualHeight - top)) : null;
+        if (!IsShown(ChatStickyHost)) viewport.Clip = null;
+        else
+        {
+            var bounds = new Rect(0, top, viewport.ActualWidth, viewport.ActualHeight - top);
+            if (viewport.Clip is not RectangleGeometry geometry) viewport.Clip = new RectangleGeometry(bounds);
+            else if (geometry.Rect != bounds) geometry.Rect = bounds;
+        }
     }
 
     void ChatStickyHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -1158,7 +1190,7 @@ public partial class MainWindow
         ContextMenu = (ContextMenu)Application.Current.Resources["ReadOnlyTextMenu"],
     }.Paint(ForegroundProperty, foreground).Paint(TextBoxBase.SelectionBrushProperty, "Accent");
 
-    static FrameworkElement MakeSpinner(double size)
+    static FrameworkElement MakeSpinner(double size, bool alwaysAnimate = false)
     {
         var rotate = new RotateTransform();
         var ring = new System.Windows.Shapes.Ellipse
@@ -1166,9 +1198,12 @@ public partial class MainWindow
             Width = size, Height = size, StrokeThickness = 1.6, StrokeDashArray = new DoubleCollection { 7, 14 }, StrokeDashCap = PenLineCap.Round,
             VerticalAlignment = VerticalAlignment.Center, RenderTransformOrigin = new(0.5, 0.5), RenderTransform = rotate,
         }.Paint(System.Windows.Shapes.Shape.StrokeProperty, "AccentText");
-        ring.IsVisibleChanged += (_, _) => rotate.BeginAnimation(RotateTransform.AngleProperty, ring.IsVisible && Theme.AnimationsEnabled
+        void Update() => rotate.BeginAnimation(RotateTransform.AngleProperty, ring.IsLoaded && ring.IsVisible && (alwaysAnimate || Theme.AnimationsEnabled)
             ? new DoubleAnimation(0, 360, TimeSpan.FromSeconds(0.9)) { RepeatBehavior = RepeatBehavior.Forever }
             : null);
+        ring.Loaded += (_, _) => Update();
+        ring.IsVisibleChanged += (_, _) => Update();
+        ring.Unloaded += (_, _) => rotate.BeginAnimation(RotateTransform.AngleProperty, null);
         return ring;
     }
 
