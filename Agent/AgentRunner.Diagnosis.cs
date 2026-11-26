@@ -71,7 +71,7 @@ partial class AgentRunner
     {
         var id = Guid.NewGuid().ToString("N");
         _timeline?.Begin(id, "local_model", "Local AI", model: model.Name, estimated: Math.Max(1, input.Length / 3));
-        var answer = await model.TryAsync(input, ct);
+        var answer = await model.TryAsync(input, ReplyLanguageFor(), ct);
         _timeline?.ModelResult(id, answer == null ? "warning" : "completed", answer?.Usage);
         return answer?.Text;
     }

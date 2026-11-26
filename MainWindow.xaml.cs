@@ -4,18 +4,6 @@ namespace SharpAgent;
 
 public partial class MainWindow
 {
-    static readonly string[] DefaultModels =
-    [
-        "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-opus-4-5", "gpt-6.1-sol", "gpt-6.1-terra",
-        "gpt-6-luna", "gpt-6-astra", "deepseek-v4-pro", "deepseek-v4.1-flash-1017", "kimi-k3.1-pro", "glm-5.3", "glm-5.3-flash",
-        "gemini-4-argon", "gemini-3.8-flash",
-    ];
-
-    static readonly string[] ChatGptModels =
-        ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
-
-    static readonly string[] GroqModels = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"];
-
     static readonly Dictionary<string, (string Russian, string English, string RussianHint, string EnglishHint)> EffortNames = new()
     {
         ["minimal"] = ("Минимальное", "Minimal", "почти без рассуждений", "Very little reasoning"),
@@ -34,6 +22,7 @@ public partial class MainWindow
         LogsFolder = AppPaths.LogsFolder,
     };
     readonly UiState _state = UiState.Load();
+    readonly PathRefs _paths;
     readonly ChatLinks _links;
     readonly MarkdownRenderer _markdown;
     readonly UsageTracker _usage;
@@ -47,7 +36,7 @@ public partial class MainWindow
     AgentRunner _agent = null!;
     ChatApiClient? _tooken;
     IChatProvider? _provider;
-    bool _confirmOff;
+    bool _confirmOff, _startupChatReady;
 
     public MainWindow()
     {
@@ -55,7 +44,8 @@ public partial class MainWindow
         InitializeComponent();
         ChatTextSize.Extra = _state.LargeChatText ? 1 : 0;
         InputBox.FontSize = 14 + ChatTextSize.Extra;
-        _links = new(this, new PathRefs(() => _toolContext.WorkingDirectory), OpenInApp);
+        _paths = new(() => _toolContext.WorkingDirectory);
+        _links = new(this, _paths, OpenInApp);
         _toolContext.OpenUrl = OpenBrowserUrl;
         _toolContext.BrowserWindow = () => Dispatcher.Invoke(BrowserWindowHandle);
         _toolContext.ReadBrowser = ReadBrowserAsync;
@@ -67,6 +57,11 @@ public partial class MainWindow
         FileActions.Notify += notice;
         Closed += (_, _) =>
         {
+            foreach (var extra in _runs.Values.Where(run => run.Extra != null).ToArray()) extra.Cancellation.Cancel();
+            EndTalk();
+            StopAppUpdates();
+            _localPlaybackStop?.Cancel();
+            _voiceInstall?.Cancel();
             _toolContext.ProjectWatcher.ProgressChanged -= OnIndexProgressChanged;
             _toolContext.ProjectWatcher.Dispose();
             _cacheTimer.Stop();
@@ -83,6 +78,7 @@ public partial class MainWindow
         _subagentTimer.Tick += (_, _) => UpdateSubagentTimes();
         _cacheTimer.Tick += (_, _) => _ = Task.Run(AppCache.Maintain);
         _voiceTimer.Tick += (_, _) => OnVoiceTick();
+        _talkTimer.Tick += (_, _) => OnTalkTick();
         RestoreWindowPlacement();
     }
 
@@ -120,15 +116,22 @@ public partial class MainWindow
         UpdateSendButton();
         if (_provider != null) InputBox.Focus();
         await startupChat;
+        _startupChatReady = true;
+        UpdateProjectWatcher();
+        UpdateSendButton();
         if (_provider == null) ShowSettings();
+        _ = CheckAppUpdateAsync();
         void FolderBanner(string key, string title, string text) =>
             ShowBanner(key, Glyphs.Warning, title, text, Tr("Открыть папку", "Open folder"), () => FileActions.OpenFolder(AppPaths.AppFolder), true);
     }
 
     void Window_Closing(object? s, CancelEventArgs e)
     {
+        if (_installingUpdate) return;
         e.Cancel = true;
         SaveState();
+        _updateOffered = false;
+        ArmAppUpdateOffer();
         Dispatcher.InvokeAsync(() => { if (IsVisible) Hide(); });
     }
 
@@ -188,7 +191,7 @@ public partial class MainWindow
     void ApplyWorkDir()
     {
         var folder = _toolContext.WorkingDirectory = _config.WorkingDirectory;
-        _toolContext.ProjectWatcher.Watch(_toolContext);
+        UpdateProjectWatcher();
         UpdateSendButton();
         var dir = Path.TrimEndingDirectorySeparator(folder);
         FolderText.Text = Path.GetFileName(dir) is { Length: > 0 } name ? name : dir;
@@ -201,35 +204,69 @@ public partial class MainWindow
     void FolderButton_Click(object s, RoutedEventArgs e)
     {
         if (WaitForChatFile(ChatFileBusy)) return;
-        if (AnyRunning)
-        {
-            ShowToast(Tr("Папку можно сменить, когда агент закончит работу", "You can change the working folder after the agent finishes."), ToastKind.Warning);
-            return;
-        }
+        if (!CanChangeWorkDir()) return;
         var dialog = new Microsoft.Win32.OpenFolderDialog { Title = Tr("Рабочая папка агента", "Agent working folder") };
         if (Directory.Exists(_toolContext.WorkingDirectory)) dialog.InitialDirectory = _toolContext.WorkingDirectory;
         if (dialog.ShowDialog(this) != true) return;
-        var folder = dialog.FolderName;
+        TrySetWorkDir(dialog.FolderName);
+    }
+
+    bool CanChangeWorkDir()
+    {
+        if (!AnyRunning) return true;
+        ShowToast(Tr("Папку можно сменить, когда агент закончит работу", "You can change the working folder after the agent finishes."), ToastKind.Warning);
+        return false;
+    }
+
+    bool TrySetWorkDir(string folder)
+    {
         bool inside = PathHelper.IsInside(folder, AppPaths.AppFolder);
         if (_config.Sandbox && !inside)
         {
             ShowToast(Tr($"В песочнице агенту доступна только папка {FolderKind}. Выберите папку внутри неё или выключите песочницу в настройках.", $"Sandbox access is limited to the {FolderKind} folder. Choose a folder within it or turn off sandbox mode in settings."),
                 ToastKind.Warning);
-            return;
+            return false;
         }
         try { Directory.CreateDirectory(folder); }
         catch (Exception ex)
         {
             ShowToast(Tr("Эта папка недоступна: ", "This folder is unavailable: ") + ex.Message, ToastKind.Warning);
-            return;
+            return false;
         }
         if (SaveEnv(new() { ["AGENT_WORKDIR"] = inside ? Path.GetRelativePath(AppPaths.AppFolder, folder) : folder }) is { } error)
         {
             ShowToast(Tr("Не удалось сохранить выбор в .env: ", "Could not save the selection to .env: ") + error, ToastKind.Error);
-            return;
+            return false;
         }
         ApplyWorkDir();
         ShowToast(Tr("Агент работает в папке ", "Working folder: ") + _toolContext.WorkingDirectory, ToastKind.Success);
+        return true;
+    }
+
+    bool ConfirmRequestedWorkspace(string text)
+    {
+        if (_paths.FindWorkspace(text) is not { } folder || PathHelper.SamePath(folder, _toolContext.WorkingDirectory)) return true;
+        if (!CanChangeWorkDir() || !DarkDialog.Ask(ActiveChatWindow, Tr("Сменить рабочую папку?", "Change working folder?"),
+                Tr("Агент сделает эту папку рабочей и продолжит с вашим запросом.", "The agent will use this folder as its working folder and continue with your request."),
+                Tr("Сменить и отправить", "Switch and send"), code: folder, delayed: true)) return false;
+        try
+        {
+            folder = _toolContext.Resolve(folder);
+            _toolContext.Resolve(PathHelper.FinalPath(folder));
+            _toolContext.GuardSecrets(folder);
+            _toolContext.GuardAppFiles(folder);
+        }
+        catch (ToolException ex)
+        {
+            ShowToast(ex.Message, ToastKind.Warning);
+            return false;
+        }
+        if (!Directory.Exists(folder))
+        {
+            ShowToast(Tr("Эта папка больше недоступна.", "This folder is no longer available."), ToastKind.Warning);
+            return false;
+        }
+        return TrySetWorkDir(folder);
     }
 
     void OpenWorkDir_Click(object s, RoutedEventArgs e)
@@ -283,19 +320,35 @@ public partial class MainWindow
         SetTaskbar(TaskbarItemProgressState.Paused);
         var owner = ActiveChatWindow;
         WindowEffects.Flash(owner);
-        bool allowed = DarkDialog.Ask(owner, request.Title, request.Note ?? "", request.Action, Tr("Отклонить", "Decline"), request.Danger, request.Subject, true);
+        bool allowed = DarkDialog.Ask(owner, request.Title, request.Note ?? "", request.Action, request.CancelAction ?? Tr("Отклонить", "Decline"), request.Danger, request.Subject, true);
         SetTaskbar(TaskbarItemProgressState.Indeterminate);
         return Task.FromResult(allowed);
     }
 
-    void Send_Click(object s, RoutedEventArgs e) => _ = SendAsync();
+    enum ComposerAction { Send, Resume, StartTalk, EndTalk }
+    ComposerAction _composerAction;
+
+    void Send_Click(object s, RoutedEventArgs e) => UseComposerAction();
+
+    void UseComposerAction()
+    {
+        if (_composerAction == ComposerAction.EndTalk) EndTalk();
+        else if (_composerAction == ComposerAction.StartTalk) _ = StartTalkAsync();
+        else _ = SendAsync();
+    }
 
     void Stop_Click(object s, RoutedEventArgs e) => StopAgent();
 
     void StopAgent()
     {
-        if (_cts is not { IsCancellationRequested: false }) return;
-        _cts.Cancel();
+        _talkTasks.Remove(_agent, out var tasks);
+        if (_talk is { } session)
+        {
+            session.Turn?.Cancel();
+            ClearTalkRetry(session);
+        }
+        RestoreQueuedTalkDrafts(_talk, tasks);
+        _cts?.Cancel();
         StopButton.IsEnabled = false;
         UpdateChangesPill();
         UpdateCompactAction();
@@ -328,27 +381,52 @@ public partial class MainWindow
     {
         var loading = UpdateComposerLoading();
         _composerHasText = !string.IsNullOrWhiteSpace(ComposerDraft);
-        bool hasDraft = _composerHasText || _pendingAttachments.Count > 0, resume = !hasDraft && _agent?.CanContinue == true;
-        SendButton.IsEnabled = loading == null && (hasDraft || resume);
+        bool running = _cts != null, hasDraft = _composerHasText || _pendingAttachments.Count > 0;
+        bool resume = !hasDraft && !running && _talk == null && _agent?.CanContinue == true;
+        bool endTalk = _talk != null && !hasDraft;
+        bool startTalk = !hasDraft && !endTalk && !resume;
+        bool showSend = !VoiceShown && (!running || _talk != null);
+        SendButton.Visibility = VisibleIf(showSend);
+        StopButton.Margin = running && showSend ? new(0, 0, 4, 0) : new(0);
+        SendButton.IsEnabled = endTalk || (startTalk ? !_talkClosing && MicButton.IsEnabled
+            : (loading == null || _talk != null && !ChatFileBusy) && (hasDraft || resume));
+        _composerAction = endTalk ? ComposerAction.EndTalk : resume ? ComposerAction.Resume : startTalk ? ComposerAction.StartTalk : ComposerAction.Send;
         SendButton.Content = resume ? Glyphs.Play : Glyphs.Send;
-        SendButton.ToolTip = loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
-        AutomationProperties.SetName(SendButton, resume ? Tr("Продолжить задачу", "Resume task") : Tr("Отправить", "Send"));
-        NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _cts == null && !hasDraft && !VoiceShown && NextActionPanel.Children.Count > 0);
+        SendButton.ContentTemplate = _composerAction switch
+        {
+            ComposerAction.StartTalk => (DataTemplate)FindResource("TalkStartIcon"),
+            ComposerAction.EndTalk => (DataTemplate)FindResource("TalkEndIcon"),
+            _ => null,
+        };
+        var label = endTalk ? Tr("Закончить голосовой разговор", "End voice conversation")
+            : resume ? Tr("Продолжить задачу", "Resume task") : startTalk ? Tr("Говорить", "Talk") : Tr("Отправить", "Send");
+        SendButton.ToolTip = endTalk ? label + " (Esc)" : startTalk ? label : loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
+        AutomationProperties.SetName(SendButton, label);
+        NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _cts == null && !hasDraft && !VoiceShown && _talk == null && NextActionPanel.Children.Count > 0);
         UpdateCompactAction();
     }
 
     void UpdateComposerButtons()
     {
         bool voice = VoiceShown, running = _cts != null;
-        SendButton.Visibility = VisibleIf(!voice && !running);
         StopButton.Visibility = VisibleIf(running);
-        StopButton.ToolTip = voice ? Tr("Остановить агента", "Stop agent") : Tr("Остановить агента (Esc)", "Stop agent (Esc)");
-        MicButton.Visibility = VisibleIf(!voice);
+        StopButton.ToolTip = voice || _talk != null ? Tr("Остановить агента", "Stop agent") : Tr("Остановить агента (Esc)", "Stop agent (Esc)");
+        MicButton.Visibility = VisibleIf(!voice && !running && _talk == null && !_talkClosing);
         UpdateSendButton();
     }
 
     async Task SendAsync()
     {
+        if (_talk is { } talk)
+        {
+            if (ChatFileBusy) return;
+            var draft = ComposerDraft.Trim().ReplaceLineEndings("\n");
+            if (draft.Length == 0 && _pendingAttachments.Count == 0) return;
+            if (!talk.Input.Writer.TryWrite(new(draft, _pendingAttachments.ToArray(), true))) return;
+            ComposerDraft = "";
+            ClearPendingAttachments();
+            return;
+        }
         if (ChatSubmitBusy) return;
         if (_cts != null)
         {
@@ -364,19 +442,25 @@ public partial class MainWindow
         }
         bool canRunLocally = attachments.Count == 0 && (LocalActionRouter.Match(text) != null || LocalActionRouter.Diagnosis(text) != null ||
             !_agent.WorkMode && !_config.Sandbox && _config.LocalModel != null && AdaptiveModelRouter.IsSimple(text));
-        if ((canRunLocally ? CurrentModel() : ModelForRequest()) is not { } model) return;
+        if ((canRunLocally ? CurrentModel() ?? "" : ModelForRequest()) is not { } model) return;
+        if (!ConfirmRequestedWorkspace(text)) return;
+        ComposerDraft = "";
+        ClearPendingAttachments();
+        await SubmitTaskAsync(text, attachments, model);
+    }
+
+    Task SubmitTaskAsync(string text, IReadOnlyList<Attachment> attachments, string model, bool useSelectedModel = false, ReplyLanguage? replyLanguage = null)
+    {
         var history = _agent.HistoryView;
         if (Enumerable.Range(_renderedHistory.Count, Math.Max(0, history.Count - _renderedHistory.Count)).Count(history.IsUser) >= HistoryPageSize)
             RenderCurrentChat();
-        ComposerDraft = "";
-        ClearPendingAttachments();
         ClearSubagents();
         ScrollToLatest();
         var sentAt = DateTimeOffset.UtcNow;
-        await RunAgentAsync((agent, ct) => agent.RunAsync(text, attachments, model, ct, sentAt), () => AddUserBubble(text, attachments));
+        return RunAgentAsync((agent, ct) => agent.RunAsync(text, attachments, model, ct, sentAt, useSelectedModel, replyLanguage), () => AddUserBubble(text, attachments));
     }
 
-    string? ModelForRequest()
+    string? ModelForRequest(bool openSettings = true)
     {
         if (_config.Provider == AgentProvider.ChatGpt && (_signIn != null || _chatGptSigningOut))
         {
@@ -385,20 +469,20 @@ public partial class MainWindow
         }
         if (_provider == null)
         {
-            ShowToast(NotReadyText(), ToastKind.Warning);
-            if (_compactChat == null) ShowSettings();
+            ShowToast(NotReadyText(), ToastKind.Warning, openSettings ? null : Tr("Настройки", "Settings"), openSettings ? null : ShowKeySettings);
+            if (openSettings && _compactChat == null) ShowSettings();
             return null;
         }
-        var model = CurrentModel();
-        if (!DrawsOnly(model)) return model;
-        ShowToast($"{model} рисует картинки, но не ведёт чат. Выберите текстовую модель — картинку агент нарисует сам.", ToastKind.Warning);
+        if (CurrentModel() is { } model) return model;
+        ShowToast(_loadingModelCatalog ? Tr("Подождите, загружается список моделей.", "Wait for the model list to load.")
+            : Tr("Откройте меню модели и выберите «Обновить список моделей».", "Open the model menu and select Refresh model list."), ToastKind.Warning);
         return null;
     }
 
     async Task RetryAsync()
     {
         if (ChatSubmitBusy || _cts != null || !_agent.CanContinue ||
-            (_agent.PendingLocalCommand != null || _agent.PendingDiagnosis != null ? CurrentModel() : ModelForRequest()) is not { } model) return;
+            (_agent.PendingLocalCommand != null || _agent.PendingDiagnosis != null ? CurrentModel() ?? "" : ModelForRequest()) is not { } model) return;
         ScrollToLatest();
         await RunAgentAsync((agent, ct) => agent.ContinueAsync(model, ct), () =>
         {
@@ -431,7 +515,7 @@ public partial class MainWindow
             var task = run(agent, cts.Token);
             SyncCompactChat();
             await task;
-            if (!ActiveChatWindow.IsActive) WindowEffects.CompletionSound();
+            if (!ActiveChatWindow.IsActive && _talk == null) WindowEffects.CompletionSound();
             WindowEffects.Flash(ActiveChatWindow);
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested || session.LimitDeclined)
@@ -463,6 +547,7 @@ public partial class MainWindow
         }
         finally
         {
+            FinishTalkTask(agent, session.Voice, cts.IsCancellationRequested);
             cts.Dispose();
             _runs.Remove(agent);
             if (session.ComputerUsing) UpdateComputerUseOverlay();
@@ -484,6 +569,7 @@ public partial class MainWindow
                 _ = _chatGpt.RenewAsync();
             }
             else if (!AnyRunning && !_chatGpt.PlanAllowed) ApplyProvider();
+            if (_agent == agent && _talkTasks.ContainsKey(agent)) _ = Dispatcher.InvokeAsync(StartQueuedTalkTask);
         }
     }
 
@@ -530,6 +616,7 @@ public partial class MainWindow
             else if (IsShown(FlyoutLayer)) CloseFlyout();
             else if (_overlayOpen) CloseOverlay();
             else if (VoiceShown) CancelVoice();
+            else if (_talk != null) EndTalk();
             else if (IsShown(SubagentsWorkspace)) CloseSubagents();
             else if (IsShown(BrowserPane) && (_browserExpanded || BrowserPane.IsKeyboardFocusWithin)) CloseBrowser();
             else if (IsShown(QuestionHost)) StopAgent();

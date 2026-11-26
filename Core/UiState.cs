@@ -1,5 +1,7 @@
 namespace SharpAgent.Core;
 
+internal enum VoiceRecognitionMode { Auto, Russian, English, Groq }
+
 public sealed class WindowPlacement
 {
     public double Left { get; set; }
@@ -25,7 +27,7 @@ public sealed class UsageCache
     public Dictionary<string, double> Rates { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
-public sealed record ModelCatalogCache(string Connection, List<ModelInfo> Models);
+public sealed record ModelCatalogCache(string Connection, List<ModelInfo> Models, DateTimeOffset? UpdatedUtc = null);
 
 public sealed class UiState
 {
@@ -35,6 +37,25 @@ public sealed class UiState
     public WindowPlacement? Window { get; set; }
     public string? Theme { get; set; }
     public bool LargeChatText { get; set; }
+    public double VoiceSpeed { get; set; } = 1;
+    public bool RussianVoiceInput { get; set; }
+    public bool EnglishVoiceInput { get; set; }
+    public bool MixedVoiceInput { get; set; }
+    public bool GroqVoiceInput { get; set; }
+    internal VoiceRecognitionMode VoiceInputMode
+    {
+        get => GroqVoiceInput ? VoiceRecognitionMode.Groq : MixedVoiceInput ? VoiceRecognitionMode.Auto : RussianVoiceInput ? VoiceRecognitionMode.Russian
+            : EnglishVoiceInput ? VoiceRecognitionMode.English : VoiceRecognitionMode.Auto;
+        set
+        {
+            RussianVoiceInput = value == VoiceRecognitionMode.Russian;
+            EnglishVoiceInput = value == VoiceRecognitionMode.English;
+            MixedVoiceInput = value == VoiceRecognitionMode.Auto;
+            GroqVoiceInput = value == VoiceRecognitionMode.Groq;
+        }
+    }
+    public string? RussianVoice { get; set; }
+    public string? EnglishVoice { get; set; }
     public bool FastMode { get; set; }
     public Dictionary<AgentProvider, string>? EconomyModels { get; set; }
     public bool SidebarCollapsed { get; set; }

@@ -15,10 +15,16 @@ if (args is ["--benchmark", var report])
     return;
 }
 Migration(root);
+VoiceReplyStreaming();
+await VoiceScriptsAsync();
+await ChatReconnectAsync();
+await VoiceDownloadResumeAsync(root);
+await AppUpdateResumeAsync(root);
+await ReplyLanguagesAsync(root);
+await ChatTitlesAsync(root);
 await ReadsAndIndexAsync(root);
 await AgentBudgetAsync(root);
 await DelegatedStepsAsync(root);
-await ChatTitlesAsync(root);
 RequestComponents();
 ResearchLabels();
 await ToolExpansionAsync(root);
@@ -28,17 +34,58 @@ await SavedOutputsAsync(root);
 await CodexWorkflowAsync(root);
 await BackgroundCompactionAsync(root);
 await ProtectedContextAsync(root);
+await ConcurrentTaskAccessAsync(root);
 await ContextBenchmarkAsync(root);
 await LocalWorkflowsAsync(root);
 await WatcherAsync(root);
 await SemanticTestsAsync(root);
 await ContractAndCoverageAsync(root);
+WorkspaceMentions(root);
 await UiChecksAsync(root);
 await LocalIntelligenceChecksAsync(root);
 await FinalLocalChecks.RunAsync(root);
 MemoryAndCache(root);
 if (Environment.GetEnvironmentVariable("SHARP_AGENT_TEST_NATIVE") == "1") await NativeChecks.RunAsync(root);
 Console.WriteLine("Sharp Agent: migration, DPAPI, file reads, project index, local routing and model budget passed.");
+
+static async Task ChatReconnectAsync()
+{
+    var draft = "";
+    string? reasoning = null;
+    var attempts = 0;
+    var result = await ApiException.RetryAsync((_, _, text, progress) =>
+    {
+        attempts++;
+        if (attempts == 1)
+        {
+            text("Незавершённый", false);
+            progress(new(Reasoning: "Проверяю"));
+        }
+        if (attempts < 6)
+            throw new ApiException("Disconnected", retryable: true, retryAfter: TimeSpan.Zero) { ConnectionInterrupted = true };
+        text("Полный ответ", false);
+        return Task.FromResult(new ChatResult(new(), "stop", new(10, 10), null));
+    }, _ => false, (text, _) => draft = text == null ? "" : draft + text, progress => reasoning = progress.Reasoning,
+        (attempt, total) => Check(draft == "Незавершённый" && reasoning == "Проверяю" && attempt <= total,
+            "retries preserve the draft and progress until the replacement response starts"), default, recoverConnection: true);
+    Check(draft == "Полный ответ" && reasoning == null && result.Usage?.Requests == 6,
+        "a recovered response replaces the interrupted draft and counts every request");
+    using var stop = new CancellationTokenSource();
+    attempts = 0;
+    try
+    {
+        await ApiException.RetryAsync((_, _, _, _) =>
+        {
+            attempts++;
+            throw new HttpRequestException(HttpRequestError.ConnectionError, "Disconnected");
+        }, _ => false, (_, _) => { }, _ => { }, (_, _) => stop.Cancel(), stop.Token, recoverConnection: true);
+        throw new Exception("Reconnect should have been cancelled");
+    }
+    catch (OperationCanceledException) when (stop.IsCancellationRequested)
+    {
+        Check(attempts == 1, "Stop cancels reconnect before another request starts");
+    }
+}
 
 static void Migration(string root)
 {
@@ -188,6 +235,7 @@ static async Task ChatTitlesAsync(string root)
     agent.AssistantText += (_, _, _) => answered.TrySetResult();
     var run = agent.RunAsync(question, [], "fake", timeout.Token);
     await answered.Task.WaitAsync(timeout.Token);
+    Check(agent.DisplayTitle == question, "a pending title shows the first message immediately");
     await agent.RenameAsync("Моё название");
     pending.SetResult(result);
     await run;
@@ -202,8 +250,12 @@ static async Task ChatTitlesAsync(string root)
     await agent.RunAsync(greeting, [], "fake", default);
     var path = agent.ChatPath!;
     Check(echo.TitleCalls == 1 && echo.TitleTokenLimit == null && echo.TitlePrompt?.Contains("use Russian.") == true &&
-        echo.ReplyPrompt?.Contains("use Russian.") == true && agent.Title == "Новый чат" && store.Load(path).Title == agent.Title,
-        "an ambiguous greeting uses the Russian fallback and an echoed prompt keeps the neutral title");
+        echo.ReplyPrompt?.Contains("Otherwise reply in Russian.") == true && agent.Title == null && agent.DisplayTitle == greeting && store.Load(path).Title == null,
+        "a rejected automatic title leaves the first message as the display title");
+    var pendingTitle = store.Load(path);
+    await pendingTitle.Messages.SaveAsync(path, pendingTitle.Model, "Новый чат", pendingTitle.WorkMode);
+    Check(store.Load(path).Title == null && ChatStore.Summaries([new FileInfo(path)]).Single().Title == greeting,
+        "legacy pending titles use the first message in opened chats and the sidebar");
     using var recovered = new TitleProvider(Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Проверка связи" }, "stop", null, null)));
     agent.Api = recovered;
     await agent.OpenAsync(path);
@@ -299,12 +351,11 @@ static async Task CodexWorkflowAsync(string root)
         "fallback is limited to a failure to launch ripgrep");
     var pending = await registry.ExecuteAsync("exec_command", """{"command":"Start-Sleep -Milliseconds 1400; Write-Output finished","yield_ms":100}""",
         _ => Task.FromResult(true), default);
-    var id = pending.Output.Split("session_id=")[1].Split('.')[0];
+    var id = ShellTools.Sessions.RunningId(pending.Output);
+    Check(id != null && ShellTools.Sessions.RunningId(pending.Output + "\nextra") == null, "only the exact pending response identifies a command session");
     var pollArgs = new JsonObject { ["session_id"] = id, ["yield_ms"] = 100 }.ToJsonString();
     Check(SharpAgent.MainWindow.CommandText("""{"command":"dotnet build"}""") == "dotnet build" &&
         SharpAgent.MainWindow.CommandText("""{"commands":["rg --files","git status"]}""") == "rg --files\ngit status" &&
-        SharpAgent.MainWindow.CommandText(pollArgs, sourceOfSession: session =>
-            pending.Output == ShellTools.Sessions.Running(session) ? "Start-Sleep" : null) == "Start-Sleep" &&
         SharpAgent.MainWindow.CommandText(pollArgs, "completed command") == "completed command",
         "collapsed tool rows retain single, batch and session command text");
     var finished = await registry.ExecuteAsync("exec_command", pollArgs,
@@ -362,6 +413,8 @@ static async Task ToolExpansionAsync(string root)
     Check(provider.Definitions.Count == 3, "tool expansion uses one round and keeps subsequent schema stable");
     var initial = provider.Definitions[0];
     var expanded = provider.Definitions[1];
+    Check(initial.Any(item => item?["function"]?["name"]?.ToString() == "update_plan"),
+        "work tasks expose the plan tool before any tool expansion");
     Check(initial.Any(item => item?["function"]?["name"]?.ToString() == "apply_patch") &&
         !initial.Any(item => item?["function"]?["name"]?.ToString() == "get_system_info") &&
         expanded.Count == initial.Count + 1 && expanded[^1]?["function"]?["name"]?.ToString() == "get_system_info" &&
@@ -531,6 +584,27 @@ static async Task BackgroundCompactionAsync(string root)
     Check(forced.Messages!.Count(message => StrContent(message) == active) == 1, "previously pinned request survives reopening and a new turn");
 
     static string? StrContent(JsonNode message) => message["content"]?.ToString();
+}
+
+static async Task ConcurrentTaskAccessAsync(string root)
+{
+    var access = new ChatFileAccess();
+    using var primary = access.Begin();
+    var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var exclusive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var extra = Task.Run(async () =>
+    {
+        using var secondary = access.Begin(allowConcurrentReads: true);
+        reading.SetResult();
+        await exclusive.Task;
+        try { access.Reserve(Path.Combine(root, "parallel-task.txt")); }
+        catch (ToolException) { return true; }
+        return false;
+    });
+    await reading.Task;
+    try { access.RequireExclusiveAccess(reserve: true); }
+    finally { exclusive.SetResult(); }
+    Check(await extra, "an extra task can read concurrently but cannot write while the primary task has exclusive access");
 }
 
 static async Task ProtectedContextAsync(string root)
@@ -792,6 +866,297 @@ static async Task ContractAndCoverageAsync(string root)
         "fresh Cobertura maps changed lines to their method only");
 }
 
+static void WorkspaceMentions(string root)
+{
+    var project = Directory.CreateDirectory(Path.Combine(root, "neosync")).FullName;
+    var spaced = Directory.CreateDirectory(Path.Combine(root, "Другой проект")).FullName;
+    var file = Path.Combine(project, "README.md");
+    Put(file, "Project");
+    var paths = new SharpAgent.Ui.PathRefs(() => root);
+    Check(paths.FindWorkspace($"Просмотри проект {project} и скажи, про что он.") == project, "bare workspace path in prose");
+    Check(paths.FindWorkspace($"Посмотри «{spaced}», затем проверь `{spaced}`.") == spaced, "quoted workspace paths with spaces are deduplicated");
+    Check(paths.FindWorkspace($"Сравни {project} и {spaced}.") == null, "ambiguous workspace paths");
+    Check(paths.FindWorkspace($"Открой {file}.") == null && paths.FindWorkspace($"Открой {project}-missing.") == null,
+        "files and missing directories are not workspaces");
+}
+
+static void VoiceReplyStreaming()
+{
+    var connection = new VoiceEffort();
+    var capabilities = VoiceEffort.CatalogModes(new JsonObject
+    {
+        ["supported_reasoning_levels"] = new JsonArray(new JsonObject { ["effort"] = "none" }, "high"),
+    });
+    string? optional = VoiceEffort.Select(capabilities),
+        required = VoiceEffort.Select(["high", "low"]),
+        regular = "high";
+    Check(connection.Start("new-model-1", ref optional) != null && optional == "none" &&
+        connection.Start("new-model-2", ref required) != null && required == "low" &&
+        connection.Start("new-model-1", ref regular) == null && regular == "high",
+        "voice effort is chosen from capabilities without changing regular requests");
+    string? probe = VoiceEffort.Select(null);
+    var attempt = connection.Start("new-model-3", ref probe)!;
+    Check(probe == "none" && !attempt.Retry(new ApiException("Rate limit", System.Net.HttpStatusCode.TooManyRequests), ref probe),
+        "unknown models first try no reasoning and rate limits do not change the mode");
+    var rejected = new ApiException("reasoning_effort: supported values are 'medium' and 'high'.", code: "unsupported_value");
+    Check(attempt.Retry(rejected, ref probe) && probe == "medium", "the rejection can advertise a minimum different from low");
+    attempt.Accept(probe);
+    probe = VoiceEffort.Select(null);
+    Check(connection.Start("new-model-3", ref probe) != null && probe == "medium", "the accepted voice effort is reused for the same connection and model");
+    probe = VoiceEffort.Select(null);
+    var newAttempt = new VoiceEffort().Start("new-model-3", ref probe)!;
+    Check(probe == "none", "a different connection does not inherit a learned voice effort");
+    Check(newAttempt.Retry(new ApiException("Unsupported parameter", code: "unsupported_parameter") { Parameter = "reasoning.effort" }, ref probe) &&
+        probe == null, "a model without the reasoning parameter retries with the provider default");
+    var upstream = ApiException.FromResponse(System.Net.HttpStatusCode.OK, """{"error":{"code":"upstream_error","retryable":false}}""", null);
+    Check(SharpAgent.MainWindow.CanRetryTalk(upstream) &&
+        !SharpAgent.MainWindow.CanRetryTalk(new ApiException("Invalid key", System.Net.HttpStatusCode.Unauthorized)),
+        "a temporary provider error inside HTTP 200 can retry without treating invalid credentials as transient");
+    var talk = new SharpAgent.MainWindow.TalkSpeech();
+    talk.Push("SA", false);
+    talk.Push("Y\nПривет.", false);
+    Check(talk.Lines.Reader.TryRead(out var first) && first == "Привет.", "voice replies stream even when the current delta ends at punctuation");
+    talk.Finish("Привет. Чем помочь?");
+    Check(talk.Lines.Reader.TryRead(out var last) && last == "Чем помочь?", "final voice text does not repeat played sentences");
+    var task = new SharpAgent.MainWindow.TalkSpeech();
+    task.Push("TASK\nПонял. Проверю.", false);
+    Check(!task.Lines.Reader.TryRead(out _), "task acknowledgement waits for task routing");
+    var retried = new SharpAgent.MainWindow.TalkSpeech();
+    retried.Push("SAY\nПривет.", false);
+    Check(retried.Lines.Reader.TryRead(out var beforeRetry) && beforeRetry == "Привет.", "the first attempt starts speaking");
+    retried.Push(null, false);
+    retried.Push("SAY\nПривет. Чем помочь?", false);
+    retried.Finish("Привет. Чем помочь?");
+    Check(retried.Lines.Reader.TryRead(out var afterRetry) && afterRetry == "Чем помочь?" && !retried.Lines.Reader.TryRead(out _),
+        "a provider retry speaks only the new part of the reply");
+    var fragment = new SharpAgent.MainWindow.TalkSpeech();
+    const string early = "Я уже могу рассказать про устройство проекта";
+    fragment.Push("SAY\n" + early, false);
+    Check(fragment.Lines.Reader.TryRead(out var chunk) && chunk != null && early.StartsWith(chunk, StringComparison.Ordinal) &&
+        chunk.Length < early.Length, "a long opening phrase starts speaking before sentence punctuation arrives");
+    fragment.Finish(early + ".");
+    Check(fragment.Lines.Reader.TryRead(out var tail) && chunk + " " + tail == early + ".", "the remaining part of a streamed phrase is spoken once");
+}
+
+static async Task VoiceScriptsAsync()
+{
+    var settings = new UiState { MixedVoiceInput = true };
+    Check(settings.VoiceInputMode == VoiceRecognitionMode.Auto && VoicePackage.RecognizerFolder(settings.VoiceInputMode) == VoicePackage.GigaAmMultilingual,
+        "the former mixed mode uses multilingual GigaAM in Auto");
+    settings.VoiceInputMode = VoiceRecognitionMode.English;
+    Check(!settings.MixedVoiceInput && settings.VoiceInputMode == VoiceRecognitionMode.English, "an explicit recognition language overrides Auto");
+    Check(TalkWords.RussianPlaybackText("Проверю Git, API и PostgreSQL.") == "Проверю гит, эй пи ай и Постгрес.",
+        "Russian speech keeps foreign names and acronyms in the same voice");
+    Check(TalkWords.IsRecheck("смотри, проверь еще раз задачу") && TalkWords.IsRecheck("проверь эту задачу ещё раз") &&
+        TalkWords.IsRecheck("please recheck the task") && !TalkWords.IsRecheck("Ну что по задаче?") &&
+        !TalkWords.IsRecheck("Объясни, как перепроверить задачу"), "only direct recheck requests interrupt the current task");
+    var conversation = new LanguageDetector.Conversation(ReplyLanguage.English);
+    Check(conversation.Resolve("Привет!") == ReplyLanguage.Russian &&
+        conversation.Resolve("OK, okay") == ReplyLanguage.Russian &&
+        conversation.Resolve("Посмотри build status in Visual Studio") == ReplyLanguage.Russian &&
+        conversation.Resolve("Thank you for watching") == ReplyLanguage.Russian &&
+        conversation.Resolve("Да, продолжай") == ReplyLanguage.Russian,
+        "isolated foreign text and mixed speech preserve the established conversation language");
+    Check(conversation.Resolve("Explain how the project works", typed: true) == ReplyLanguage.English &&
+        conversation.Resolve("Okay") == ReplyLanguage.Russian &&
+        conversation.Resolve("Переведи на английский слово привет") == ReplyLanguage.Russian,
+        "a typed request or translation does not change the language of later voice turns");
+    Check(conversation.Resolve("Ответь, пожалуйста, по-английски.") == ReplyLanguage.English &&
+        conversation.Resolve("Угу") == ReplyLanguage.English &&
+        conversation.Resolve("Switch to Russian, please!") == ReplyLanguage.Russian,
+        "an explicit language request switches the conversation immediately");
+    Check(conversation.Resolve("Can you explain this?") == ReplyLanguage.Russian &&
+        conversation.Resolve("I would like more details") == ReplyLanguage.English,
+        "sustained switching to another language is still recognized");
+    Check(conversation.Resolve("Погоди, а у Bitrix есть API?") == ReplyLanguage.Russian &&
+        conversation.Resolve("А где смотреть документацию Bitrix API?") == ReplyLanguage.Russian,
+        "a clear Russian request with English product names immediately restores Russian");
+    Check(LanguageDetector.SpeechLanguageFor("Переведи привет на английский", ReplyLanguage.Russian) == null,
+        "an explicit translation may contain text in the other language");
+    var response = new SharpAgent.MainWindow.TalkSpeech(ReplyLanguage.Russian);
+    int languageAttempts = 0;
+    var corrected = await response.ReceiveAsync(correct =>
+    {
+        Check(correct == (++languageAttempts == 2), "a correction is attempted exactly once");
+        var payload = correct ? "SAY\nДа, у Bitrix есть API." : "SAY\nYes. Bitrix has a REST API.";
+        response.Push(payload, false);
+        if (!correct) Check(!response.Lines.Reader.TryPeek(out _), "foreign streamed output is held before playback");
+        return Task.FromResult(new ChatResult(new JsonObject { ["content"] = payload }, "stop", null, null));
+    });
+    Check(languageAttempts == 2 && corrected is { Kind: "SAY" } &&
+        response.Lines.Reader.TryRead(out var russianReply) && russianReply == "Да, у Bitrix есть API." && !response.Lines.Reader.TryPeek(out _),
+        "a model reply in the wrong language is retried and only the Russian reply is played");
+    var namedProduct = new SharpAgent.MainWindow.TalkSpeech(ReplyLanguage.Russian);
+    namedProduct.Push("SAY\nBitrix REST API. Он доступен.", false);
+    Check(namedProduct.Lines.Reader.TryRead(out var withProduct) && withProduct == "Bitrix REST API. Он доступен.",
+        "a technical name at the start of a Russian reply remains speakable");
+    var script = new VoiceScript();
+    var greeting = script.Reply("Ну, ПРИВЕТ !", ReplyLanguage.Russian);
+    Check(greeting != null && script.Reply("Привет-привет!", ReplyLanguage.Russian) is { } next && next != greeting &&
+        script.Reply("Здравствуйте!", ReplyLanguage.Russian) != null,
+        "greetings match full phrases and never repeat consecutively");
+    Check(script.Reply("Алё, алё, ты как?", ReplyLanguage.Russian) != null &&
+        script.Reply("Hey, how’s it going?", ReplyLanguage.English) != null &&
+        script.Reply("Can you hear me?", ReplyLanguage.English) != null &&
+        script.Reply("Спасибо за помощь.", ReplyLanguage.Russian) != null,
+        "local scripts match greetings, small talk, microphone checks and thanks in both languages");
+    Check(script.Reply("Привет, исправь ошибку в проекте", ReplyLanguage.Russian) == null &&
+        script.Reply("Hello! What's the build status?", ReplyLanguage.English) == null &&
+        script.Reply("Привет. Какая погода?", ReplyLanguage.Russian) == null,
+        "a greeting at the start does not intercept tasks, status requests or factual questions");
+    Check(script.Reply("Э-э, не знаю…", ReplyLanguage.Russian) is { Repeat: false } &&
+        script.Reply("Что ты умеешь?", ReplyLanguage.Russian) is { Repeat: false } &&
+        script.Reply("Я сегодня устала.", ReplyLanguage.Russian) is { Repeat: false } &&
+        script.Reply("Give me a moment to think.", ReplyLanguage.English) is { Repeat: false } &&
+        script.Reply("Do you speak Russian?", ReplyLanguage.English) is { Repeat: false } &&
+        script.Reply("Sorry, I misspoke.", ReplyLanguage.English) is { Repeat: false },
+        "expanded conversational scripts recognize both languages");
+    Check(script.Reply("Повтори, пожалуйста, последний ответ.", ReplyLanguage.Russian) is { Repeat: true } &&
+        script.Reply("Could you repeat what you just said, please?", ReplyLanguage.English) is { Repeat: true } &&
+        script.Reply("Повтори последнюю команду.", ReplyLanguage.Russian) == null &&
+        script.Reply("Can you repeat the test with verbose output?", ReplyLanguage.English) == null,
+        "repeat requests replay speech while task commands stay on the model route");
+    Check(script.Reply("Ну что там по задаче?", ReplyLanguage.Russian) is { Question: VoiceQuestion.Task } &&
+        script.Reply("Сколько всего этапов в плане?", ReplyLanguage.Russian) is { Question: VoiceQuestion.Plan } &&
+        script.Reply("Какая сейчас команда выполнилась?", ReplyLanguage.Russian) is { Question: VoiceQuestion.LastCommand } &&
+        script.Reply("Which command is running?", ReplyLanguage.English) is { Question: VoiceQuestion.RunningCommand } &&
+        script.Reply("Как поменять голос?", ReplyLanguage.Russian) is { Question: VoiceQuestion.None } &&
+        script.Reply("Расскажи шутку.", ReplyLanguage.Russian) is { Question: VoiceQuestion.None } &&
+        script.Reply("Сколько шагов в плане и проверь Docker", ReplyLanguage.Russian) == null,
+        "voice scripts answer plain status and conversation requests locally without intercepting compound tasks");
+    foreach (var language in Enum.GetValues<ReplyLanguage>())
+        foreach (var cue in Enum.GetValues<VoiceCue>())
+        {
+            var variants = Enumerable.Range(0, 12).Select(_ => script.Line(cue, language)).ToArray();
+            Check(variants.Distinct().Count() == variants.Length, "voice cues use fresh variants before repeating");
+        }
+    var waiting = new SharpAgent.MainWindow.TalkSpeech();
+    waiting.Push("SAY\n", false);
+    await waiting.AnnounceWaitingAsync(TimeSpan.Zero, () => "waiting", default);
+    Check(waiting.Lines.Reader.TryRead(out var filler) && filler == "waiting", "the waiting phrase is queued during silence");
+    waiting.Push("Готово.", false);
+    await waiting.AnnounceWaitingAsync(TimeSpan.Zero, () => "late filler", default);
+    Check(waiting.Lines.Reader.TryRead(out var answer) && answer == "Готово." && !waiting.Lines.Reader.TryRead(out _),
+        "a waiting phrase is suppressed once the model starts answering");
+    var retry = new SharpAgent.MainWindow.TalkSpeech();
+    int attempts = 0;
+    await ApiException.RetryAsync((_, _, _, _) => ++attempts == 1
+        ? Task.FromException<ChatResult>(new ApiException("Temporary failure", System.Net.HttpStatusCode.OK, code: "upstream_error"))
+        : Task.FromResult(new ChatResult(new(), "stop", null, null)), _ => false, retry.Push, _ => { },
+        (_, _) => retry.AnnounceRetry("retrying"), default, voice: true);
+    await retry.AnnounceWaitingAsync(TimeSpan.Zero, () => "late filler", default);
+    Check(attempts == 2 && retry.Lines.Reader.TryRead(out var notice) && notice == "retrying" && !retry.Lines.Reader.TryRead(out _),
+        "a transient upstream failure starts one retry and schedules the retry notice instead of a waiting phrase");
+}
+
+static async Task ReplyLanguagesAsync(string root)
+{
+    Check(LanguageDetector.Detect("Исправь LoginController и обнови API") == ReplyLanguage.Russian &&
+        LanguageDetector.Detect("Review `русский пример` and update the tests") == ReplyLanguage.English &&
+        LanguageDetector.Detect("https://example.org/пример") == null, "language detection uses prose rather than code and links");
+    var folder = Path.Combine(root, "reply-languages");
+    Directory.CreateDirectory(folder);
+    using var provider = new TitleProvider(Task.FromResult(new ChatResult(new JsonObject(), "stop", null, null)));
+    var agent = new AgentRunner(new ToolRegistry(new ToolContext { WorkingDirectory = folder }), new ChatStore(folder, folder))
+        { Api = provider, AutoChatTitles = false, RussianLanguage = true };
+    await agent.RunAsync("Hello, please review the project.", [], "fake", default);
+    Check(provider.ReplyPrompt?.Contains("Otherwise reply in English.") == true, "typed English overrides the Russian app language");
+    await agent.RunAsync("…", [], "fake", default, useSelectedModel: true, replyLanguage: ReplyLanguage.Russian);
+    Check(provider.ReplyPrompt?.Contains("Otherwise reply in Russian.") == true, "the language of a voice task is passed to the agent");
+    await agent.RunAsync("!", [], "fake", default);
+    Check(provider.ReplyPrompt?.Contains("Otherwise reply in Russian.") == true, "ambiguous follow-ups inherit the previous turn's language");
+}
+
+static async Task VoiceDownloadResumeAsync(string root)
+{
+    var bytes = "voice-model"u8.ToArray();
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    var path = Path.Combine(root, "voice-download");
+    var offsets = new List<long?>();
+    using var http = new HttpClient(new DownloadHandler(request =>
+    {
+        long? offset = request.Headers.Range?.Ranges.Single().From;
+        offsets.Add(offset);
+        var response = new HttpResponseMessage(offset == null ? System.Net.HttpStatusCode.OK : System.Net.HttpStatusCode.PartialContent)
+        {
+            Content = new ByteArrayContent(offset == null ? bytes[..4] : bytes[(int)offset.Value..]),
+        };
+        if (offset != null) response.Content.Headers.ContentRange = new(offset.Value, bytes.Length - 1, bytes.Length);
+        return response;
+    }));
+    await ResumableDownload.FetchAsync(http, "https://example.org/model", path, bytes.Length, hash, null, default);
+    Check(offsets.SequenceEqual(new long?[] { null, 4 }) && File.ReadAllBytes(path).SequenceEqual(bytes),
+        "voice download retries from the byte saved before an interrupted response");
+    File.WriteAllBytes(path, bytes[..6]);
+    using var ignoresRange = new HttpClient(new DownloadHandler(_ => new(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) }));
+    bool rejected = false;
+    try { await ResumableDownload.FetchAsync(ignoresRange, "https://example.org/model", path, bytes.Length, hash, null, default); }
+    catch (IOException) { rejected = true; }
+    Check(rejected && File.ReadAllBytes(path).SequenceEqual(bytes[..6]), "a server ignoring the range cannot overwrite the saved portion");
+    await ResumableDownload.FetchAsync(http, "https://example.org/model", path, bytes.Length, hash, null, default);
+    Check(offsets[^1] == 6 && File.ReadAllBytes(path).SequenceEqual(bytes), "a fresh download invocation resumes the saved file");
+}
+
+static async Task AppUpdateResumeAsync(string root)
+{
+    var bytes = "fixture-installer"u8.ToArray();
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    var release = new JsonObject
+    {
+        ["tag_name"] = "v2.0.0",
+        ["assets"] = new JsonArray(new JsonObject
+        {
+            ["name"] = "SharpAgent-Setup.exe", ["state"] = "uploaded", ["size"] = (long)bytes.Length,
+            ["digest"] = "sha256:" + hash, ["browser_download_url"] = "https://example.org/other.exe",
+        }),
+    };
+    var installed = new Version(1, 9, 2);
+    var expected = AppUpdates.FindRelease(release, installed);
+    Check(expected is { DownloadUrl: "https://github.com/noneandundefined/sharp-agent/releases/download/v2.0.0/SharpAgent-Setup.exe" } &&
+        AppUpdates.FindRelease(release, new Version(2, 0, 0)) == null, "updates require a newer release and use the fixed repository URL");
+    release["prerelease"] = true;
+    Check(AppUpdates.FindRelease(release, installed) == null, "prerelease installers are excluded from automatic updates");
+    release["prerelease"] = false;
+    var folder = Path.Combine(root, "app-update");
+    var updates = new AppUpdates(folder, installed);
+    using var stop = new CancellationTokenSource();
+    var requests = new List<long?>();
+    int releaseChecks = 0;
+    using var http = new HttpClient(new DownloadHandler(request =>
+    {
+        if (request.RequestUri?.AbsoluteUri == AppUpdates.LatestUrl)
+        {
+            releaseChecks++;
+            return new(System.Net.HttpStatusCode.OK) { Content = new StringContent(release.ToJsonString()) };
+        }
+        Check(request.RequestUri?.AbsoluteUri == expected!.DownloadUrl, "download is scoped to the known installer URL");
+        var offset = request.Headers.Range?.Ranges.Single().From;
+        requests.Add(offset);
+        if (releaseChecks == 1 && offset != null)
+        {
+            stop.Cancel();
+            throw new OperationCanceledException(stop.Token);
+        }
+        var response = new HttpResponseMessage(offset == null ? System.Net.HttpStatusCode.OK : System.Net.HttpStatusCode.PartialContent)
+        {
+            Content = new ByteArrayContent(offset == null ? bytes[..4] : bytes[(int)offset.Value..]),
+        };
+        if (offset != null) response.Content.Headers.ContentRange = new(offset.Value, bytes.Length - 1, bytes.Length);
+        return response;
+    }));
+    try { await updates.PrepareAsync(http, stop.Token); }
+    catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+    Check(File.ReadAllBytes(Path.Combine(folder, "SharpAgent-Setup.exe.part")).SequenceEqual(bytes[..4]) &&
+        !File.Exists(Path.Combine(folder, "SharpAgent-Setup.exe")), "interrupted application exits with a partial installer only");
+    Check(await new AppUpdates(folder, installed).PrepareAsync(http, default) == expected && requests.SequenceEqual(new long?[] { null, 4, 4 }),
+        "a new application instance resumes the installer at the persisted byte offset");
+    using var offline = new HttpClient(new DownloadHandler(_ => throw new InvalidOperationException("A ready update must not contact the network.")));
+    Check(await new AppUpdates(folder, installed).PrepareAsync(offline, default) == expected, "a deferred update is offered again even offline");
+    var path = Path.Combine(folder, "SharpAgent-Setup.exe");
+    File.WriteAllBytes(path, bytes.Select(b => (byte)(b ^ 1)).ToArray());
+    Check(await updates.OpenVerifiedAsync(expected!, default) == null, "an altered installer with the expected size is rejected before launch");
+}
+
 static async Task UiChecksAsync(string root)
 {
     var work = Path.Combine(root, "ui-checks");
@@ -911,6 +1276,12 @@ static void MemoryAndCache(string root)
 static void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException(name);
+}
+
+sealed class DownloadHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+        Task.FromResult(respond(request));
 }
 
 sealed class InspectionProvider : IChatProvider

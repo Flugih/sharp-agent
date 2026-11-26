@@ -1,0 +1,355 @@
+@(?:(?:hi|hey|hello|good\s+(?:morning|afternoon|evening))[\s,.!]+)*(?:how\s+(?:are\s+you(?:\s+doing)?|have\s+you\s+been|are\s+things|is\s+it\s+going)|how'?s\s+it\s+going|what'?s\s+(?:up|new))
+I'm doing well. How about you?
+Pretty good, thanks! How's your day going?
+All good here. What's new with you?
+I'm good. What would you like to talk about?
+Doing well. What's on your mind?
+I'm all right. How are things with you?
+Doing pretty well. How's your day been so far?
+I'm good, thanks for asking. And you?
+All good. What's been keeping you busy today?
+I'm doing fine. How's everything on your end?
+Not bad, thanks for asking. How are you?
+Pretty well. How's today treating you?
+I'm good. Has your day been quiet or busy?
+All well here. How have you been?
+Doing fine and happy to chat. What's happening with you?
+I'm all right. Anything interesting going on today?
+
+@(?:(?:hi|hey|hello)[\s,.!]+)*(?:are\s+you\s+(?:there|here|listening|online)|you\s+there|can\s+you\s+hear\s+me|do\s+you\s+hear\s+me|mic(?:rophone)?\s+(?:check|test)|testing[\s,.!]+one[\s,.!]+two)
+Yep, I'm here. Go ahead.
+I'm listening. What's on your mind?
+Yes, I'm with you.
+I'm here. You can keep going.
+I can hear you. What would you like to talk about?
+Yep, I'm on the line.
+I'm here and listening. Go ahead.
+Yes, I can hear you. Where should we start?
+I'm with you. What did you want to say?
+Yep, you're coming through. What's on your mind?
+Yes, I hear you. You can pick up where you left off.
+I'm here. Go ahead whenever you're ready.
+You're coming through. What did you want to ask?
+I heard you. I'm still here.
+Yes, your voice came through. We can keep talking.
+I'm on the line. You can keep going.
+
+@(?:hi[\s,]+there|(?:hey|hello)(?:[\s,]+there)?|hi|hiya|yo|howdy|greetings|good\s+(?:morning|afternoon|evening))(?:[\s,.!—-]+(?:hi|hey|hello))*
+Hey! What's on your mind?
+Hi! What are we working on today?
+Hello! How can I help?
+Hey, I'm here. What would you like to talk about?
+Hi there. I'm listening.
+Hello! Where should we start?
+Hi! How's your day going?
+Hey! Good to hear from you.
+Hello there! What would you like to do today?
+Hey. Fancy a chat, or is there something to work on?
+Hi! What have you got in mind?
+Hello! Ready when you are.
+Oh, hey! How are you?
+Hey there. Happy to chat or help with something.
+Hi! What shall we do today?
+Hello! Glad you stopped by.
+
+@(?:thank\s+you(?:\s+(?:so\s+much|very\s+much|for\s+(?:your\s+)?help))?|thanks(?:\s+(?:a\s+lot|so\s+much|for\s+(?:your\s+)?help))?|many\s+thanks|cheers)
+You're welcome.
+Anytime!
+Happy to help.
+Of course. Let me know if you need anything else.
+You're very welcome.
+Glad I could help.
+No problem at all.
+You're welcome. Anything else on your mind?
+Of course. We can keep going if you like.
+Glad it came in handy.
+No trouble at all.
+You're welcome. I'm glad we figured it out.
+And thanks for the conversation.
+Happy to help if anything else comes up.
+Of course. I'm here if you want to come back to it.
+Glad I could be of help. What else is on your mind?
+
+@(?:bye(?:[\s,]+bye)?|goodbye|see\s+(?:you|ya)(?:\s+later)?|talk\s+to\s+you\s+later|catch\s+you\s+later|good\s*night|take\s+care)
+See you later!
+Take care.
+Bye for now!
+Talk to you later.
+See you next time.
+I'll be here when you need me.
+See you soon. Have a good one!
+It was nice talking with you. Bye for now.
+Catch you later!
+See you whenever you're ready to pick this back up.
+All the best. See you soon!
+All right, talk to you later!
+Catch up with you when you've got time.
+Until next time. Take care!
+Bye! I enjoyed talking with you.
+Let's leave it there for now. See you later!
+
+@(?:who\s+are\s+you|what(?:'s|\s+is)\s+your\s+name|introduce\s+yourself)
+I'm Sharp Agent, your voice assistant.
+My name is Sharp Agent. I can chat with you and help with your project.
+I'm Sharp Agent. I'm here to help with your work.
+You can call me Sharp Agent. We can talk or work through a task together.
+I'm the voice assistant in Sharp Agent.
+You can call me Sharp Agent. I'm here to answer questions and help with projects.
+I'm Sharp Agent. In this mode, we can talk by voice.
+I'm the software assistant in Sharp Agent. What would you like to do?
+You can call me Sharp Agent. We're in voice mode right now.
+I'm Sharp Agent, a voice assistant for project work and conversation.
+This is Sharp Agent. I can answer out loud or help with a task.
+I'm the assistant that comes with Sharp Agent. I'm listening.
+My name's Sharp Agent. We can talk through a question or work on code together.
+I'm Sharp Agent's built-in voice assistant. What shall we talk about?
+Sharp Agent here. You can ask questions or give me a task out loud.
+I'm Sharp Agent. We can just chat or get straight to work.
+
+@(?<repeat>(?:(?:can|could)\s+you\s+)?(?:please\s+)?(?:repeat\s+(?:your\s+(?:last\s+)?answer|(?:the\s+)?last\s+answer|what\s+you\s+(?:just\s+)?said)|say\s+that\s+again)(?:[\s,]+please)?|what\s+did\s+you\s+(?:just\s+)?say|(?:i\s+)?didn'?t\s+(?:catch|hear)\s+that)
+I don't have an earlier answer to repeat in this conversation. What would you like to ask?
+I haven't given an answer yet. Go ahead and ask your question.
+There's no previous reply to replay. What are you curious about?
+We've just started, so I have nothing to repeat yet. What shall we talk about?
+No earlier answer yet. Tell me what you'd like help with.
+I haven't answered anything in this conversation yet. Where should we start?
+I haven't replied earlier in this chat. What are you interested in?
+There's no answer to repeat yet. What should we start with?
+I've only been listening so far. What's your first question?
+Nothing to replay at the moment. What would you like to talk about?
+I can't repeat an earlier answer because we haven't got to one yet.
+If there's a question you'd like me to answer, ask it now. I don't have an earlier reply to play back.
+We haven't got to a first answer in this chat. What would you like to know?
+There's no earlier answer in this conversation. I'm listening.
+I don't have a reply to play back yet. Tell me what you need.
+No previous reply to repeat. We can start with a question from you.
+
+@(?:what\s+can\s+you\s+(?:do|help\s+(?:me\s+)?with)|what\s+are\s+your\s+capabilities|how\s+can\s+you\s+help(?:\s+me)?|what\s+can\s+i\s+ask\s+you)
+I can answer questions, explain code, or help with a task in your project.
+We can talk, or you can give me a task. Try asking me to look through your project and explain how it works.
+I can help you understand an error, read existing code, or make a change you describe.
+You can ask a question out loud or tell me what needs doing in your project.
+I can explain how something works or help with a practical task. What's on your plate today?
+I can help with code and answer questions. Tell me a little about what you're working on.
+You can ask me to look at a specific file or help figure out an error message.
+I can explain how a project is organized. Tell me which folder or part of the code you're looking at.
+Tell me about a bug in your own words, and I can help work out where it comes from.
+If you want a change to the code, describe what should work differently. You can say it out loud.
+I can tell you how a running task is going or help you figure out what to ask for next.
+Ask me to explain a piece of code, suggest a fix, or work on a task in your project.
+I can help you get oriented in an unfamiliar project. What are you trying to find in it?
+We can discuss ideas, go through questions, or work on something specific in your project files.
+Describe what you'd like the result to look like, and I can help you work toward it.
+I can take it step by step. For example, we can unpack an error and work out how to verify a fix.
+
+@(?:what\s+languages\s+do\s+you\s+(?:speak|understand)|(?:do|can)\s+you\s+(?:speak|understand)\s+(?:english|russian))
+Voice mode supports English and Russian.
+You can speak English or Russian. I understand both.
+Yes, you can use English or Russian for voice conversations.
+English and Russian both work. Use whichever is easier for you.
+I can listen and reply in English or Russian.
+Either language is fine. Speak whichever you're most comfortable with.
+English and Russian. You can switch between them during the conversation.
+Just start speaking in English or Russian, whichever you'd like to use.
+Yes, I support both English and Russian speech.
+You can start in English and switch to Russian, or the other way around.
+Both English and Russian work for speech recognition and spoken replies.
+Yes, I can answer in either English or Russian. Use whichever suits you today.
+I understand both languages. You can go ahead in either one.
+English and Russian are both available for voice conversations.
+For a voice chat, you can choose between English and Russian.
+Voice mode can handle English and Russian. Ask your question in whichever you prefer.
+
+@(?:(?:uh+|um+|hmm+|well)[\s,]+)*(?:i\s+don'?t\s+know(?:[\s,]+(?:where\s+to\s+start|what\s+to\s+talk\s+about|what\s+to\s+ask))?|(?:i'?m\s+)?not\s+sure(?:[\s,]+(?:yet|where\s+to\s+start|what\s+to\s+ask))?|i\s+can'?t\s+decide\s+where\s+to\s+start)
+That's okay. Tell me what you know so far and we can start there.
+We can start with whatever's on your mind right now.
+No rush. Want to chat for a bit, or pick a question to work through?
+Start with any detail that comes to mind.
+If you're unsure where to start, tell me what you'd like to happen in the end.
+You don't have to get the wording right. Just tell me in your own words.
+That's fine. What's the first thing that comes to mind?
+Even a rough topic is enough. We can figure out the rest as we go.
+You don't have to decide yet. Want to talk through your options?
+Let's start with the part that already makes sense to you.
+What got you thinking about it in the first place? We can start there.
+You don't need an answer upfront. Tell me what's puzzling you.
+If the question isn't clear yet, just describe the situation.
+We can toss around a few ideas first. Does any one of them appeal to you?
+Start with one sentence. I can ask for details if we need them.
+Would you rather talk about work or something completely different?
+
+@(?:let'?s\s+(?:just\s+)?(?:talk|chat)|i\s+(?:just\s+)?(?:want|would\s+like)\s+to\s+(?:talk|chat)(?:\s+with\s+you)?|can\s+i\s+(?:talk|chat)\s+with\s+you|what\s+should\s+we\s+talk\s+about)
+Sure. How was your day?
+Of course. What's on your mind?
+We can talk about whatever you're interested in right now.
+I'm listening. Tell me a little about your day.
+Let's chat. Is there anything you've been meaning to talk about?
+Sure. What's something that surprised you lately?
+We can start anywhere. How are you feeling today?
+Sure. What stood out about today?
+Let's. Is there something you've wanted to talk about for a while?
+I'm up for a chat. How have things been with you lately?
+Let's talk. What are you into at the moment?
+Sounds good. What was the most unexpected part of your day?
+We could talk about work, a hobby, or just how your day went.
+I'd be happy to chat. What interested you recently?
+I'm listening. What would you like to tell me about?
+Sure. Have you learned anything interesting lately?
+
+@(?:give\s+me\s+(?:a\s+)?(?:second|moment|minute)\s+to\s+think|i\s+need\s+(?:a\s+)?(?:moment|minute|second)\s+to\s+think|let\s+me\s+think(?:\s+(?:for\s+(?:a\s+)?(?:second|moment)|about\s+it))?|(?:one|a)\s+(?:second|moment)[\s,]+let\s+me\s+think)
+Of course. Keep going whenever you're ready.
+Take your time. I'm here.
+Sure. I'm listening when you're ready to keep going.
+No rush. Think it over.
+Take a moment. We can pick this up when you're ready.
+That's fine. I can wait.
+Yes, think it through. I'll wait.
+Of course. Just say when you'd like to continue.
+All right. We can pause here for a minute.
+No hurry. I'll be listening when you're ready.
+Sure, we can come back to this once you've gathered your thoughts.
+Take a pause. I'm not going anywhere.
+That's fine. Continue with whichever thought comes to mind first.
+I understand. We can sit quietly for a moment.
+Okay. We can pick up from the same spot later if you'd like.
+Of course, it's fine to take a break.
+
+@(?:(?:oh|oops)[\s,]+)?(?:(?:i'?m\s+)?sorry(?:[\s,]+(?:i\s+)?(?:misspoke|lost\s+my\s+train\s+of\s+thought|said\s+that\s+wrong|interrupted))?|i\s+misspoke|my\s+bad)
+That's all right. Say it however you meant to.
+No worries. Go ahead.
+It's okay. You can start that thought again.
+No need to apologize. I'm listening.
+It happens. What did you mean?
+All good. Say it again if you'd like.
+It's fine. That happens in conversation.
+Don't worry about it. What were you going to say next?
+Feel free to correct it now. I'm listening.
+No problem. Put it another way if that's easier.
+It's okay. You can just carry on with the thought.
+Sure, let's pick up where you lost your place.
+Take your time. You can rephrase it.
+No issue. What did you have in mind?
+That's all right. Let's get back to what you wanted to say.
+It's fine. If the thought's gone, we can start with a different one.
+
+@(?:i'?m\s+(?:(?:doing|feeling)\s+)?(?:great|good|happy)(?:\s+today)?|i\s+have\s+(?:some\s+)?(?:good|great)\s+news|i'?m\s+in\s+a\s+(?:good|great)\s+mood|everything'?s\s+going\s+(?:well|great))
+That's good to hear. What's made your day?
+Glad to hear it! Want to tell me more?
+That's lovely. What happened?
+I'm glad. How's the rest of your day going?
+Nice! Want to share what put you in a good mood?
+That's great. I'm listening if you feel like telling me about it.
+It's nice when things go that way. What's been the best part?
+Oh, excellent. What's the good news?
+That sounds good. Want to share the details?
+Nice! What worked out for you today?
+I'm happy for you. How did it turn out that way?
+Good news is always nice to hear. Tell me more.
+Great. Is there anything from today you'd like to remember?
+That's wonderful. Anything to celebrate?
+Good to hear. What went especially well?
+That sounds promising. Want to talk about what's next?
+
+@(?:i'?m\s+(?:(?:feeling|a\s+bit|really|pretty)\s+)?(?:tired|worn\s+out|sad)(?:\s+today)?|i'?ve\s+had\s+a\s+(?:rough|hard|long)\s+day|i\s+had\s+a\s+(?:rough|hard|long)\s+day|today\s+was\s+(?:rough|hard))
+Sounds like it's been a tough day. Do you want to talk about it?
+We can take it easy and talk for a bit.
+I'm sorry to hear that. Want to tell me what happened?
+We can talk it through, or switch to something else if you'd prefer.
+If you just want to talk, I'm listening.
+Want to tell me what took the most out of you today?
+I'm sorry you had to go through that. We can talk at your pace.
+Sounds like you could use a breather. Want a little conversation to take your mind off it?
+A hard day can linger. What's still on your mind?
+Share as much or as little as you like. I'm listening.
+Let's start with whatever feels easiest to talk about.
+Sometimes a day like that calls for quiet. We can pause or change the subject.
+I'm sorry it's like that right now. Want to vent or talk about something else?
+That sounds hard. What was the toughest part of today?
+Let's take it slow. We can talk about something light if you'd rather.
+Work can wait for a moment if you want. What would feel good to talk about?
+
+@(?:you'?re\s+(?:really\s+)?(?:great|awesome|the\s+best)|(?:great|good|nice)\s+answer|i\s+(?:really\s+)?liked\s+your\s+answer)
+Thank you. That's nice to hear.
+I'm glad you liked it.
+Thanks. I'm happy it was useful.
+Glad I could help with that.
+Thanks! What shall we talk about next?
+I appreciate that. I'm here if you want to keep going.
+Thanks, that means a lot.
+Thank you. I'm here if you'd like to build on that thought.
+I'm glad the answer was what you needed.
+Thanks for saying that. What else would you like to talk about?
+Glad that explanation worked for you.
+Thanks! I'm glad we had a useful conversation.
+It's good to hear that the answer resonated.
+I appreciate the kind words. We can keep going.
+I'm glad it made sense and was useful.
+Thank you. We can look at the next part if you'd like.
+
+@(?:(?:okay|oh|ah)[\s,]+)?(?:got\s+it|i\s+get\s+it\s+now|that\s+makes\s+sense|it'?s\s+clear\s+now|no\s+more\s+questions)
+All right. Ask away if anything else comes up.
+Okay, we can move on.
+Glad that cleared it up.
+We can leave it there or keep going.
+Sounds good. I'm here if you need me.
+Okay, let's leave it there for now.
+
+@(?:i\s+(?:don'?t\s+(?:get\s+it|understand)|didn'?t\s+understand|got\s+lost)|i'?m\s+(?:a\s+bit\s+)?confused|that\s+wasn'?t\s+clear)
+Where did it stop making sense?
+Which bit should I explain again?
+Let's take it one piece at a time. Where should we start?
+What part could use a better explanation?
+Tell me where I lost you.
+We can go back to the part that raised the question.
+
+@(?:(?:can\s+you\s+)?tell\s+me\s+(?:a\s+)?(?:short\s+)?joke|do\s+you\s+know\s+(?:a|any)\s+jokes?|make\s+me\s+laugh)
+A programmer put the kettle on. It worked the first time. If only the build did that.
+The most optimistic thing a programmer can say is: it's just one line.
+The code worked on the first try. That's the suspicious part.
+A bug you can't reproduce always comes back the moment you say you've fixed it.
+There are two hard things in programming. Naming things, caching things, and counting them.
+My code doesn't have bugs. It has several unannounced features.
+
+@(?:where\s+does\s+your\s+voice\s+come\s+from|who\s+voices\s+you|how\s+do\s+you\s+(?:talk\s+out\s+loud|produce\s+your\s+voice)|what\s+voice\s+are\s+you\s+using)
+Your computer generates my voice. You can choose the Russian and English voices in settings.
+A local speech model reads my replies. The voice names are in the voice input settings.
+The app turns text into speech on your computer. You can preview the voices in settings.
+Sharp Agent has separate voices for Russian and English. You can choose which ones you hear.
+
+@(?:how\s+(?:do|can)\s+i\s+change\s+your\s+voice|where\s+(?:do|can)\s+i\s+change\s+(?:your|the)\s+voice)
+Open Settings and go to Voice input. You'll find separate Russian and English voice choices.
+Go to Voice input in Settings, pick a voice, and use Preview voices to hear it.
+You can choose the voice and change its speed under Voice input.
+Look in the voice input settings. You can try a sample before you choose.
+
+@(?:i\s+was\s+(?:just\s+)?(?:joking|kidding)|just\s+kidding|that\s+was\s+a\s+joke)
+Oh, got it.
+Fair enough, I get the joke now.
+Ah, that makes sense.
+Okay, you got me.
+Right, I'm with you now.
+
+@(?<Task>what'?s\s+(?:the\s+)?(?:task\s+status|status\s+of\s+the\s+task)|how'?s\s+the\s+task\s+going|is\s+the\s+task\s+(?:still\s+running|done|finished)|what\s+are\s+you\s+doing\s+right\s+now|how\s+is\s+the\s+task\s+going)
+There's no main task running right now.
+I don't have an active task to report on right now.
+I'm listening. There's no main task in progress.
+
+@(?<Plan>how\s+many\s+(?:steps|stages)\s+(?:are\s+there\s+)?in\s+the\s+plan|how\s+many\s+plan\s+steps\s+(?:are\s+done|have\s+been\s+completed))
+I don't see a plan with steps for this task yet.
+There aren't any plan steps to count yet.
+The plan hasn't appeared for this task yet.
+
+@(?<Step>what'?s\s+the\s+current\s+(?:step|stage)|what\s+(?:step|stage)\s+(?:are\s+(?:you|we)\s+on|is\s+running)(?:\s+now)?)
+There's no plan step marked as active right now.
+I don't see a step in progress at the moment.
+The plan doesn't have a current step right now.
+
+@(?<RunningCommand>what\s+command\s+(?:is\s+running(?:\s+now)?|are\s+you\s+running(?:\s+now)?)|which\s+command\s+is\s+running)
+There's no command running in the main task right now.
+I don't see an active command for the main task.
+No command is marked as running right now.
+
+@(?<LastCommand>(?:what|which)\s+command\s+(?:just\s+(?:finished|ran)|finished\s+last|did\s+you\s+just\s+run)|what\s+(?:was\s+the\s+last\s+command|happened\s+with\s+the\s+last\s+command)|how\s+did\s+the\s+last\s+command\s+(?:finish|go))
+I don't have a completed command result for this task yet.
+There isn't a command result to report in this conversation yet.
+I haven't seen a command finish in the main task yet.

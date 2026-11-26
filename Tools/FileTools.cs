@@ -107,7 +107,7 @@ public static partial class FileTools
         return sb.ToString();
     }
 
-    internal static ToolOutcome ReadMany(ToolArgs args, ToolContext context, CancellationToken ct)
+    internal static async Task<ToolOutcome> ReadManyAsync(ToolArgs args, ToolContext context, CancellationToken ct)
     {
         var files = args.Array("files");
         if (files.Count is < 1 or > 8 || files.Any(file => file is not JsonObject))
@@ -140,7 +140,12 @@ public static partial class FileTools
             foreach (var (start, count) in merged)
             {
                 var request = new ToolArgs(new JsonObject { ["path"] = path, ["offset"] = start, ["limit"] = count });
-                try { pages.Add(new(ReadFile(request, context, ct, Math.Max(6_000, MaxReadChars / files.Count), 60), false)); }
+                try
+                {
+                    var text = await args.WithDocumentRetryAsync(() => Task.FromResult(ReadFile(request, context, ct,
+                        Math.Max(6_000, MaxReadChars / files.Count), 60)), ct);
+                    pages.Add(new(text, false));
+                }
                 catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException) { pages.Add(new("Ошибка: " + ex.Message, true)); }
             }
         }

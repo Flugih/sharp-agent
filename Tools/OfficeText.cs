@@ -4,6 +4,14 @@ using System.Xml.Linq;
 
 namespace SharpAgent.Tools;
 
+sealed class DocumentInUseException(string path, IOException cause) : IOException(
+    Tr($"Документ занят другой программой: {path}. Закройте его и повторите операцию.",
+        $"Another program is using {path}. Close the document and retry."), cause)
+{
+    internal string Path { get; } = path;
+    internal static bool Matches(IOException error) => (uint)error.HResult is 0x80070020 or 0x80070021;
+}
+
 public static class OfficeText
 {
     const int MaxChars = 2_000_000;
@@ -17,6 +25,7 @@ public static class OfficeText
             using var archive = ZipFile.OpenRead(path);
             return extract(archive);
         }
+        catch (IOException ex) when (DocumentInUseException.Matches(ex)) { throw new DocumentInUseException(path, ex); }
         catch (InvalidDataException) { throw new ToolException("Файл повреждён или защищён паролем — извлечь из него текст не удалось."); }
         catch (XmlException ex) { throw new ToolException("Не удалось разобрать содержимое документа: " + ex.Message); }
     }

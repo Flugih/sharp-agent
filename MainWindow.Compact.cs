@@ -42,7 +42,7 @@ public partial class MainWindow
 
     void CompactMode_Click(object sender, RoutedEventArgs e)
     {
-        if (VoiceShown || !MicButton.IsEnabled)
+        if (VoiceShown || _talkClosing || !MicButton.IsEnabled)
         {
             ShowToast(Tr("Завершите голосовой ввод перед переключением окна.", "Finish voice input before switching windows."), ToastKind.Warning);
             return;
@@ -56,8 +56,16 @@ public partial class MainWindow
         compact.ChangesPill.Click += ChangesPill_Click;
         compact.DraftChanged += ComposerDraftChanged;
         compact.Send += () => _ = SendAsync();
+        compact.ActivateAction += UseComposerAction;
         compact.Stop += StopAgent;
+        compact.EndTalk += EndTalk;
+        compact.TalkPanel.Click += TalkPanel_Click;
+        compact.DismissToast += HideToast;
+        compact.ToastAction.Click += ToastAction_Click;
         compact.ChooseFiles += PickAttachmentFiles;
+        compact.TalkScale.ScaleX = compact.TalkScale.ScaleY = _talkScaleTarget;
+        compact.TalkWave.IsThinking = TalkWave.IsThinking;
+        AutomationProperties.SetItemStatus(compact.TalkPanel, AutomationProperties.GetItemStatus(TalkPanel));
         compact.ShowAttachments(_pendingAttachments, RemovePendingAttachment);
         compact.AddHandler(CommandManager.PreviewCanExecuteEvent, new CanExecuteRoutedEventHandler(InputBox_PreviewCanExecute));
         compact.AddHandler(CommandManager.PreviewExecutedEvent, new ExecutedRoutedEventHandler(InputBox_PreviewExecuted));
@@ -84,7 +92,7 @@ public partial class MainWindow
             if (_compactChat != compact) return;
             compact.QuestionSlot.Content = null;
             _compactChat = null;
-            if (Dispatcher.HasShutdownStarted) return;
+            if (Dispatcher.HasShutdownStarted || _installingUpdate) return;
             var draft = compact.Draft.ReplaceLineEndings("\n");
             if (InputBox.Text != draft) ComposerDraft = draft;
             ActivateChatWindow();
@@ -128,9 +136,7 @@ public partial class MainWindow
     {
         if (_compactChat is not { } compact) return;
         compact.ComposerLoadingStatus.Content = ComposerLoadingStatus.Content is ComposerLoad { IsIndexing: false } load ? load : null;
-        var running = _cts;
-        compact.UpdateAction(running != null, running != null ? !running.IsCancellationRequested : SendButton.IsEnabled,
-            Equals(SendButton.Content, Glyphs.Play));
+        compact.UpdateAction(SendButton, StopButton, _talk != null);
     }
 
     void PlaceQuestion()

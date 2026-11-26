@@ -33,10 +33,12 @@ partial class AgentRunner
     {
         if (delegated) return tools.Definitions;
         bool readOnly = CurrentDiagnosis() is { Repair: false };
-        var request = ExtractText(LastUser()?["content"]) ?? "";
-        bool simple = !WorkMode && LastUser() is { } current && Attachment.ListFrom(current).Count == 0 &&
+        var user = LastUser();
+        var request = ExtractText(user?["content"]) ?? "";
+        var attachments = user == null ? [] : Attachment.ListFrom(user);
+        bool simple = !WorkMode && user != null && attachments.Count == 0 &&
             AdaptiveModelRouter.IsSimple(request);
-        var initial = !readOnly && !simple ? ToolDefinitionSelection.Initial(request) : null;
+        var initial = !readOnly && !simple ? ToolDefinitionSelection.Initial(request, attachments.Any(attachment => attachment.IsWord)) : null;
         bool plugins = !simple && AvailablePlugins().Count > 0;
         bool canEnableBrowser = !readOnly && tools.Context.ReadBrowser != null && !ToolDefinitionSelection.BrowserProhibited(request);
         var catalog = _toolCatalog = tools.Definitions.OfType<JsonObject>()
@@ -62,15 +64,15 @@ partial class AgentRunner
         }
         if (WorkMode && !readOnly) catalog.Add("update_plan", PlanDefinition);
         if (ClarifyAsync != null) catalog.Add("ask_user", AskDefinition);
-        if (WorkMode && !readOnly && UseSubagents && LastUser() is { } user && RemainingSubagentTasks(user) is > 0 and var remaining)
+        if (WorkMode && !readOnly && UseSubagents && user != null && RemainingSubagentTasks(user) is > 0 and var remaining)
         {
             var definition = DelegateDefinition.DeepClone();
             var tasks = definition["function"]!["parameters"]!["properties"]!["tasks"]!;
             tasks["maxItems"] = remaining;
             catalog.Add("delegate_tasks", definition);
         }
-        var selected = catalog.Where(item => initial == null || initial(item.Key) || item.Key == "ask_user" ||
-            (item.Key is "update_plan" or "delegate_tasks") && Regex.IsMatch(request, @"(?i)\b(?:plan|subagents?)\b|план|субагент")).ToArray();
+        var selected = catalog.Where(item => initial == null || initial(item.Key) || item.Key is "ask_user" or "update_plan" ||
+            item.Key == "delegate_tasks" && Regex.IsMatch(request, @"(?i)\b(?:plan|subagents?)\b|план|субагент")).ToArray();
         var definitions = _scopedDefinitions = new JsonArray([.. selected.Select(item => item.Value.DeepClone())]);
         if (selected.Length == catalog.Count) return definitions;
         definitions.Add(ToolDefinitionSelection.EnableDefinition());

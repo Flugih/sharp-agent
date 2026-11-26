@@ -5,17 +5,18 @@ public enum AgentProvider { Tooken, ChatGpt, Groq, Gemini, OpenRouter, Mistral, 
 public sealed class AppConfig
 {
     public const string DefaultBaseUrl = "https://tooken.club/v1";
-    public const string DefaultModel = "claude-sonnet-5-5";
+    internal const string GeminiBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
     public const string DefaultImageModel = "gpt-image-2";
     public static readonly AgentProvider[] ImageProviders = [AgentProvider.Tooken, AgentProvider.Gemini, AgentProvider.Mistral, AgentProvider.OpenRouter];
-    public static readonly string[] EffortLevels = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+    internal static readonly string[] StandardEffortLevels = ["low", "medium", "high"];
+    public static readonly string[] EffortLevels = ["minimal", .. StandardEffortLevels, "xhigh", "max", "ultra"];
 
     public AgentProvider Provider { get; private init; }
     Dictionary<AgentProvider, string> ApiKeys { get; init; } = [];
     public string? ApiKey => ApiKeyFor(AgentProvider.Tooken);
     public string? GroqApiKey => ApiKeyFor(AgentProvider.Groq);
     public string BaseUrl { get; private init; } = DefaultBaseUrl;
-    public string Model { get; private init; } = DefaultModel;
+    public string? Model { get; private init; }
     Dictionary<AgentProvider, string> ImageModels { get; init; } = [];
     public string? ImageModel => ImageModels.GetValueOrDefault(AgentProvider.Tooken);
     public bool ImagesLikeChat { get; private init; }
@@ -48,6 +49,7 @@ public sealed class AppConfig
         string? Get(string key) => vars.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.Trim() : null;
         bool IsTrue(string key) => new[] { "true", "1", "yes", "да" }.Contains(Get(key), StringComparer.OrdinalIgnoreCase);
         var provider = Enum.TryParse<AgentProvider>(Get("AGENT_PROVIDER"), true, out var parsed) && Enum.IsDefined(parsed) ? parsed : AgentProvider.Tooken;
+        var configuredModel = Get(KeyOf(provider, "MODEL"));
         bool sandbox = IsTrue("AGENT_SANDBOX");
         string workDir;
         try
@@ -69,7 +71,8 @@ public sealed class AppConfig
             ApiKeys = Enum.GetValues<AgentProvider>().Where(p => p != AgentProvider.ChatGpt)
                 .ToDictionary(p => p, p => CleanKey(Get(KeyOf(p, "API_KEY")))),
             BaseUrl = NormalizeBaseUrl(Get("TOOKEN_BASE_URL") ?? DefaultBaseUrl),
-            Model = ChatModelOf(provider, Get(KeyOf(provider, "MODEL"))),
+            Model = provider == AgentProvider.Gemini && configuredModel?.StartsWith("models/", StringComparison.OrdinalIgnoreCase) == true
+                ? configuredModel["models/".Length..] : configuredModel,
             ImageModels = ImageProviders.Where(p => Get(KeyOf(p, "IMAGE_MODEL")) != null).ToDictionary(p => p, p => Get(KeyOf(p, "IMAGE_MODEL"))!),
             ImagesLikeChat = Get("AGENT_IMAGE_PROVIDER")?.ToLowerInvariant() == "chat",
             ReasoningEffort = Get(KeyOf(provider, "REASONING_EFFORT"))?.ToLowerInvariant() is { } effort && EffortLevels.Contains(effort) ? effort : null,
@@ -105,32 +108,10 @@ public sealed class AppConfig
 
     public static string KeyOf(AgentProvider provider, string setting) => provider.ToString().ToUpperInvariant() + "_" + setting;
 
-    internal static string ChatModelOf(AgentProvider provider, string? model)
-    {
-        if (provider == AgentProvider.Gemini && model != null)
-        {
-            if (model.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) model = model["models/".Length..];
-            if (model.Equals("gemini-2.5-flash", StringComparison.OrdinalIgnoreCase)) model = null;
-        }
-        return string.IsNullOrWhiteSpace(model) ? DefaultModelOf(provider) : model;
-    }
-
-    public static string DefaultModelOf(AgentProvider provider) => provider switch
-    {
-        AgentProvider.ChatGpt => "gpt-6.1-sol",
-        AgentProvider.Groq => "openai/gpt-oss-120b",
-        AgentProvider.Gemini => "gemini-3.8-flash",
-        AgentProvider.OpenRouter => "openrouter/auto",
-        AgentProvider.Mistral => "mistral-small-latest",
-        AgentProvider.OpenAI => "gpt-6.2-sol",
-        AgentProvider.Anthropic => "claude-sonnet-5-5",
-        _ => DefaultModel,
-    };
-
     public static string DefaultBaseUrlOf(AgentProvider provider) => provider switch
     {
         AgentProvider.Groq => Groq.BaseUrl,
-        AgentProvider.Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
+        AgentProvider.Gemini => GeminiBaseUrl + "/openai",
         AgentProvider.OpenRouter => "https://openrouter.ai/api/v1",
         AgentProvider.Mistral => "https://api.mistral.ai/v1",
         AgentProvider.OpenAI => OpenAiResponsesClient.BaseUrl,
@@ -162,7 +143,7 @@ public sealed class AppConfig
         # Ключ берётся в личном кабинете: https://tooken.club/dashboard (выглядит как tc_live_...)
         TOOKEN_API_KEY=
         TOOKEN_BASE_URL={DefaultBaseUrl}
-        TOOKEN_MODEL={DefaultModel}
+        TOOKEN_MODEL=
         # Кто рисует картинки: tooken — всегда Tooken Club; chat — провайдер чата (Gemini, Mistral, OpenRouter), иначе Tooken Club
         AGENT_IMAGE_PROVIDER=tooken
         # Модели, которыми агент рисует картинки, — для каждого провайдера своя
@@ -170,31 +151,31 @@ public sealed class AppConfig
         # Сила рассуждения для моделей, которые её поддерживают: low, medium или high (пусто — как решит модель)
         TOOKEN_REASONING_EFFORT=
         # ChatGPT: вход — кнопкой «Продолжить с ChatGPT» в настройках, он хранится в auth\chatgpt.json
-        CHATGPT_MODEL=gpt-6.1-sol
+        CHATGPT_MODEL=
         # low, medium, high, xhigh, max или ultra — если модель это поддерживает (пусто — как решит модель)
         CHATGPT_REASONING_EFFORT=
         # OpenAI API: ключ из https://platform.openai.com/api-keys
         OPENAI_API_KEY=
-        OPENAI_MODEL={DefaultModelOf(AgentProvider.OpenAI)}
+        OPENAI_MODEL=
         OPENAI_REASONING_EFFORT=
         # Claude API: ключ из https://platform.claude.com/settings/keys
         ANTHROPIC_API_KEY=
-        ANTHROPIC_MODEL={DefaultModelOf(AgentProvider.Anthropic)}
+        ANTHROPIC_MODEL=
         ANTHROPIC_REASONING_EFFORT=
         # Ключ Groq создаётся на https://console.groq.com/keys (выглядит как gsk_...); он же нужен для голосового ввода
         GROQ_API_KEY=
-        GROQ_MODEL=openai/gpt-oss-120b
+        GROQ_MODEL=
         GROQ_REASONING_EFFORT=
         GEMINI_API_KEY=
-        GEMINI_MODEL={DefaultModelOf(AgentProvider.Gemini)}
+        GEMINI_MODEL=
         GEMINI_REASONING_EFFORT=
         GEMINI_IMAGE_MODEL={ImageModelsOf(AgentProvider.Gemini)[0]}
         OPENROUTER_API_KEY=
-        OPENROUTER_MODEL={DefaultModelOf(AgentProvider.OpenRouter)}
+        OPENROUTER_MODEL=
         OPENROUTER_REASONING_EFFORT=
         OPENROUTER_IMAGE_MODEL={ImageModelsOf(AgentProvider.OpenRouter)[0]}
         MISTRAL_API_KEY=
-        MISTRAL_MODEL={DefaultModelOf(AgentProvider.Mistral)}
+        MISTRAL_MODEL=
         MISTRAL_REASONING_EFFORT=
         MISTRAL_IMAGE_MODEL={ImageModelsOf(AgentProvider.Mistral)[0]}
         # Рабочая папка агента (относительный путь — от папки программы)

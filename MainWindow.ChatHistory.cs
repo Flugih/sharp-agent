@@ -8,11 +8,14 @@ public partial class MainWindow
     int _tailStart, _historyVersion;
     ChatHistory.View _renderedHistory = new ChatHistory().Snapshot();
     bool _changingHistory, _historyPagePending;
+    bool _wheelQueued;
+    double _wheelDelta;
     DispatcherTimer? _chatMotion;
 
     void ResetHistoryPages()
     {
         StopChatMotion();
+        _wheelDelta = 0;
         int version = ++_historyVersion;
         _historyPagePending = false;
         _changingHistory = true;
@@ -102,12 +105,20 @@ public partial class MainWindow
                 ChatPanel.Visibility = VisibleIf(_historyPages.Last.Value.End == _tailStart);
                 UpdateChangesPill();
             }
-            ChatScroll.UpdateLayout();
-            ChatScroll.ScrollToVerticalOffset(Math.Max(0, offset + (older ? page.ActualHeight : 0)));
-            ChatScroll.UpdateLayout();
+            int version = _historyVersion;
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                if (version != _historyVersion) return;
+                ChatScroll.ScrollToVerticalOffset(Math.Max(0, offset + (older ? page.ActualHeight : 0)));
+                _changingHistory = false;
+                UpdateScrollDownButton();
+            }, DispatcherPriority.Loaded);
         }
-        finally { _changingHistory = false; }
-        UpdateScrollDownButton();
+        catch
+        {
+            _changingHistory = false;
+            throw;
+        }
     }
 
     StackPanel RenderHistoryPage(int start, int end)
@@ -124,17 +135,29 @@ public partial class MainWindow
     void ScrollChatBy(double delta)
     {
         StopChatMotion();
-        _autoScroll = IsShown(ChatPanel) && delta > 0 && ChatScroll.VerticalOffset + delta >= ChatScroll.ScrollableHeight;
-        ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + delta);
-        if (delta != 0) CheckHistory(older: delta < 0);
+        _wheelDelta += delta;
+        if (_wheelQueued) return;
+        _wheelQueued = true;
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            _wheelQueued = false;
+            double step = _wheelDelta;
+            _wheelDelta = 0;
+            if (step == 0) return;
+            _autoScroll = IsShown(ChatPanel) && step > 0 && ChatScroll.VerticalOffset + step >= ChatScroll.ScrollableHeight;
+            ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + step);
+            CheckHistory(older: step < 0);
+        }, DispatcherPriority.Render);
     }
 
     void ScrollToLatest()
     {
         StopChatMotion();
+        _wheelDelta = 0;
         if (!IsShown(ChatPanel))
         {
             _historyVersion++;
+            _changingHistory = false;
             _historyPagePending = false;
             _historyPages.Clear();
             ChatPages.Children.RemoveRange(0, ChatPages.Children.Count - 1);

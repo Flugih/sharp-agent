@@ -174,6 +174,7 @@ public partial class MainWindow
             _chatOperation = null;
             if (showSkeleton) SetChatLoading(false);
             UpdateSendButton();
+            if (_talkTasks.ContainsKey(_agent)) _ = Dispatcher.InvokeAsync(StartQueuedTalkTask);
         }
     }
 
@@ -327,7 +328,7 @@ public partial class MainWindow
             var indicator = waiting
                 ? new TextBlock { Text = "●", FontSize = 9, Width = 12, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
                     .Paint(ForegroundProperty, "Warning")
-                : MakeSpinner(12);
+                : MakeSpinner(12, alwaysAnimate: true);
             indicator.Margin = new(0, 0, 7, 0);
             content = new DockPanel { Children = { indicator, title } };
         }

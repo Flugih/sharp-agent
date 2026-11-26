@@ -7,13 +7,13 @@
         FontFamily="{x:Static ui:Theme.Ui}" FontSize="14" Topmost="True" ShowInTaskbar="False"
         UseLayoutRounding="True" AllowDrop="True" Loaded="Window_Loaded" SizeChanged="Window_SizeChanged" PreviewKeyDown="Window_PreviewKeyDown">
     <StackPanel Margin="8,5,8,9">
-        <Border x:Name="TranscriptCard" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="16" Padding="14,4,8,4"
+        <Border x:Name="TranscriptCard" Background="{DynamicResource CompactTranscriptBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="16" Padding="14,4,8,4"
                 Visibility="Collapsed" MouseLeftButtonDown="Pill_MouseLeftButtonDown">
             <ScrollViewer x:Name="TranscriptScroll" MaxHeight="238" Focusable="False"
                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <StackPanel x:Name="Transcript"/>
-                    <ui:Shimmer x:Name="StatusText" TextTrimming="CharacterEllipsis"
+                    <ui:Shimmer x:Name="StatusText" AlwaysAnimate="True" TextTrimming="CharacterEllipsis"
                                Visibility="Collapsed" Margin="0,6,4,6" AutomationProperties.LiveSetting="Polite"/>
                     <TextBox x:Name="StreamText" IsReadOnly="True" IsTabStop="False" TextWrapping="Wrap" Padding="0"
                              Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}"
@@ -27,54 +27,78 @@
             </ScrollViewer>
         </Border>
         <ContentControl x:Name="QuestionSlot" Margin="0,7,0,0" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
-        <Border x:Name="CompactComposer" Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="20" MinHeight="46" Margin="0,7,0,0" Padding="11,6,6,6"
-                MouseLeftButtonDown="Pill_MouseLeftButtonDown">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition/>
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <ScrollViewer x:Name="AttachmentScroll" Grid.ColumnSpan="2" Visibility="Collapsed" MaxHeight="72" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <WrapPanel x:Name="Attachments"/>
-                </ScrollViewer>
-                <Grid Grid.Row="1" Margin="3,0,4,0" VerticalAlignment="Center">
-                    <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0"
-                             CaretBrush="{DynamicResource Text}" SelectionBrush="{DynamicResource Accent}" Padding="0,4"
-                             AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                             TextChanged="PromptInput_TextChanged" PreviewKeyDown="PromptInput_PreviewKeyDown"
-                             AutomationProperties.Name="{ui:Localized 'Сообщение агенту', 'Message the agent'}"/>
-                    <TextBlock Text="{ui:Localized 'Сообщение агенту…', 'Message the agent…'}" Foreground="{DynamicResource TextMuted}"
-                               VerticalAlignment="Center" IsHitTestVisible="False">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                                <Style.Triggers>
-                                    <MultiDataTrigger>
-                                        <MultiDataTrigger.Conditions>
-                                            <Condition Binding="{Binding Text, ElementName=PromptInput}" Value=""/>
-                                            <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=PromptInput}" Value="False"/>
-                                        </MultiDataTrigger.Conditions>
-                                        <Setter Property="Visibility" Value="Visible"/>
-                                    </MultiDataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
-                </Grid>
-                <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="CompactAttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" Margin="0,0,4,0"
-                            ToolTip="{ui:Localized 'Прикрепить файлы (Ctrl+O)', 'Attach files (Ctrl+O)'}" AutomationProperties.Name="{ui:Localized 'Прикрепить файлы', 'Attach files'}" Click="AttachFiles_Click"/>
-                    <Button Style="{StaticResource IconButton}" Content="&#xE8A7;" Margin="0,0,4,0"
-                            ToolTip="{ui:Localized 'Открыть полное окно', 'Open full window'}" AutomationProperties.Name="{ui:Localized 'Открыть полное окно', 'Open full window'}" Click="FullWindow_Click"/>
-                    <Button x:Name="ActionButton" Style="{StaticResource SendButton}"
-                            Content="&#xE74A;" AutomationProperties.Name="{ui:Localized 'Отправить', 'Send'}" Click="ActionButton_Click"/>
-                </StackPanel>
-            </Grid>
+        <Border x:Name="ToastHost" Background="{DynamicResource CompactTranscriptBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
+                CornerRadius="12" Padding="10,6" Margin="0,7,0,0" Visibility="Collapsed" MouseLeftButtonUp="ToastHost_MouseLeftButtonUp">
+            <DockPanel>
+                <Button x:Name="ToastAction" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Margin="4,0,0,0" Padding="6,0" Height="24" Visibility="Collapsed"/>
+                <TextBlock x:Name="ToastText" FontSize="13" VerticalAlignment="Center" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+            </DockPanel>
         </Border>
+        <DockPanel Margin="0,7,0,0">
+            <Button x:Name="TalkPanel" DockPanel.Dock="Right" Style="{StaticResource RoundBase}" Width="42" Height="42"
+                    Margin="7,0,0,2" VerticalAlignment="Bottom" HorizontalContentAlignment="Center" Visibility="Collapsed"
+                    Cursor="Hand"
+                    ToolTip="{ui:Localized 'Прервать ответ и продолжить говорить', 'Interrupt the reply and continue speaking'}"
+                    AutomationProperties.Name="{ui:Localized 'Продолжить говорить', 'Continue speaking'}">
+                <Grid Width="42" Height="42" RenderTransformOrigin="0.5,0.5" IsHitTestVisible="False">
+                    <Grid.RenderTransform>
+                        <ScaleTransform x:Name="TalkScale"/>
+                    </Grid.RenderTransform>
+                    <Ellipse Fill="{DynamicResource VoiceOrbBg}"/>
+                    <ui:VoiceWave x:Name="TalkWave" Centered="True" Width="34" Height="29"/>
+                </Grid>
+            </Button>
+            <Border x:Name="CompactComposer" Background="{DynamicResource ComposerBg}" BorderBrush="{DynamicResource ComposerLine}" BorderThickness="1" CornerRadius="20" MinHeight="46" Padding="11,6,6,6"
+                    MouseLeftButtonDown="Pill_MouseLeftButtonDown">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer x:Name="AttachmentScroll" Grid.ColumnSpan="2" Visibility="Collapsed" MaxHeight="72" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <WrapPanel x:Name="Attachments"/>
+                    </ScrollViewer>
+                    <Grid Grid.Row="1" Margin="3,0,4,0" VerticalAlignment="Center">
+                        <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0"
+                                 CaretBrush="{DynamicResource Text}" SelectionBrush="{DynamicResource Accent}" Padding="0,4"
+                                 AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                 TextChanged="PromptInput_TextChanged" PreviewKeyDown="PromptInput_PreviewKeyDown"
+                                 AutomationProperties.Name="{ui:Localized 'Сообщение агенту', 'Message the agent'}"/>
+                        <TextBlock Text="{ui:Localized 'Сообщение агенту…', 'Message the agent…'}" Foreground="{DynamicResource TextMuted}"
+                                   VerticalAlignment="Center" IsHitTestVisible="False">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding Text, ElementName=PromptInput}" Value=""/>
+                                                <Condition Binding="{Binding IsKeyboardFocusWithin, ElementName=PromptInput}" Value="False"/>
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="CompactAttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" Margin="0,0,4,0"
+                                ToolTip="{ui:Localized 'Прикрепить файлы (Ctrl+O)', 'Attach files (Ctrl+O)'}" AutomationProperties.Name="{ui:Localized 'Прикрепить файлы', 'Attach files'}" Click="AttachFiles_Click"/>
+                        <Button Style="{StaticResource IconButton}" Content="&#xE8A7;" Margin="0,0,4,0"
+                                ToolTip="{ui:Localized 'Открыть полное окно', 'Open full window'}" AutomationProperties.Name="{ui:Localized 'Открыть полное окно', 'Open full window'}" Click="FullWindow_Click"/>
+                        <Button x:Name="StopActionButton" Style="{StaticResource SendButton}" Content="Stop" ContentTemplate="{StaticResource TaskStopIcon}"
+                                Visibility="Collapsed" AutomationProperties.Name="{ui:Localized 'Остановить агента', 'Stop agent'}" Click="StopActionButton_Click"/>
+                        <Button x:Name="ActionButton" Style="{StaticResource SendButton}"
+                                Content="&#xE74A;" AutomationProperties.Name="{ui:Localized 'Отправить', 'Send'}" Click="ActionButton_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DockPanel>
         <ContentControl x:Name="ComposerLoadingStatus" Style="{StaticResource ComposerLoading}" Margin="8,1,8,0"/>
     </StackPanel>
 </Window>

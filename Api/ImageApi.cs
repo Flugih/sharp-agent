@@ -32,7 +32,7 @@ public static class ImageApi
 
     static async Task<byte[]> GeminiAsync(string key, string model, string prompt, string size, CancellationToken ct)
     {
-        var json = await SendAsync(HttpMethod.Post, $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}:generateContent",
+        var json = await SendAsync(HttpMethod.Post, $"{AppConfig.GeminiBaseUrl}/models/{Uri.EscapeDataString(model)}:generateContent",
             ("x-goog-api-key", key), new JsonObject
             {
                 ["contents"] = new JsonArray(new JsonObject { ["parts"] = new JsonArray(new JsonObject { ["text"] = prompt }) }),
@@ -50,7 +50,7 @@ public static class ImageApi
 
     static async Task<byte[]> OpenRouterAsync(string key, string model, string prompt, string size, CancellationToken ct)
     {
-        var json = await SendAsync(HttpMethod.Post, "https://openrouter.ai/api/v1/images", ("Authorization", "Bearer " + key),
+        var json = await SendAsync(HttpMethod.Post, AppConfig.DefaultBaseUrlOf(AgentProvider.OpenRouter) + "/images", ("Authorization", "Bearer " + key),
             new JsonObject { ["model"] = model, ["prompt"] = prompt, ["aspect_ratio"] = Aspect(size) }, ct);
         return Str((json["data"] as JsonArray)?.FirstOrDefault()?["b64_json"]) is { Length: > 0 } image ? Convert.FromBase64String(image) : throw NoImage(null);
     }
@@ -59,13 +59,14 @@ public static class ImageApi
     static async Task<byte[]> MistralAsync(string key, string model, string prompt, string size, CancellationToken ct, string? missing = null)
     {
         var auth = ("Authorization", "Bearer " + key);
+        var baseUrl = AppConfig.DefaultBaseUrlOf(AgentProvider.Mistral);
         var cacheKey = UsageTracker.KeyId(key, model);
         if (!MistralAgents.TryGetValue(cacheKey, out var agent) || agent == missing)
         {
-            var existing = await SendAsync(HttpMethod.Get, "https://api.mistral.ai/v1/agents?page_size=100&name=" + Uri.EscapeDataString(AgentName), auth, null, ct);
+            var existing = await SendAsync(HttpMethod.Get, baseUrl + "/agents?page_size=100&name=" + Uri.EscapeDataString(AgentName), auth, null, ct);
             agent = (existing as JsonArray ?? existing["data"] as JsonArray ?? [])
                 .FirstOrDefault(item => Str(item?["name"]) == AgentName && Str(item?["model"]) == model && Str(item?["id"]) != missing)?["id"] is { } found ? Str(found)! :
-                Str((await SendAsync(HttpMethod.Post, "https://api.mistral.ai/v1/agents", auth, new JsonObject
+                Str((await SendAsync(HttpMethod.Post, baseUrl + "/agents", auth, new JsonObject
                 {
                     ["model"] = model, ["name"] = AgentName, ["instructions"] = "Нарисуй изображение по описанию пользователя.",
                     ["tools"] = new JsonArray(new JsonObject { ["type"] = "image_generation" }),
@@ -75,7 +76,7 @@ public static class ImageApi
         JsonNode json;
         try
         {
-            json = await SendAsync(HttpMethod.Post, "https://api.mistral.ai/v1/conversations", auth,
+            json = await SendAsync(HttpMethod.Post, baseUrl + "/conversations", auth,
                 new JsonObject { ["agent_id"] = agent, ["inputs"] = $"{prompt}\nСоотношение сторон: {Aspect(size)}.", ["store"] = false }, ct);
         }
         catch (ApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound && missing == null)
@@ -86,7 +87,7 @@ public static class ImageApi
         var file = outputs.SelectMany(output => output?["content"] as JsonArray ?? [])
             .Where(chunk => Str(chunk?["type"]) == "tool_file").Select(chunk => Str(chunk?["file_id"])).LastOrDefault(id => id != null)
             ?? throw NoImage(string.Concat(outputs.Select(output => AgentRunner.ExtractText(output?["content"]))));
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://api.mistral.ai/v1/files/{Uri.EscapeDataString(file)}/content");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/files/{Uri.EscapeDataString(file)}/content");
         request.Headers.TryAddWithoutValidation(auth.Item1, auth.Item2);
         using var response = await Http.SendAsync(request, ct);
         var bytes = await response.Content.ReadAsByteArrayAsync(ct);

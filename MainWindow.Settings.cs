@@ -11,7 +11,7 @@ public partial class MainWindow
     sealed record BannerInfo(string Glyph, string Title, string Text, string ActionText, Action Action, bool Warning);
 
     readonly Dictionary<string, BannerInfo> _banners = new();
-    readonly Dictionary<AgentProvider, string> _settingsKeys = new(), _settingsModels = new(), _savedModels = new();
+    readonly Dictionary<AgentProvider, string> _settingsKeys = new();
     AgentProvider _settingsProvider;
     readonly Dictionary<AgentProvider, string> _settingsImageModels = [], _savedImageModels = [];
     static (string? Value, string Label)[] Themes => [(null, Tr("Тёмная", "Dark")), ("light", Tr("Светлая", "Light")), ("system", Tr("Как в Windows", "Follow Windows"))];
@@ -37,8 +37,9 @@ public partial class MainWindow
 
     void ShowToast(string text, ToastKind kind = ToastKind.Info, string? actionText = null, Action? action = null)
     {
-        _compactChat?.SetStatus(text.ReplaceLineEndings(" "),
-            kind switch { ToastKind.Success => "Success", ToastKind.Warning => "Warning", ToastKind.Error => "DangerText", _ => "TextMuted" });
+        _compactChat?.ShowToast(text,
+            kind switch { ToastKind.Success => "Success", ToastKind.Warning => "Warning", ToastKind.Error => "DangerText", _ => "TextMuted" },
+            action != null ? actionText : null);
         ToastText.Text = text;
         (ToastIcon.Text, var brush) = kind switch
         {
@@ -51,7 +52,6 @@ public partial class MainWindow
         _toastAction = action;
         ToastAction.Content = actionText;
         ToastAction.Visibility = VisibleIf(action != null && actionText != null);
-        ToastHost.IsHitTestVisible = action != null;
         AutomationProperties.SetLiveSetting(ToastText, kind == ToastKind.Error ? AutomationLiveSetting.Assertive : AutomationLiveSetting.Polite);
         ToastHost.Visibility = Visibility.Visible;
         if (_toastTimer == null) (_toastTimer = new()).Tick += (_, _) => HideToast();
@@ -65,6 +65,13 @@ public partial class MainWindow
         _toastTimer?.Stop();
         _toastAction = null;
         ToastHost.Visibility = Visibility.Collapsed;
+        _compactChat?.HideToast();
+    }
+
+    void ToastHost_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        HideToast();
     }
 
     void ToastAction_Click(object sender, RoutedEventArgs e)
@@ -119,6 +126,16 @@ public partial class MainWindow
             return;
         }
         if (SettingsOpen) return;
+        EndTalk();
+        _compactChat?.Close();
+        _localPlaybackStop?.Cancel();
+        _settingsVoiceSpeed = VoiceSpeeds.Any(speed => speed.Value == _state.VoiceSpeed) ? _state.VoiceSpeed : 1;
+        ShowChoice(VoiceSpeedButton, VoiceSpeeds, _settingsVoiceSpeed);
+        _settingsVoiceInputMode = _state.VoiceInputMode;
+        _settingsRussianVoice = LocalVoice.RussianVoice(_state.RussianVoice);
+        _settingsEnglishVoice = LocalVoice.EnglishVoice(_state.EnglishVoice);
+        ShowVoiceOptions();
+        ShowVoicePackageStatus();
         CloseFlyout();
         CloseOverlay();
         SettingsError.Visibility = Visibility.Collapsed;
@@ -137,12 +154,8 @@ public partial class MainWindow
         }
         string Value(string key, string fallback = "") => env.GetValueOrDefault(key) is { Length: > 0 } value ? value : fallback;
         foreach (var provider in Enum.GetValues<AgentProvider>())
-        {
             if (provider != AgentProvider.ChatGpt)
                 _settingsKeys[provider] = AppConfig.CleanKey(unreadable ? _config.ApiKeyFor(provider) : Value(AppConfig.KeyOf(provider, "API_KEY")));
-            _settingsModels[provider] = _savedModels[provider] =
-                provider == _config.Provider ? CurrentModel() : AppConfig.ChatModelOf(provider, env.GetValueOrDefault(AppConfig.KeyOf(provider, "MODEL")));
-        }
         foreach (var provider in AppConfig.ImageProviders)
             _settingsImageModels[provider] = _savedImageModels[provider] = Value(AppConfig.KeyOf(provider, "IMAGE_MODEL"), AppConfig.ImageModelsOf(provider)[0]);
         _settingsImagesLikeChat = _config.ImagesLikeChat;
@@ -228,7 +241,6 @@ public partial class MainWindow
     {
         if (_settingsProvider != AgentProvider.ChatGpt) _settingsKeys[_settingsProvider] = EnteredKey();
         if (_settingsProvider != AgentProvider.Groq) _settingsKeys[AgentProvider.Groq] = AppConfig.CleanKey(VoiceKeyBox.Password);
-        _settingsModels[_settingsProvider] = DefaultModelButton.Content as string ?? "";
     }
 
     void ShowProviderSettings()
@@ -276,17 +288,11 @@ public partial class MainWindow
         else ShowChatGptAccount();
         VoiceKeyPanel.Visibility = VisibleIf(!groq);
         if (!groq) VoiceKeyBox.Password = _settingsKeys.GetValueOrDefault(AgentProvider.Groq, "");
-        VoiceHint.Text = groq
-            ? Tr("Микрофон в поле ввода отправляет запись в Groq по API-ключу выше и вставляет распознанный текст. Запись нигде не сохраняется. ", "The microphone sends your recording to Groq using the API key above and inserts the transcription. The recording is not saved. ")
-            : Tr("Микрофон в поле ввода отправляет запись в Groq и вставляет распознанный текст — при любом провайдере. Запись нигде не сохраняется. ", "The microphone sends your recording to Groq and inserts the transcription with any chat provider. The recording is not saved. ") +
-              Tr("Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ", "Create a free key in the Groq console. It starts with gsk_. ");
-        DefaultModelButton.Content = _settingsModels.GetValueOrDefault(provider) is { Length: > 0 } model ? model : AppConfig.DefaultModelOf(provider);
-        if (_state.ModelCatalogs?.GetValueOrDefault(provider) is { Models.Count: > 0 } catalog && catalog.Connection == SettingsCatalogKey())
-        {
+        VoiceHint.Text = Tr("В режиме «API-ключ Groq» записи отправляются в Groq для распознавания. В режиме «Авто» микрофон использует Groq с ключом, если локальный пакет не установлен. ",
+            "Groq API key mode sends recordings to Groq for transcription. In Auto mode, dictation uses Groq with a key if the local package is missing. ") + (groq ? "" :
+              Tr("Бесплатный ключ создаётся в консоли Groq и начинается с gsk_. ", "Create a free key in the Groq console. It starts with gsk_. "));
+        if (CachedModelCatalog(provider, SettingsCatalogKey()) is { } catalog)
             RememberModelList(provider, catalog.Models);
-            DefaultModelButton.Tag = ChatModelChoices(provider);
-        }
-        else DefaultModelButton.Tag = DefaultModelsOf(provider);
         SetTestResult("", null);
         ShowImageSettings();
     }
@@ -450,6 +456,7 @@ public partial class MainWindow
 
     void CloseSettings()
     {
+        _localPlaybackStop?.Cancel();
         _networkGeneration++;
         SettingsPage.Visibility = Visibility.Collapsed;
         WorkArea.Visibility = Sidebar.Visibility = Visibility.Visible;
@@ -498,29 +505,25 @@ public partial class MainWindow
         var key = EnteredKey();
         var baseUrl = SettingsTookenBaseUrl();
         var connection = ModelCatalogKey(provider, key, baseUrl);
-        if (provider == AgentProvider.ChatGpt ? !_chatGpt.PlanAllowed : key.Length == 0)
+        if (connection == null)
         {
             SetTestResult(provider != AgentProvider.ChatGpt ? Tr("Сначала вставьте ключ.", "Enter your key first.")
                 : _chatGpt.Connected ? Tr("Нажмите «Разрешить использование подписки» или выберите другого провайдера.", "Choose Allow subscription access or select another provider.")
                 : Tr("Сначала войдите: нажмите «Продолжить с ChatGPT».", "Sign in first by selecting Continue with ChatGPT."), false);
             return;
         }
-        using IChatProvider client = provider switch
-        {
-            AgentProvider.ChatGpt => new ChatGptClient(_chatGpt),
-            AgentProvider.OpenAI => new OpenAiResponsesClient(key),
-            AgentProvider.Anthropic => new AnthropicClient(key),
-            AgentProvider.Tooken => new ChatApiClient(baseUrl, key),
-            _ => new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider),
-        };
         _testingKey = true;
         TestKeyButton.IsEnabled = false;
         SetTestResult(Tr("Проверяю…", "Checking…"), null);
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            if (provider == AgentProvider.OpenRouter && client is ChatApiClient router) await router.CheckOpenRouterKeyAsync(cts.Token);
-            var models = await client.ListModelsAsync(cts.Token);
+            if (provider == AgentProvider.OpenRouter)
+            {
+                using var router = new ChatApiClient(AppConfig.DefaultBaseUrlOf(provider), key, provider);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                await router.CheckOpenRouterKeyAsync(cts.Token);
+            }
+            var models = await FetchModelCatalogAsync(provider, connection, key, baseUrl);
             if (provider != _settingsProvider || !SettingsOpen || provider == AgentProvider.ChatGpt && _chatGptAccountChoice != _chatGpt.ClientId) return;
             if (SettingsCatalogKey() != connection)
             {
@@ -529,18 +532,18 @@ public partial class MainWindow
             }
             if (models.Count > 0)
             {
-                CacheModelCatalog(provider, connection, models);
+                if (connection != ModelCatalogKey(provider)) CacheModelCatalog(provider, connection, models);
                 if (provider == _config.Provider && connection == ModelCatalogKey(provider))
                 {
                     ApplyModelCatalog(provider, models);
+                    EnsureChatModel();
                     UpdateModelEffort();
                 }
                 else RememberModelList(provider, models);
-                DefaultModelButton.Tag = ChatModelChoices(provider);
             }
             int count = models.Count > 0 ? _modelLists[provider].Count : 0;
             SetTestResult((provider == AgentProvider.ChatGpt ? Tr("Вход выполнен.", "Signed in.") : Tr("Ключ принят.", "Key accepted.")) +
-                          (count > 0 ? $" Доступно моделей: {count}. Нажмите на название модели, чтобы открыть список." : ""), true);
+                          (count > 0 ? Tr($" Доступно моделей: {count}.", $" Available models: {count}.") : ""), true);
             if (provider == AgentProvider.Tooken) ShowImageSettings();
         }
         catch (Exception ex)
@@ -565,8 +568,6 @@ public partial class MainWindow
             if (_provider is ChatGptClient && !_chatGpt.PlanAllowed && _cts == null) ApplyProvider();
         }
     }
-
-    void DefaultModelButton_Click(object sender, RoutedEventArgs e) => PickModel(DefaultModelButton, _settingsProvider);
 
     void ImageModelButton_Click(object sender, RoutedEventArgs e)
     {
@@ -656,9 +657,6 @@ public partial class MainWindow
         foreach (var (provider, model) in _settingsImageModels)
             if (model != _savedImageModels[provider])
                 values[AppConfig.KeyOf(provider, "IMAGE_MODEL")] = model;
-        foreach (var (provider, model) in _settingsModels)
-            if (provider == _settingsProvider || model != _savedModels.GetValueOrDefault(provider))
-                values[AppConfig.KeyOf(provider, "MODEL")] = model.Length > 0 ? model : AppConfig.DefaultModelOf(provider);
         var previous = CurrentModelSelection();
         if (SaveEnv(values) is { } error)
         {
@@ -667,6 +665,10 @@ public partial class MainWindow
         }
         _state.LimitOverrideDay = null;
         _state.Theme = _settingsTheme;
+        _state.VoiceSpeed = _settingsVoiceSpeed;
+        _state.VoiceInputMode = _settingsVoiceInputMode;
+        _state.RussianVoice = _settingsRussianVoice;
+        _state.EnglishVoice = _settingsEnglishVoice;
         bool textSizeChanged = _state.LargeChatText != _settingsLargeChatText;
         _state.LargeChatText = _settingsLargeChatText;
         ChatTextSize.Extra = _settingsLargeChatText ? 1 : 0;

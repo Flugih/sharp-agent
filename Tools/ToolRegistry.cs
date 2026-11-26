@@ -19,6 +19,7 @@ public sealed partial class ToolRegistry
     readonly Dictionary<string, AgentTool> _byName;
     readonly List<AgentTool> _tools;
     readonly ShellTools.Sessions _sessions = new();
+    readonly SemaphoreSlim _documentRetryDialog = new(1);
     internal Task CancelCommandsAsync() => _sessions.CancelAsync();
     internal string? PendingCommandOutput => _sessions.PendingOutput;
     readonly Dictionary<(bool Sandbox, bool Computer, bool Russian), JsonArray> _definitions = [];
@@ -49,7 +50,7 @@ public sealed partial class ToolRegistry
         _tools = FileTools.All().Concat(ShellTools.All(_sessions)).Concat(CommandLog.All()).Concat(ImageTools.All())
             .Concat(PluginTools.All()).Concat(ComputerTools.All()).Concat(AgentKnowledge.All()).Append(ScriptRegistry.Tool()).Append(BrowserTools.Tool()).Append(LocalTestTools.Tool())
             .Append(LocalResearchEngine.Tool()).Append(LocalContractEngine.Tool()).Append(ToolOutputStore.Tool()).Append(BatchTool()).Append(PatchTool.Tool())
-            .Append(WebResearch.Tool())
+            .Append(WebResearch.Tool()).Append(WordEdits.Tool())
             .Where(t => !readOnly || IsReadOnly(t.Name)).ToList();
         _byName = _tools.ToDictionary(t => t.Name);
     }
@@ -78,7 +79,7 @@ public sealed partial class ToolRegistry
         JsonObject args;
         try { args = string.IsNullOrWhiteSpace(argumentsJson) ? [] : JsonNode.Parse(argumentsJson) as JsonObject ?? []; }
         catch (JsonException ex) { return Error($"Ошибка: аргументы не являются корректным JSON ({ex.Message})."); }
-        var toolArgs = new ToolArgs(args) { BrowserAllowed = allowBrowser };
+        var toolArgs = new ToolArgs(args) { BrowserAllowed = allowBrowser, RetryBusyDocument = confirm != null ? (_documentRetryDialog, AskToRetryAsync) : null };
         if (!allowBrowser && (name == BrowserTools.Name || name == "open_path" && FileTools.IsWebUrl(toolArgs.Optional("path") ?? "")))
             return Error("Ошибка: доступ к браузеру для этого запроса не подключён. Используй web_search для чтения сайтов или enable_tools с группой browser, если пользователь просит выполнить действие на странице.");
         bool opaque = name is "exec_command" or "run_plugin" or "open_path" or ComputerTools.Name or ComputerTools.AppName or ScriptRegistry.Name ||
@@ -106,8 +107,12 @@ public sealed partial class ToolRegistry
             executionStarted?.Invoke();
             return await Task.Run(async () =>
             {
-                var pending = FileChanges.Capture(Context, name, toolArgs);
-                var output = await tool.Handler(toolArgs, Context, ct);
+                FileChanges.Pending? pending = null;
+                var output = await toolArgs.WithDocumentRetryAsync(() =>
+                {
+                    pending = FileChanges.Capture(Context, name, toolArgs);
+                    return tool.Handler(toolArgs, Context, ct);
+                }, ct);
                 bool error = name == "local_batch" && IsErrorOutput(output);
                 bool warning = name == "local_batch" && IsPartialBatch(output) ||
                     name is "exec_command" or "run_plugin" or ScriptRegistry.Name or LocalTestTools.Name && CommandFailed(output);
@@ -125,12 +130,17 @@ public sealed partial class ToolRegistry
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (CommandRestrictedException ex) { return Error(ex.Message) with { Restriction = ex.Restriction }; }
+        catch (DocumentInUseException ex) { return Error("Ошибка: " + ex.Message); }
         catch (ToolException ex) { return Error("Ошибка: " + ex.Message); }
         catch (UnauthorizedAccessException ex)
         {
             return Error($"Ошибка доступа: {ex.Message} Выберите файл или папку, доступные текущей учётной записи.");
         }
         catch (Exception ex) { return Error($"Ошибка ({ex.GetType().Name}): {ex.Message}"); }
+
+        Task<bool> AskToRetryAsync(string path) => confirm!(new(Tr("Документ открыт в другой программе", "Document is open in another app"), path,
+            Tr("Повторить", "Retry"), Note: Tr("Закройте документ в другой программе и нажмите «Повторить».",
+                "Close the document in the other app, then select Retry."), AlwaysAsk: true, CancelAction: Tr("Отмена", "Cancel")));
     }
 
     string[] ForeignShares(JsonObject args, string name) => args.Where(p => p.Key is "path" or "directory" or "source" or "destination" or "working_directory")

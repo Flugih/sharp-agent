@@ -174,6 +174,7 @@ public partial class MainWindow
         {
             _attachmentImports--;
             UpdateSendButton();
+            if (_talkTasks.ContainsKey(_agent)) _ = Dispatcher.InvokeAsync(StartQueuedTalkTask);
         }
     }
 

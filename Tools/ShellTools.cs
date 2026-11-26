@@ -19,7 +19,7 @@ public static partial class ShellTools
         new AgentTool
         {
             Name = "exec_command",
-            Description = "Run PowerShell or cmd to search, read files, use Git, build and test. Use rg to search. Batch independent commands. Poll long-running sessions and retrieve saved output with read_log.",
+            Description = "Run PowerShell or cmd and normally wait for its final result in one call. Use rg to search and batch independent commands. Retrieve saved output with read_log.",
             Parameters = Parameters(),
             Handler = sessions.RunAsync,
             Confirmation = (a, c) => a.Optional("session_id") != null ? null : new ConfirmRequest(

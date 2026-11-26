@@ -18,7 +18,7 @@ internal static class ToolDefinitionSelection
         },
     };
 
-    internal static Func<string, bool> Initial(string request)
+    internal static Func<string, bool> Initial(string request, bool wordAttachment = false)
     {
         var groups = new List<string>();
         bool styleChange = Regex.IsMatch(request, @"(?i)\b(?:font|colou?r|padding|margin)\b|шрифт|цвет|отступ") &&
@@ -28,7 +28,7 @@ internal static class ToolDefinitionSelection
         if (review && !styleChange) groups.Add("files");
         else if (styleChange || Regex.IsMatch(request, @"(?i)\b(?:refactor|edit|update|modify|implement|methods?|class|project|dotnet|compiler|typescript|python|csharp|endpoint|auth)\b|рефактор|исходник|метод|класс|исправ|измен|сборк|проект|авторизац"))
             groups.Add("edit");
-        if (Regex.IsMatch(request, DocumentRequest)) groups.Add("documents");
+        if (wordAttachment || Regex.IsMatch(request, DocumentRequest)) groups.Add("documents");
         if (WebRequest(request)) groups.Add("web");
         if (Regex.IsMatch(request, @"(?i)\b(?:image|audio|video)\b|картинк|изображен|видео|аудио")) groups.Add("media");
         if (Regex.IsMatch(request, @"(?i)\bplugins?\b|плагин")) groups.Add("plugins");
@@ -74,7 +74,7 @@ internal static class ToolDefinitionSelection
         "files" => name is "exec_command" or "read_log" or "list_directory" or "get_file_info" or "search_files" or LocalContractEngine.Name,
         "edit" => name is PatchTool.Name,
         "code" => name is PatchTool.Name or "exec_command" or "read_log" or LocalTestTools.Name or AgentKnowledge.Name or "update_plan" or "delegate_tasks",
-        "documents" => name is LocalResearchEngine.Name or PatchTool.Name,
+        "documents" => name is LocalResearchEngine.Name or PatchTool.Name or WordEdits.Name,
         "git" or "shell" => name is "exec_command" or "read_log",
         "tests" => name is "exec_command" or "read_log" or LocalTestTools.Name,
         _ => false,

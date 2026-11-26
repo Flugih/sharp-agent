@@ -33,14 +33,14 @@ partial class ToolRegistry
             ToolOutcome result;
             try
             {
-                var local = new ToolArgs(operation.Args);
+                var local = new ToolArgs(operation.Args) { RetryBusyDocument = args.RetryBusyDocument };
                 result = operation.Name switch
                 {
                     "git_status" => await LocalProjectContext.RunGitRequestAsync(context, "git status", ct),
                     "git_diff" => await LocalProjectContext.RunGitRequestAsync(context, "git diff", ct),
                     "diagnostics" => await LocalProjectContext.DiagnosticsAsync(context, ct),
-                    "read" => new(FileTools.ReadFile(local, context, ct), false),
-                    "ranges" => FileTools.ReadMany(local, context, ct),
+                    "read" => new(await local.WithDocumentRetryAsync(() => Task.FromResult(FileTools.ReadFile(local, context, ct)), ct), false),
+                    "ranges" => await FileTools.ReadManyAsync(local, context, ct),
                     "grep" => new(FileTools.SearchText(local, context, ct), false),
                     _ => await ExecuteAsync(operation.Name, operation.Args.ToJsonString(), null, ct),
                 };

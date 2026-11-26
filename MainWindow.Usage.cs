@@ -91,7 +91,7 @@ public partial class MainWindow
     }
 
     private double? ContextUsage() =>
-        _agent.Totals().ContextTokens is > 0 and var context && _models.TryGetValue(CurrentModel(), out var info) && info.ContextTokens is > 0 and var window
+        _agent.Totals().ContextTokens is > 0 and var context && CurrentModel() is { } model && _models.TryGetValue(model, out var info) && info.ContextTokens is > 0 and var window
             ? (double)context / window
             : null;
 
@@ -312,7 +312,7 @@ public partial class MainWindow
         var model = CurrentModel();
         long chatTokens = totals.PromptTokens + totals.CompletionTokens;
         bool tooken = _config.Provider == AgentProvider.Tooken;
-        var rate = tooken ? _usage.RateOf(model) : null;
+        var rate = tooken && model != null ? _usage.RateOf(model) : null;
         if (chatTokens == 0 && rate == null) return;
         AddUsage(Divider());
         if (chatTokens > 0)
@@ -328,7 +328,7 @@ public partial class MainWindow
             if (tooken && totals.TokensByModel.Where(pair => pair.Key.Provider == AgentProvider.Tooken).Sum(pair => pair.Value * (_usage.RateOf(pair.Key.Model) ?? 0)) is >= 1 and var charged)
                 AddUsage(Caption(Tr($"С баланса за него списано около {Tokens.Format((long)Math.Round(charged))}", $"Charged about {Tokens.Format((long)Math.Round(charged))} tokens"), 2));
         }
-        if (ContextUsage() is { } used && _models.TryGetValue(model, out var info))
+        if (model != null && ContextUsage() is { } used && _models.TryGetValue(model, out var info))
         {
             bool full = used >= ContextWarning;
             AddUsage(Row(Tr("Память модели", "Model context"), Tr("занято ", "used ") + Tokens.Percent(used), topMargin: 8), Meter(used, full),
@@ -410,9 +410,14 @@ public partial class MainWindow
         var reached = _config.Provider == AgentProvider.Tooken && _usage.Last is { } snapshot ? LimitReached(snapshot) : null;
         var today = DateTime.Now.ToString("yyyy-MM-dd");
         if (reached == null || _state.LimitOverrideDay == today) return true;
-        if (_agent != agent || !ActiveChatWindow.IsVisible)
+        var permission = new ConfirmRequest(Tr("Продолжить работу после достижения лимита расхода", "Continue after reaching the usage limit"),
+            "", Tr("Продолжить", "Continue"));
+        run.VoicePermission = permission;
+        run.VoicePermissionAnnounced = false;
+        if (run.Extra == null && (_agent != agent || !ActiveChatWindow.IsVisible))
         {
-            await WaitForActiveChatAsync(agent, run.Cancellation.Token);
+            try { await WaitForActiveChatAsync(agent, run.Cancellation.Token); }
+            finally { run.VoicePermission = null; }
             return await CheckLimitsAsync(agent);
         }
         var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -435,6 +440,7 @@ public partial class MainWindow
         }
         finally
         {
+            run.VoicePermission = null;
             _limitAsk = null;
             answer.SetResult(proceed);
         }

@@ -6,6 +6,7 @@ namespace SharpAgent;
 public partial class MainWindow
 {
     const int WM_NCHITTEST = 0x0084, WM_NCLBUTTONDOWN = 0x00A1, WM_NCLBUTTONUP = 0x00A2, HTMAXBUTTON = 9;
+    const int WM_ENTERSIZEMOVE = 0x0231, WM_EXITSIZEMOVE = 0x0232;
 
     readonly DispatcherTimer _maxHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
     bool _wasNarrow;
@@ -30,6 +31,12 @@ public partial class MainWindow
     {
         switch (message)
         {
+            case WM_ENTERSIZEMOVE:
+                SetValue(Shimmer.MotionSuspendedProperty, true);
+                break;
+            case WM_EXITSIZEMOVE:
+                ClearValue(Shimmer.MotionSuspendedProperty);
+                break;
             case WM_NCHITTEST when IsOverMaxButton((short)lParam, (short)(lParam >> 16)):
                 MaxButton.Tag ??= "hover";
                 _maxHoverTimer.Start();
@@ -112,7 +119,8 @@ public partial class MainWindow
         ConfirmLabel.Visibility = VisibleIf(row >= 558);
         FolderText.MaxWidth = Math.Clamp(folderRoom, 0, 240);
         FolderText.Visibility = VisibleIf(folderRoom >= 40);
-        double room = RootGrid.ActualWidth - 250 - (SubagentsOpenButton?.Visibility == Visibility.Visible ? 140 : 0);
+        double room = RootGrid.ActualWidth - 250 - (SubagentsOpenButton?.Visibility == Visibility.Visible ? 140 : 0)
+            - (ExtraTasksButton?.Visibility == Visibility.Visible ? 140 : 0);
         if (IsShown(GitBranchButton))
         {
             GitBranchText.MaxWidth = Math.Clamp(room - 110, 46, 122);

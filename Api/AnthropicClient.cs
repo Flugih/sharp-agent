@@ -6,11 +6,12 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
     readonly HttpClient _http = AppNetwork.Client(Timeout.InfiniteTimeSpan, redirects: false, cookies: false,
         headers: headers => headers.Add("anthropic-version", "2023-06-01"));
     Dictionary<string, (int MaxTokens, bool Adaptive)> _modelLimits = new(StringComparer.Ordinal);
+    readonly VoiceEffort _voiceEffort = new();
 
     public async Task<List<ModelInfo>> ListModelsAsync(CancellationToken ct)
     {
         List<ModelInfo> models = [];
-        Dictionary<string, (int, bool)> limits = new(StringComparer.Ordinal);
+        HashSet<string> seen = new(StringComparer.Ordinal);
         string? cursor = null;
         do
         {
@@ -20,44 +21,57 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             if (root?["data"] is not JsonArray data) throw new ApiException(Tr("Claude API не вернул список моделей.", "Claude API did not return a model list."));
             foreach (var item in data.OfType<JsonObject>())
             {
-                if (Str(item["id"]) is not { Length: > 0 } id || Str(item["lifecycle"]) == "retired") continue;
+                if (Str(item["id"]) is not { Length: > 0 } id || Str(item["lifecycle"]) == "retired" || !seen.Add(id)) continue;
                 var caps = item["capabilities"] as JsonObject;
                 var effort = caps?["effort"] as JsonObject;
                 var levels = AppConfig.EffortLevels.Where(level => Bool(effort?[level]?["supported"]) == true).ToArray();
                 var context = Long(item["max_input_tokens"]);
-                if (!limits.TryAdd(id, ((int)Math.Clamp(Long(item["max_tokens"]), 0, int.MaxValue),
-                    Bool(caps?["thinking"]?["types"]?["adaptive"]?["supported"]) == true))) continue;
-                models.Add(new(id, context > 0 ? context : null, Bool(caps?["image_input"]?["supported"]), true, false, levels, Str(item["display_name"])));
+                var maxOutput = (int)Math.Clamp(Long(item["max_tokens"]), 0, int.MaxValue);
+                var types = caps?["thinking"]?["types"] as JsonObject;
+                bool? disabled = Bool(types?["disabled"]?["supported"]);
+                bool between = Bool(types?["between_tools"]?["supported"]) == true;
+                string[]? modes = disabled == true ? ["none", .. levels]
+                    : between ? ["between_tools", .. levels]
+                    : disabled == false ? levels : VoiceEffort.CatalogModes(item);
+                models.Add(new(id, context > 0 ? context : null, Bool(caps?["image_input"]?["supported"]), true, false, levels,
+                    Str(item["display_name"]), modes, maxOutput > 0 ? maxOutput : null, Bool(types?["adaptive"]?["supported"]) == true));
             }
             if (Bool(root["has_more"]) != true) break;
             var next = Str(root["last_id"]);
             if (string.IsNullOrEmpty(next) || next == cursor) throw new ApiException(Tr("Claude API вернул неполный список моделей.", "Claude API returned an incomplete model list."));
             cursor = next;
         } while (true);
-        _modelLimits = limits;
+        ApplyCatalog(models);
         return models;
     }
 
-    public Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
+    internal void ApplyCatalog(IEnumerable<ModelInfo> models) => _modelLimits = models.ToDictionary(
+        model => model.Id, model => (model.MaxOutputTokens ?? 0, model.AdaptiveThinking), StringComparer.Ordinal);
+
+    public async Task<ChatResult> CompleteAsync(string model, IReadOnlyList<JsonNode> messages, JsonArray? tools, int? maxTokens, string? effort,
         Action<string?, bool> reportText, Action<ModelProgress> reportProgress, CancellationToken ct, bool callTools, Action<int, int>? retrying)
     {
         var schemas = ToolSchemas.Get(tools);
-        var body = ToolSchemaWire.Serialize(Request(model, messages, schemas != null, maxTokens, effort, callTools), schemas);
-        void Reset()
-        {
-            reportText(null, false);
-            reportProgress(new());
-        }
-        return ApiException.RetryAsync(async (token, reportActivity) =>
+        var voice = _voiceEffort.Start(model, ref effort, betweenTools: true);
+        string Body() => ToolSchemaWire.Serialize(Request(model, messages, schemas != null, maxTokens, effort, callTools, voice != null), schemas);
+        var body = Body();
+        var result = await ApiException.RetryAsync(async (token, reportActivity, text, progress) =>
         {
             using var response = await SendAsync(HttpMethod.Post, "/messages", body, token);
             var requestId = ApiException.Header(response, "request-id");
             if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
-                return await ReadStreamAsync(response, requestId, reportText, reportProgress, token, reportActivity);
+                return await ReadStreamAsync(response, requestId, text, progress, token, reportActivity);
             var answer = ParseObject(await response.Content.ReadAsStringAsync(token));
             if (answer?["content"] is not JsonArray content) throw BrokenResponse();
             return Finish(content, Str(answer["stop_reason"]), MergeUsage(answer["usage"] as JsonObject, new(0, 0)), requestId ?? Str(answer["id"]));
-        }, _ => false, Reset, retrying, ct);
+        }, error =>
+        {
+            if (voice?.Retry(error, ref effort) != true) return false;
+            body = Body();
+            return true;
+        }, reportText, reportProgress, retrying, ct, voice: voice != null, recoverConnection: callTools);
+        voice?.Accept(effort);
+        return result;
     }
 
     static readonly ToolSchemaWire ToolSchemas = new(static tools => new JsonArray([..
@@ -67,7 +81,7 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             ["input_schema"] = function["parameters"]?.DeepClone(),
         })]));
 
-    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, bool hasTools, int? maxTokens, string? effort, bool callTools)
+    JsonObject Request(string model, IReadOnlyList<JsonNode> messages, bool hasTools, int? maxTokens, string? effort, bool callTools, bool voice)
     {
         var (limit, adaptive) = _modelLimits.GetValueOrDefault(model);
         var turns = new JsonArray();
@@ -107,7 +121,12 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             body["tools"] = null;
             if (!callTools) body["tool_choice"] = new JsonObject { ["type"] = "none" };
         }
-        if (adaptive) body["thinking"] = new JsonObject { ["type"] = "adaptive", ["display"] = "summarized" };
+        if (voice && effort is ("none" or "between_tools"))
+        {
+            body["thinking"] = new JsonObject { ["type"] = effort == "none" ? "disabled" : effort };
+            effort = null;
+        }
+        else if (adaptive) body["thinking"] = new JsonObject { ["type"] = "adaptive", ["display"] = voice ? "omitted" : "summarized" };
         if (effort != null) body["output_config"] = new JsonObject { ["effort"] = effort };
         return body;
     }
@@ -220,7 +239,7 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
                     throw Error(data, null, requestId, null);
             }
         }
-        throw BrokenResponse();
+        throw BrokenResponse(connectionInterrupted: true);
     }
 
     static JsonObject Materialize((JsonObject Block, StringBuilder Fragments) pending)
@@ -304,8 +323,8 @@ internal sealed class AnthropicClient(string apiKey, string baseUrl = AnthropicC
             code == null ? null : Clean(code), wait);
     }
 
-    static ApiException BrokenResponse() => new(Tr("Ответ Claude API оборвался или повреждён. Нажмите «Повторить».",
-        "The Claude API response was incomplete or invalid. Select Retry."), retryable: true);
+    static ApiException BrokenResponse(bool connectionInterrupted = false) => new(Tr("Ответ Claude API оборвался или повреждён. Нажмите «Повторить».",
+        "The Claude API response was incomplete or invalid. Select Retry."), retryable: true) { ConnectionInterrupted = connectionInterrupted };
 
     public void Dispose() => _http.Dispose();
 }

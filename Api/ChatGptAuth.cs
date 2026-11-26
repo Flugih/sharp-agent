@@ -503,11 +503,13 @@ public sealed class ChatGptAuth(string path)
         }
         catch (HttpRequestException ex)
         {
-            throw new ApiException("Нет связи с сервером входа OpenAI. Проверьте подключение к интернету и повторите.\n" + ex.Message, retryable: true);
+            throw new ApiException("Нет связи с сервером входа OpenAI. Проверьте подключение к интернету и повторите.\n" + ex.Message, retryable: true)
+            { ConnectionInterrupted = ApiException.IsConnectionInterrupted(ex) };
         }
         catch (TaskCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new ApiException("Сервер входа OpenAI не ответил вовремя. Повторите попытку.", retryable: true);
+            throw new ApiException("Сервер входа OpenAI не ответил вовремя. Повторите попытку.", retryable: true)
+            { ConnectionInterrupted = true };
         }
     }
 

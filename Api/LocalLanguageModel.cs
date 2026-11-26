@@ -17,14 +17,15 @@ sealed record LocalLanguageModel(Uri Endpoint, string Name)
         return new(builder.Uri, name);
     }
 
-    internal async Task<(string Text, UsageInfo? Usage)?> TryAsync(string input, CancellationToken ct)
+    internal async Task<(string Text, UsageInfo? Usage)?> TryAsync(string input, ReplyLanguage language, CancellationToken ct)
     {
         try
         {
             var request = new JsonObject
             {
                 ["model"] = Name, ["stream"] = false, ["max_tokens"] = 900,
-                ["messages"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = input }),
+                ["messages"] = new JsonArray(new JsonObject { ["role"] = "system", ["content"] = LanguageDetector.Guidance(language) },
+                    new JsonObject { ["role"] = "user", ["content"] = input }),
             };
             using var content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
             using var response = await Http.PostAsync(Endpoint, content, ct);

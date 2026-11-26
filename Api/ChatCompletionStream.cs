@@ -119,7 +119,8 @@ static class ChatCompletionStream
             }
         }
         if (!received || finish == null && (!done || calls.Count > 0))
-            throw new ApiException("Связь с моделью оборвалась до конца ответа. Нажмите «Повторить».", retryable: true);
+            throw new ApiException("Связь с моделью оборвалась до конца ответа. Нажмите «Повторить».", retryable: true)
+            { ConnectionInterrupted = true };
         var (restText, restThought) = tags.Flush();
         content.Append(restText);
         reasoning.Append(restThought);

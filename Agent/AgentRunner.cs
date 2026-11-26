@@ -7,6 +7,7 @@ public sealed record ToolResultEvent(string Id, string Name, string Output, bool
 {
     internal FileChange? Change { get; init; }
     internal FileChange[]? Changes { get; init; }
+    internal string? CompletedCommand { get; init; }
 }
 
 public sealed record ChatTotals(long PromptTokens, long CompletionTokens, long ContextTokens,
@@ -40,7 +41,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     IReadOnlyList<JsonNode> _sent = [];
     RequestInputMeter _inputMeter = new();
     JsonObject? _systemMessage;
-    string? _systemKey, _resumeContext, _model;
+    string? _resumeContext, _model;
+    (bool WorkMode, ReplyLanguage Language) _systemKey;
     bool _saveFailed, _isTemporary;
     int _titleVersion;
     IChatProvider? _api;
@@ -68,8 +70,18 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     public bool WorkMode { get; private set; } = true;
     public bool IsTemporary { get => _isTemporary; init => _isTemporary = value; }
     string PromptText(string russian, string english) => RussianLanguage ? russian : english;
-    string LanguageGuidance => "Honor explicit language requests. Otherwise use the clear language of the user's message or earlier user messages. " +
-        "Treat short greetings, slang and typos as ambiguous. If the language is unclear, use " + PromptText("Russian.", "English.");
+    internal ReplyLanguage ReplyLanguageFor(string? input = null)
+    {
+        if (LanguageDetector.Detect(input) is { } detected) return detected;
+        for (int i = _history.LastIndex(ChatJournal.Flags.User); i >= 0; i--)
+        {
+            if ((_history.EntryAt(i).Flags & ChatJournal.Flags.User) == 0) continue;
+            var message = _history[i];
+            if (Enum.TryParse<ReplyLanguage>(Str(MetaOf(message)?["reply_language"]), out var saved) && Enum.IsDefined(saved)) return saved;
+            if (LanguageDetector.Detect(ExtractText(message["content"])) is { } previous) return previous;
+        }
+        return RussianLanguage ? ReplyLanguage.Russian : ReplyLanguage.English;
+    }
     public int? MaxTokens { get; set; }
     public string? ReasoningEffort { get; set; }
     public IReadOnlyList<JsonNode> History => _history;
@@ -183,11 +195,12 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 yield return (previous, current);
     }
 
-    public async Task RunAsync(string userText, IReadOnlyList<Attachment> attachments, string model, CancellationToken ct, DateTimeOffset? sentAt = null)
+    public async Task RunAsync(string userText, IReadOnlyList<Attachment> attachments, string model, CancellationToken ct,
+        DateTimeOffset? sentAt = null, bool useSelectedModel = false, ReplyLanguage? replyLanguage = null)
     {
-        var local = attachments.Count == 0 ? LocalActionRouter.Match(userText) : null;
-        var diagnosis = !delegated && attachments.Count == 0 ? LocalActionRouter.Diagnosis(userText) : null;
-        bool simple = local == null && !delegated && !WorkMode && attachments.Count == 0 && AdaptiveModelRouter.IsSimple(userText);
+        var local = !useSelectedModel && attachments.Count == 0 ? LocalActionRouter.Match(userText) : null;
+        var diagnosis = !useSelectedModel && !delegated && attachments.Count == 0 ? LocalActionRouter.Diagnosis(userText) : null;
+        bool simple = !useSelectedModel && local == null && !delegated && !WorkMode && attachments.Count == 0 && AdaptiveModelRouter.IsSimple(userText);
         var localModel = simple && tools.Context.SandboxRoot == null ? LocalModel?.Invoke() : null;
         var candidate = simple && localModel == null ? EconomyModel?.Invoke() : null;
         bool routed = candidate != null && !string.Equals(candidate, model, StringComparison.OrdinalIgnoreCase);
@@ -199,6 +212,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         _turnClock.Reset();
         var message = new JsonObject { ["role"] = "user", ["content"] = userText,
             [MetaField] = new JsonObject { [SentAtField] = FormatSentAt(sentAt ?? DateTimeOffset.UtcNow) } };
+        if (replyLanguage is { } language) message[MetaField]!["reply_language"] = language.ToString();
         if (routed)
         {
             message[MetaField]!["routed_model"] = model;
@@ -209,11 +223,9 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         if (autoTitle && _history.Count == 0 && Title == null && TitleOf([message]) is { } initialSubject)
         {
             if (local == null) message[MetaField]![PendingTitleField] = true;
-            Title = local == null ? PromptText("Новый чат", "New chat") : Clip(initialSubject, 80);
+            else Title = Clip(initialSubject, 80);
         }
         _history.Add(message);
-        var subject = autoTitle && local == null && Bool(MetaOf(_history[0])?[PendingTitleField]) == true ? TitleOf([_history[0]]) : null;
-        int titleVersion = _titleVersion;
         await SaveAsync();
         if (local == null && attachments.Any(a => a.Kind == AttachmentKind.Image) && !AllowImages(model))
             Notice?.Invoke(PromptText($"Модель {model} не видит изображения — картинки переданы агенту как обычные файлы.", $"{model} does not support images. The agent received them as ordinary files."));
@@ -231,25 +243,42 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                 return;
             }
             EnsureApi();
-            if (!delegated && tools.Context.SandboxRoot == null && ToolDefinitionSelection.RepositoryOverview(userText) &&
-                WebResearch.RepositoryIn(userText) is { } repository)
-                await RunLocalToolAsync(WebResearch.Name, new() { ["repository"] = repository }, ct);
-            if (subject is not { Length: > 0 } || _saveFailed || ChatPath is not { } path || _titleVersion != titleVersion)
-            {
-                await LoopAsync(model, ct);
-                return;
-            }
-            if (CanSpendAsync != null && !await CanSpendAsync()) throw new OperationCanceledException();
-            using var titleCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            titleCancellation.CancelAfter(TimeSpan.FromSeconds(20));
-            var titleTask = GenerateTitleAsync(Api!, model, path, titleVersion, subject, titleCancellation.Token);
-            try { await LoopAsync(model, ct); }
-            finally
-            {
-                if (ct.IsCancellationRequested) titleCancellation.Cancel();
-                await titleTask;
-            }
+            var repository = !delegated && tools.Context.SandboxRoot == null && ToolDefinitionSelection.RepositoryOverview(userText)
+                ? WebResearch.RepositoryIn(userText) : null;
+            await RunModelTurnAsync(model, ct, repository);
         });
+    }
+
+    internal static bool HasPendingTitle(JsonNode? first) => Bool(MetaOf(first)?[PendingTitleField]) == true;
+
+    async Task RunModelTurnAsync(string model, CancellationToken ct, string? repository = null)
+    {
+        if (model.Length == 0) throw new ApiException(PromptText("Список моделей недоступен. Обновите его в меню выбора модели и повторите.",
+            "The model list is unavailable. Refresh it in the model menu and retry."));
+        var subject = AutoChatTitles && !IsTemporary && !delegated && _history.Count > 0 && HasPendingTitle(_history[0])
+            ? TitleOf([_history[0]]) : null;
+        int titleVersion = _titleVersion;
+        using var titleCancellation = !_saveFailed && subject is { Length: > 0 } && ChatPath != null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct) : null;
+        Task? titleTask = null;
+        if (titleCancellation != null && ChatPath is { } path)
+        {
+            if (CanSpendAsync != null && !await CanSpendAsync()) throw new OperationCanceledException();
+            if (_titleVersion == titleVersion)
+            {
+                titleCancellation.CancelAfter(TimeSpan.FromSeconds(20));
+                titleTask = GenerateTitleAsync(Api!, model, path, titleVersion, subject!, titleCancellation.Token);
+            }
+        }
+        try
+        {
+            if (repository != null) await RunLocalToolAsync(WebResearch.Name, new() { ["repository"] = repository }, ct);
+            await LoopAsync(model, ct);
+        }
+        finally
+        {
+            if (titleTask != null) await titleTask;
+        }
     }
 
     async Task GenerateTitleAsync(IChatProvider api, string model, string path, int version, string subject, CancellationToken ct)
@@ -354,7 +383,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     await FinishLocalAsync("diagnosis", priorReport);
                     return;
                 }
-                await LoopAsync(model, ct);
+                await RunModelTurnAsync(model, ct);
             });
         }
         finally
@@ -1079,12 +1108,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
 
     JsonObject SystemMessage()
     {
-        var key = PromptText(WorkMode ? "work:ru" : "chat:ru", WorkMode ? "work:en" : "chat:en");
+        var language = ReplyLanguageFor();
+        var key = (WorkMode, language);
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {
                 ["role"] = "system",
-                ["content"] = SystemPrompt.Base(WorkMode) + "\n" + LanguageGuidance,
+                ["content"] = SystemPrompt.Base(WorkMode) + "\n" + LanguageDetector.Guidance(language),
             }, key);
         return _systemMessage;
     }
@@ -1196,7 +1226,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
                     done++;
                     if (reused) continue;
                     finished.Add(new(call.Id, call.Name, output, outcome.IsError, outcome.IsWarning, outcome.Diff)
-                        { Change = outcome.Change, Changes = outcome.Changes });
+                        { Change = outcome.Change, Changes = outcome.Changes, CompletedCommand = outcome.CompletedCommand });
                     if (outcome.Changes != null)
                         foreach (var change in outcome.Changes) InvalidateReads(call, change.Path);
                     if (execution.Key == null && outcome.Restriction?.UnavailableShell == null && !ToolRegistry.IsReadOnly(call.Name) &&

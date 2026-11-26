@@ -16,7 +16,7 @@ public sealed class ChatStore(string folder, string logsFolder)
     internal ChatFile Load(string path)
     {
         var index = ChatJournal.IsJournal(path) ? ChatJournal.ReadIndex(path) : Migrate(path);
-        return new(new(path, index), index.Header.Title, index.Header.Model, index.Header.WorkMode);
+        return new(new(path, index), SavedTitle(path, index), index.Header.Model, index.Header.WorkMode);
     }
 
     static ChatJournal.Index Migrate(string path)
@@ -123,12 +123,20 @@ public sealed class ChatStore(string folder, string logsFolder)
     internal static string? FallbackTitle(IEnumerable<JsonNode> messages) =>
         AgentRunner.TitleOf(messages) is { } title ? AgentRunner.Clip(title, 400) : null;
 
+    static string? SavedTitle(string path, ChatJournal.Index index)
+    {
+        var title = index.Header.Title;
+        if (title is not ("Новый чат" or "New chat") || index.Entries.Length == 0) return title;
+        using var file = ChatJournal.Open(path);
+        return AgentRunner.HasPendingTitle(ChatJournal.Read(file, index.Entries[0])) ? null : title;
+    }
+
     static ChatSummary? Summarize(FileInfo file)
     {
         if (ChatJournal.IsJournal(file.FullName))
         {
-            var header = ChatJournal.ReadIndex(file.FullName).Header;
-            return new(file.FullName, header.Title ?? header.FirstTitle ?? "Без названия", file.LastWriteTime);
+            var index = ChatJournal.ReadIndex(file.FullName);
+            return new(file.FullName, SavedTitle(file.FullName, index) ?? index.Header.FirstTitle ?? "Без названия", file.LastWriteTime);
         }
         using var stream = File.Open(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         var prefix = new byte[Math.Min(8192, stream.Length)];

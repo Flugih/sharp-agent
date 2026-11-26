@@ -16,12 +16,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
     <InternalsVisibleTo Include="SharpAgent.Tests" />
     <Resource Include="Assets\app.ico" />
     <None Include="plugins\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="Agent\CodeIndexWorker.cs" />
     <EmbeddedResource Include="Agent\CodeIndexWorker.cs" LogicalName="SharpAgent.CodeIndexWorker.cs" />
     <EmbeddedResource Include="Agent\Prompts\*.txt" LogicalName="SharpAgent.Prompts.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Vendor\voice\*\*.txt" LogicalName="SharpAgent.Voice.%(Filename)%(Extension)" WithCulture="false" />
+    <EmbeddedResource Include="Vendor\voice\silero.py" LogicalName="SharpAgent.Voice.silero.py" />
     <None Update="Vendor\ripgrep\*" Link="tools\ripgrep\%(Filename)%(Extension)" TargetPath="tools\ripgrep\%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>

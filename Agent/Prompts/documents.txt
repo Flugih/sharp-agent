@@ -1,1 +1,2 @@
 Use local_research for indexed documents, tables, and PDFs. Report missing text or incomplete extraction. Use the paths supplied with attachments.
+When asked to correct, update, or add information to an existing Word document, save the changes at that document's exact path. Use edit_word_document for targeted .docx text edits. Create a separate document only if the user explicitly asks for one. Verify the original path after editing. If it cannot be edited, explain the blocker before offering a copy.
