@@ -1112,7 +1112,7 @@ static async Task AppUpdateResumeAsync(string root)
     };
     var installed = new Version(1, 9, 2);
     var expected = AppUpdates.FindRelease(release, installed);
-    Check(expected is { DownloadUrl: "https://github.com/noneandundefined/sharp-agent/releases/download/v2.0.0/SharpAgent-Setup.exe" } &&
+    Check(expected is { DownloadUrl: "https://github.com/Flugih/sharp-agent/releases/download/v2.0.0/SharpAgent-Setup.exe" } &&
         AppUpdates.FindRelease(release, new Version(2, 0, 0)) == null, "updates require a newer release and use the fixed repository URL");
     release["prerelease"] = true;
     Check(AppUpdates.FindRelease(release, installed) == null, "prerelease installers are excluded from automatic updates");

@@ -5,7 +5,7 @@ namespace SharpAgent.Core;
 
 sealed class AppUpdates(string folder, Version installed)
 {
-    const string Repository = "noneandundefined/sharp-agent", InstallerName = "SharpAgent-Setup.exe", ManifestName = "pending.json";
+    const string Repository = "Flugih/sharp-agent", InstallerName = "SharpAgent-Setup.exe", ManifestName = "pending.json";
     const string PartialName = InstallerName + ".part";
     internal const string LatestUrl = "https://api.github.com/repos/" + Repository + "/releases/latest";
 
