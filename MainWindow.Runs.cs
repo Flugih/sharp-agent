@@ -34,6 +34,7 @@ public partial class MainWindow
         {
             Api = _provider, Provider = _config.Provider, MaxTokens = _config.MaxTokens,
             AutoChatTitles = _config.AutoChatTitles,
+            SuggestNextActions = _config.SuggestNextActions,
             IsTemporary = temporary,
             RussianLanguage = _config.RussianLanguage,
             FastMode = _state.FastMode, UseSubagents = _config.UseSubagents, ReasoningEffort = _agent?.ReasoningEffort,
@@ -91,8 +92,6 @@ public partial class MainWindow
                     if (run.Extra is { } extra) SetExtraPlan(extra, plan);
                 }
             }
-            if (result.IsWarning)
-                AnnounceTalkWarning(agent, VoiceDetail(CommandLog.Details(result.Output, 420), 220) ?? VoiceDetail(result.Output, 220));
             long finishedAt = Environment.TickCount64;
             Publish(agent, () => OnToolCallFinished(result, finishedAt));
         };
@@ -112,11 +111,7 @@ public partial class MainWindow
             UpdateBalanceIndicator();
             if (_agent == agent) UpdateContextBanner();
         };
-        agent.Warning += text =>
-        {
-            AnnounceTalkWarning(agent, VoiceDetail(text, 250));
-            Publish(agent, () => AddNotice(text, true));
-        };
+        agent.Warning += text => Publish(agent, () => AddNotice(text, true));
         agent.Stopped += text =>
         {
             if (_runs.TryGetValue(agent, out var run)) run.Voice.Failure = VoiceDetail(text, 350) ?? Tr("Работа прервана.", "The task was interrupted.");
@@ -146,7 +141,7 @@ public partial class MainWindow
         try
         {
             if (run.Extra == null) await WaitForActiveChatAsync(agent, run.Cancellation.Token);
-            return await ConfirmAsync(request);
+            return await ConfirmAsync(request, run.Cancellation.Token);
         }
         finally { run.VoicePermission = null; }
     }

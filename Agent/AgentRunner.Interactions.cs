@@ -89,6 +89,7 @@ partial class AgentRunner
             var evidence = CurrentActions().ToArray();
             try
             {
+                if (await tools.ConfirmExternalPathsAsync(call.Name, contract, ConfirmAsync)) ToolContext.AllowNetwork();
                 var result = await Task.Run(() => LocalContractEngine.Verify(new(contract), tools.Context, ct,
                     check => ContractEvidence(check, evidence)), ct);
                 return new(result, false);

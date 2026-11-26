@@ -153,6 +153,7 @@ public partial class MainWindow
         if (routeChanged && _browserTab != null && IsShown(BrowserPane)) SelectBrowserTab(_browserTab);
         _agent.MaxTokens = _config.MaxTokens;
         _agent.AutoChatTitles = _config.AutoChatTitles;
+        _agent.SuggestNextActions = _config.SuggestNextActions;
         _agent.RussianLanguage = _config.RussianLanguage;
         _toolContext.SandboxRoot = _config.Sandbox ? AppPaths.AppFolder : null;
         _toolContext.ComputerUse = _config.ComputerUse;
@@ -166,6 +167,7 @@ public partial class MainWindow
                 $"The agent can only work in the {FolderKind} folder:\n{AppPaths.AppFolder}\nPowerShell and cmd commands are disabled.")
             : Tr("Агент работает с любыми файлами пользователя, без прав администратора.", "The agent can access your files using your current account permissions.");
         AutomationProperties.SetName(ModePill, Tr($"Режим: {ModeText.Text}. Открыть настройки", $"Mode: {ModeText.Text}. Open settings"));
+        UpdateSendButton();
     }
 
     public void ApplyTheme()
@@ -314,14 +316,16 @@ public partial class MainWindow
         ConfirmToggle.Paint(ForegroundProperty, on ? "TextDim" : "Warning");
     }
 
-    Task<bool> ConfirmAsync(ConfirmRequest request)
+    Task<bool> ConfirmAsync(ConfirmRequest request, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (_confirmOff && !request.AlwaysAsk) return Task.FromResult(true);
         SetTaskbar(TaskbarItemProgressState.Paused);
         var owner = ActiveChatWindow;
         WindowEffects.Flash(owner);
-        bool allowed = DarkDialog.Ask(owner, request.Title, request.Note ?? "", request.Action, request.CancelAction ?? Tr("Отклонить", "Decline"), request.Danger, request.Subject, true);
+        bool allowed = DarkDialog.Ask(owner, request.Title, request.Note ?? "", request.Action, request.CancelAction ?? Tr("Отклонить", "Decline"), request.Danger, request.Subject, true, ct);
         SetTaskbar(TaskbarItemProgressState.Indeterminate);
+        ct.ThrowIfCancellationRequested();
         return Task.FromResult(allowed);
     }
 
@@ -348,6 +352,11 @@ public partial class MainWindow
             ClearTalkRetry(session);
         }
         RestoreQueuedTalkDrafts(_talk, tasks);
+        CancelCurrentRun();
+    }
+
+    void CancelCurrentRun()
+    {
         _cts?.Cancel();
         StopButton.IsEnabled = false;
         UpdateChangesPill();
@@ -385,7 +394,7 @@ public partial class MainWindow
         bool resume = !hasDraft && !running && _talk == null && _agent?.CanContinue == true;
         bool endTalk = _talk != null && !hasDraft;
         bool startTalk = !hasDraft && !endTalk && !resume;
-        bool showSend = !VoiceShown && (!running || _talk != null);
+        bool showSend = !VoiceShown && (!running || _talk != null || startTalk);
         SendButton.Visibility = VisibleIf(showSend);
         StopButton.Margin = running && showSend ? new(0, 0, 4, 0) : new(0);
         SendButton.IsEnabled = endTalk || (startTalk ? !_talkClosing && MicButton.IsEnabled
@@ -402,7 +411,7 @@ public partial class MainWindow
             : resume ? Tr("Продолжить задачу", "Resume task") : startTalk ? Tr("Говорить", "Talk") : Tr("Отправить", "Send");
         SendButton.ToolTip = endTalk ? label + " (Esc)" : startTalk ? label : loading ?? (resume ? Tr("Продолжить задачу (Enter)", "Resume task (Enter)") : Tr("Отправить (Enter). Новая строка — Shift+Enter", "Send (Enter). New line: Shift+Enter"));
         AutomationProperties.SetName(SendButton, label);
-        NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _cts == null && !hasDraft && !VoiceShown && _talk == null && NextActionPanel.Children.Count > 0);
+        NextActionPanel.Visibility = VisibleIf(_agent?.WorkMode == true && _config.SuggestNextActions && _cts == null && !hasDraft && !VoiceShown && NextActionPanel.Children.Count > 0);
         UpdateCompactAction();
     }
 
@@ -449,7 +458,7 @@ public partial class MainWindow
         await SubmitTaskAsync(text, attachments, model);
     }
 
-    Task SubmitTaskAsync(string text, IReadOnlyList<Attachment> attachments, string model, bool useSelectedModel = false, ReplyLanguage? replyLanguage = null)
+    Task SubmitTaskAsync(string text, IReadOnlyList<Attachment> attachments, string model, bool fromVoice = false, ReplyLanguage? replyLanguage = null)
     {
         var history = _agent.HistoryView;
         if (Enumerable.Range(_renderedHistory.Count, Math.Max(0, history.Count - _renderedHistory.Count)).Count(history.IsUser) >= HistoryPageSize)
@@ -457,7 +466,8 @@ public partial class MainWindow
         ClearSubagents();
         ScrollToLatest();
         var sentAt = DateTimeOffset.UtcNow;
-        return RunAgentAsync((agent, ct) => agent.RunAsync(text, attachments, model, ct, sentAt, useSelectedModel, replyLanguage), () => AddUserBubble(text, attachments));
+        return RunAgentAsync((agent, ct) => agent.RunAsync(text, attachments, model, ct, sentAt, useSelectedModel: fromVoice, replyLanguage: replyLanguage, fromVoice: fromVoice),
+            () => AddUserBubble(text, attachments, fromVoice));
     }
 
     string? ModelForRequest(bool openSettings = true)

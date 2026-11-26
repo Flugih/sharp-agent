@@ -37,6 +37,10 @@ public sealed class ToolContext
 
     string[] DataFolders => [AppFolder!, LegacyData, MigrationData, InstalledData, Path.Combine(InstalledData, "data"), Path.Combine(InstalledData, "data.migrating")];
 
+    internal string[] ProtectedInventoryRoots() => AppFolder == null ? [] :
+        [AppFolder, InstalledData, MigrationData, .. new[] { "data", "auth", "Browser", "history", "checkpoints" }.Select(name => Path.Combine(LegacyData, name)),
+            .. (InstallationFolder is { } install ? new[] { install } : [])];
+
     static readonly AsyncLocal<bool> NetworkAllowed = new();
 
     internal static void AllowNetwork() => NetworkAllowed.Value = true;
@@ -54,17 +58,15 @@ public sealed class ToolContext
             ? throw new ToolException($"Сетевой путь «{full}» доступен агенту только с разрешения пользователя.") : full;
     }
 
-    public bool IsSecret(string fullPath)
-    {
-        if (AppFolder == null) return false;
-        fullPath = FinalPath(fullPath);
-        return IsInside(fullPath, MigrationData) || IsInside(fullPath, Path.Combine(InstalledData, "data.migrating")) ||
-            DataFolders.Any(folder => HoldsSecrets(folder, fullPath));
-    }
+    public bool IsSecret(string fullPath) => AppFolder != null && IsSecretPath(FinalPath(fullPath), protectParents: true);
 
-    static bool HoldsSecrets(string folder, string path) =>
-        IsInside(Path.Combine(folder, ".env"), path) || SamePath(path, Path.Combine(folder, ".env.tmp")) ||
-        IsInside(Path.Combine(folder, "auth"), path) || IsInside(path, Path.Combine(folder, "auth")) || IsInside(path, Path.Combine(folder, "Browser")) ||
+    internal bool IsSecretPath(string path, bool protectParents = false) => AppFolder != null && (IsInside(path, MigrationData) ||
+        IsInside(path, Path.Combine(InstalledData, "data.migrating")) || DataFolders.Any(folder => HoldsSecrets(folder, path, protectParents)));
+
+    static bool HoldsSecrets(string folder, string path, bool protectParents) =>
+        protectParents && (IsInside(Path.Combine(folder, ".env"), path) || IsInside(Path.Combine(folder, "auth"), path)) ||
+        IsInside(path, Path.Combine(folder, ".env")) || SamePath(path, Path.Combine(folder, ".env.tmp")) ||
+        IsInside(path, Path.Combine(folder, "auth")) || IsInside(path, Path.Combine(folder, "Browser")) ||
         IsInside(path, Path.Combine(folder, @"history\changes")) || IsInside(path, Path.Combine(folder, "checkpoints")) ||
         IsInside(path, folder) && Path.GetFileName(path).Equals(".env", StringComparison.OrdinalIgnoreCase);
 

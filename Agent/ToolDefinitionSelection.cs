@@ -71,7 +71,8 @@ internal static class ToolDefinitionSelection
         "computer" => ComputerTools.IsControl(name),
         "media" => name is "generate_image" or "image_edit" or "use_plugin" or "run_plugin",
         "plugins" => name is "use_plugin" or "run_plugin",
-        "files" => name is "exec_command" or "read_log" or "list_directory" or "get_file_info" or "search_files" or LocalContractEngine.Name,
+        "files" => name is "exec_command" or "read_log" or "list_directory" or "get_file_info" or "search_files" or LocalContractEngine.Name or
+            ComputerInventory.FindFolders or ComputerInventory.ListApps,
         "edit" => name is PatchTool.Name,
         "code" => name is PatchTool.Name or "exec_command" or "read_log" or LocalTestTools.Name or AgentKnowledge.Name or "update_plan" or "delegate_tasks",
         "documents" => name is LocalResearchEngine.Name or PatchTool.Name or WordEdits.Name,

@@ -25,6 +25,7 @@ public sealed class AppConfig
     public bool Sandbox { get; private init; }
     public bool UseSubagents { get; private init; }
     public bool AutoChatTitles { get; private init; }
+    internal bool SuggestNextActions { get; private init; }
     public bool RussianLanguage { get; private init; }
     public bool ComputerUse { get; private init; }
     internal LocalLanguageModel? LocalModel { get; private init; }
@@ -80,6 +81,7 @@ public sealed class AppConfig
             Sandbox = sandbox,
             UseSubagents = IsTrue("AGENT_USE_SUBAGENTS"),
             AutoChatTitles = !string.Equals(Get("AGENT_AUTO_CHAT_TITLES"), "false", StringComparison.OrdinalIgnoreCase),
+            SuggestNextActions = !string.Equals(Get("AGENT_SUGGEST_NEXT_ACTIONS"), "false", StringComparison.OrdinalIgnoreCase),
             RussianLanguage = IsRussianLanguage(Get("AGENT_LANGUAGE")),
             ComputerUse = IsTrue("AGENT_COMPUTER_USE"),
             LocalModel = LocalLanguageModel.FromSettings(Get("AGENT_LOCAL_AI_URL"), Get("AGENT_LOCAL_AI_MODEL")),
@@ -201,6 +203,7 @@ public sealed class AppConfig
         AGENT_SANDBOX=false
         AGENT_USE_SUBAGENTS=false
         AGENT_AUTO_CHAT_TITLES=true
+        AGENT_SUGGEST_NEXT_ACTIONS=true
         # Необязательно: уже запущенная модель с локальным OpenAI-совместимым API, например http://127.0.0.1:11434/v1
         AGENT_LOCAL_AI_URL=
         AGENT_LOCAL_AI_MODEL=

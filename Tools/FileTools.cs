@@ -87,11 +87,13 @@ public static partial class FileTools
     static string ListDirectory(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var path = c.Resolve(a.Optional("path"));
+        if (c.IsSecretPath(FinalPath(path))) c.GuardSecrets(path);
         if (File.Exists(path)) throw new ToolException($"Это файл, а не папка: {path}");
         if (!Directory.Exists(path)) throw new ToolException($"Папка не найдена: {path}");
         bool recursive = a.Bool("recursive");
         int max = Math.Clamp(a.Int("max_entries", 300), 1, 5000), count = 0;
-        var options = new EnumerationOptions { RecurseSubdirectories = recursive, AttributesToSkip = a.Bool("show_hidden") ? 0 : FileAttributes.Hidden | FileAttributes.System };
+        var options = new EnumerationOptions { RecurseSubdirectories = recursive,
+            AttributesToSkip = FileAttributes.ReparsePoint | (a.Bool("show_hidden") ? 0 : FileAttributes.Hidden | FileAttributes.System) };
         var root = new DirectoryInfo(path);
         var entries = recursive ? root.EnumerateFileSystemInfos("*", options)
             : root.EnumerateDirectories("*", options).OrderBy(d => d.Name).Concat<FileSystemInfo>(root.EnumerateFiles("*", options).OrderBy(f => f.Name));
@@ -99,6 +101,7 @@ public static partial class FileTools
         foreach (var entry in entries)
         {
             ct.ThrowIfCancellationRequested();
+            if (c.IsSecretPath(entry.FullName)) continue;
             if (count++ == max) { sb.AppendLine($"... показаны первые {max} элементов (увеличьте max_entries или уточните путь)"); break; }
             var rel = Path.GetRelativePath(root.FullName, entry.FullName);
             sb.AppendLine(entry is FileInfo f ? $"{rel}  ({FormatSize(f.Length)}, изменён {f.LastWriteTime:yyyy-MM-dd HH:mm})" : $"[папка] {rel}\\");
@@ -253,6 +256,7 @@ public static partial class FileTools
     static string GetFileInfo(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var path = c.Resolve(a.Required("path"));
+        if (c.IsSecretPath(FinalPath(path))) c.GuardSecrets(path);
         if (Directory.Exists(path))
         {
             var d = new DirectoryInfo(path);
@@ -275,11 +279,12 @@ public static partial class FileTools
     static (string Dir, int Max) SearchScope(ToolArgs a, ToolContext c)
     {
         var dir = c.Resolve(a.Optional("directory"));
+        if (c.IsSecretPath(FinalPath(dir))) c.GuardSecrets(dir);
         if (!Directory.Exists(dir)) throw new ToolException($"Папка не найдена: {dir}");
         return (dir, Math.Clamp(a.Int("max_results", DefaultResults), 1, MaxResults));
     }
 
-    static string SearchFiles(ToolArgs a, ToolContext c, CancellationToken ct)
+    internal static string SearchFiles(ToolArgs a, ToolContext c, CancellationToken ct)
     {
         var (dir, max) = SearchScope(a, c);
         var pattern = a.Optional("pattern") ?? "*";
@@ -289,10 +294,10 @@ public static partial class FileTools
             throw new ToolException("pattern — это маска имени (например *.txt), без пути. Папку укажите в параметре directory.");
         var sb = new StringBuilder();
         int count = 0;
-        foreach (var entry in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", new EnumerationOptions { RecurseSubdirectories = recursive }))
+        foreach (var entry in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", SearchOptions(recursive)))
         {
             ct.ThrowIfCancellationRequested();
-            if (!FileSystemName.MatchesSimpleExpression(pattern, entry.Name, ignoreCase: true)) continue;
+            if (!FileSystemName.MatchesSimpleExpression(pattern, entry.Name, ignoreCase: true) || c.IsSecretPath(entry.FullName)) continue;
             if (count++ == max) { sb.AppendLine($"... показаны первые {max} — есть ещё. Уточни маску или папку{MoreHint(max)}"); break; }
             sb.AppendLine(entry is FileInfo f ? $"{f.FullName}  ({FormatSize(f.Length)})" : $"[папка] {entry.FullName}");
         }
@@ -311,12 +316,12 @@ public static partial class FileTools
         var sb = new StringBuilder();
         int hits = 0, scanned = 0, cloudSkipped = 0;
         bool more = false, outputFull = false;
-        foreach (var file in new DirectoryInfo(dir).EnumerateFiles("*", new EnumerationOptions { RecurseSubdirectories = true }))
+        foreach (var file in new DirectoryInfo(dir).EnumerateFiles("*", SearchOptions(recursive: true)))
         {
             ct.ThrowIfCancellationRequested();
             if (!FileSystemName.MatchesSimpleExpression(pattern, file.Name, ignoreCase: true)) continue;
             if (more || scanned >= scanLimit) break;
-            if (file.Length == 0 || file.Length > 5 * 1024 * 1024 || c.IsSecret(file.FullName)) continue;
+            if (c.IsSecretPath(file.FullName) || file.Length == 0 || file.Length > 5 * 1024 * 1024) continue;
             if (((int)file.Attributes & cloudOnly) != 0) { cloudSkipped++; continue; }
             string text;
             try { text = TextFileIO.Read(file.FullName).Text; }
@@ -341,6 +346,11 @@ public static partial class FileTools
                       (cloudSkipped > 0 ? $"; пропущено нескачанных файлов OneDrive: {cloudSkipped}" : "");
         return hits == 0 ? $"Текст «{query}» не найден в {dir}. {summary}" : sb + summary;
     }
+
+    static EnumerationOptions SearchOptions(bool recursive) => new()
+    {
+        RecurseSubdirectories = recursive, AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
+    };
 
     static string MoreHint(int max) => max < MaxResults ? " либо увеличь max_results" : $" — больше {MaxResults} за раз не выдаётся";
 }

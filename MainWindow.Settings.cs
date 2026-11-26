@@ -162,6 +162,7 @@ public partial class MainWindow
         ShowChoice(ImageSourceButton, ImageSources, _settingsImagesLikeChat);
         SubagentsToggle.IsChecked = _config.UseSubagents;
         AutoChatTitlesToggle.IsChecked = _config.AutoChatTitles;
+        SuggestNextActionsToggle.IsChecked = _config.SuggestNextActions;
         ComputerUseToggle.IsChecked = _config.ComputerUse;
         _settingsTheme = _state.Theme;
         ShowChoice(ThemeButton, Themes, _settingsTheme);
@@ -647,6 +648,7 @@ public partial class MainWindow
             ["AGENT_PROVIDER"] = _settingsProvider.ToString().ToLowerInvariant(), ["AGENT_USE_SUBAGENTS"] = SubagentsToggle.IsChecked == true ? "true" : "false",
             ["AGENT_COMPUTER_USE"] = ComputerUseToggle.IsChecked == true ? "true" : "false",
             ["AGENT_AUTO_CHAT_TITLES"] = AutoChatTitlesToggle.IsChecked == true ? "true" : "false",
+            ["AGENT_SUGGEST_NEXT_ACTIONS"] = SuggestNextActionsToggle.IsChecked == true ? "true" : "false",
             ["AGENT_LANGUAGE"] = _settingsRussian ? "ru" : "en",
             ["TOOKEN_BASE_URL"] = url, ["AGENT_IMAGE_PROVIDER"] = _settingsImagesLikeChat ? "chat" : "tooken",
             ["TOOKEN_MAX_TOKENS"] = maxTokens, ["AGENT_DAY_LIMIT_MLN"] = dayLimit.Replace(',', '.'), ["AGENT_MONTH_LIMIT_MLN"] = monthLimit.Replace(',', '.'),

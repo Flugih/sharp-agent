@@ -162,8 +162,6 @@
                         </DockPanel>
                     </Border>
 
-                    <ContentControl x:Name="QuestionHost" Visibility="Collapsed" Margin="0,0,0,8"/>
-
                     <Button x:Name="TalkPanel" Style="{StaticResource RoundBase}" Visibility="Collapsed" HorizontalAlignment="Center" HorizontalContentAlignment="Center" Margin="0,0,0,10"
                             Width="152" Height="152" Background="{DynamicResource VoiceOrbBg}" RenderTransformOrigin="0.5,0.5" Cursor="Hand" Click="TalkPanel_Click"
                             ToolTip="{ui:Localized 'Прервать ответ и продолжить говорить', 'Interrupt the reply and continue speaking'}"
@@ -209,11 +207,13 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
                                 <WrapPanel x:Name="AttachPanel" Margin="4,0,4,6" Visibility="Collapsed"/>
+                                <ContentControl x:Name="QuestionHost" Grid.Row="1" Margin="4,0,4,8" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
 
-                                <Grid Grid.Row="1" Margin="4,0">
+                                <Grid Grid.Row="2" Margin="4,0">
                                     <ui:ComposerBox x:Name="InputBox" Style="{StaticResource ComposerInput}" MinHeight="36" MaxHeight="200" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="{ui:Localized 'Сообщение агенту', 'Message the agent'}" PreviewKeyDown="InputBox_PreviewKeyDown" TextChanged="InputBox_TextChanged" CommandManager.PreviewCanExecute="InputBox_PreviewCanExecute" CommandManager.PreviewExecuted="InputBox_PreviewExecuted"/>
                                     <TextBlock x:Name="InputHint" IsHitTestVisible="False" Foreground="{DynamicResource TextDim}" Margin="5,0,0,0" Text="{ui:Localized 'Работайте в Sharp Agent', 'Work with Sharp Agent'}"/>
                                     <DockPanel x:Name="VoicePanel" MinHeight="36" Visibility="Collapsed">
@@ -227,7 +227,7 @@
                                     </DockPanel>
                                 </Grid>
 
-                                <Grid Grid.Row="2" Margin="0,8,0,0">
+                                <Grid Grid.Row="3" Margin="0,8,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
@@ -663,6 +663,15 @@
                                             <StackPanel Style="{StaticResource RowText}">
                                                 <TextBlock Text="{ui:Localized 'Автоматически называть чаты', 'Automatically name chats'}"/>
                                                 <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'Если выключено, новый чат получает название из первого сообщения.', 'When off, new chats use their first message as the title.'}"/>
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                    <Border Style="{StaticResource SettingsRow}">
+                                        <DockPanel>
+                                            <ToggleButton x:Name="SuggestNextActionsToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" AutomationProperties.Name="{ui:Localized 'Быстрые предложения', 'Follow-up suggestions'}"/>
+                                            <StackPanel Style="{StaticResource RowText}">
+                                                <TextBlock Text="{ui:Localized 'Быстрые предложения', 'Follow-up suggestions'}"/>
+                                                <TextBlock Style="{StaticResource RowHint}" Text="{ui:Localized 'До трёх кнопок над полем ввода после ответа в режиме «Работа».', 'Up to three buttons above the input after a reply in Work mode.'}"/>
                                             </StackPanel>
                                         </DockPanel>
                                     </Border>

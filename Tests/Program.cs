@@ -17,10 +17,12 @@ if (args is ["--benchmark", var report])
 Migration(root);
 VoiceReplyStreaming();
 await VoiceScriptsAsync();
+await ComputerInventoryAsync(root);
 await ChatReconnectAsync();
 await VoiceDownloadResumeAsync(root);
 await AppUpdateResumeAsync(root);
 await ReplyLanguagesAsync(root);
+await NextActionsAsync(root);
 await ChatTitlesAsync(root);
 await ReadsAndIndexAsync(root);
 await AgentBudgetAsync(root);
@@ -940,6 +942,10 @@ static void VoiceReplyStreaming()
 
 static async Task VoiceScriptsAsync()
 {
+    Check(TalkWords.IsTaskStop("Останови задачу текущую!") && TalkWords.IsTaskStop("Пожалуйста, заверши текущую задачу") &&
+        TalkWords.IsTaskStop("Заверши или останови задачу текущую") && TalkWords.IsTaskStop("Could you cancel the current task?") &&
+        !TalkWords.IsTaskStop("Как остановить текущую задачу?") && !TalkWords.IsTaskStop("Заверши сборку") && !TalkWords.IsTaskStop("Секунду"),
+        "voice cancellation recognizes direct task controls without intercepting questions or unrelated requests");
     var settings = new UiState { MixedVoiceInput = true };
     Check(settings.VoiceInputMode == VoiceRecognitionMode.Auto && VoicePackage.RecognizerFolder(settings.VoiceInputMode) == VoicePackage.GigaAmMultilingual,
         "the former mixed mode uses multilingual GigaAM in Auto");
@@ -947,6 +953,12 @@ static async Task VoiceScriptsAsync()
     Check(!settings.MixedVoiceInput && settings.VoiceInputMode == VoiceRecognitionMode.English, "an explicit recognition language overrides Auto");
     Check(TalkWords.RussianPlaybackText("Проверю Git, API и PostgreSQL.") == "Проверю гит, эй пи ай и Постгрес.",
         "Russian speech keeps foreign names and acronyms in the same voice");
+    var command = new SharpAgent.MainWindow.TalkCommand("dotnet build", CommandLog.ResultOf("Код выхода: 0\nГотово"), null, false, false);
+    Check(command.Fact == "dotnet build | succeeded" && command.Reply(ReplyLanguage.Russian) == "Команда успешно выполнилась." &&
+        command.Reply(ReplyLanguage.English) == "The command ran successfully.", "voice reports a successful command in plain language");
+    var warning = command with { IsWarning = true };
+    Check(warning.Fact == "dotnet build | warning" && warning.Reply(ReplyLanguage.Russian).Contains("с предупреждением"),
+        "a zero exit code still preserves command warnings");
     Check(TalkWords.IsRecheck("смотри, проверь еще раз задачу") && TalkWords.IsRecheck("проверь эту задачу ещё раз") &&
         TalkWords.IsRecheck("please recheck the task") && !TalkWords.IsRecheck("Ну что по задаче?") &&
         !TalkWords.IsRecheck("Объясни, как перепроверить задачу"), "only direct recheck requests interrupt the current task");
@@ -986,6 +998,24 @@ static async Task VoiceScriptsAsync()
     Check(languageAttempts == 2 && corrected is { Kind: "SAY" } &&
         response.Lines.Reader.TryRead(out var russianReply) && russianReply == "Да, у Bitrix есть API." && !response.Lines.Reader.TryPeek(out _),
         "a model reply in the wrong language is retried and only the Russian reply is played");
+    var handoff = new SharpAgent.MainWindow.TalkSpeech(ReplyLanguage.Russian);
+    const string connect = "Подключись к VPS и передай бандл.", details = "IP 192.0.2.10\nПорт 2222\nПароль Example#123";
+    const string followUp = "Используй чат для подключения с этими данными.";
+    string[] earlier = ["Привет", connect, details];
+    var routed = await handoff.ReceiveAsync(correct =>
+    {
+        Check(!correct, "chat routing needs no spoken language correction");
+        const string payload = "CHAT\n3, 2, 3";
+        handoff.Push(payload, false);
+        return Task.FromResult(new ChatResult(new JsonObject { ["content"] = payload }, "stop", null, null));
+    });
+    Check(routed is { Kind: "CHAT" } route && !handoff.Lines.Reader.TryPeek(out _) &&
+        SharpAgent.MainWindow.TalkTaskText(followUp, earlier, route.Text, ReplyLanguage.Russian) is { } taskText &&
+        taskText.EndsWith($"{connect}\n\n{details}\n\nПоследняя реплика:\n{followUp}", StringComparison.Ordinal) && !taskText.Contains(earlier[0]),
+        "chat receives the original task and exact referenced details in order without reading them aloud");
+    Check(SharpAgent.MainWindow.TalkTaskText(connect, earlier, "", ReplyLanguage.Russian) == connect &&
+        SharpAgent.MainWindow.TalkTaskText(followUp, earlier, "2, 4", ReplyLanguage.Russian) == null,
+        "standalone tasks stay verbatim and invalid references never submit partial context");
     var namedProduct = new SharpAgent.MainWindow.TalkSpeech(ReplyLanguage.Russian);
     namedProduct.Push("SAY\nBitrix REST API. Он доступен.", false);
     Check(namedProduct.Lines.Reader.TryRead(out var withProduct) && withProduct == "Bitrix REST API. Он доступен.",
@@ -1061,10 +1091,68 @@ static async Task ReplyLanguagesAsync(string root)
         { Api = provider, AutoChatTitles = false, RussianLanguage = true };
     await agent.RunAsync("Hello, please review the project.", [], "fake", default);
     Check(provider.ReplyPrompt?.Contains("Otherwise reply in English.") == true, "typed English overrides the Russian app language");
-    await agent.RunAsync("…", [], "fake", default, useSelectedModel: true, replyLanguage: ReplyLanguage.Russian);
+    await agent.RunAsync("…", [], "fake", default, useSelectedModel: true, replyLanguage: ReplyLanguage.Russian, fromVoice: true);
     Check(provider.ReplyPrompt?.Contains("Otherwise reply in Russian.") == true, "the language of a voice task is passed to the agent");
     await agent.RunAsync("!", [], "fake", default);
     Check(provider.ReplyPrompt?.Contains("Otherwise reply in Russian.") == true, "ambiguous follow-ups inherit the previous turn's language");
+    Check(agent.History.Where(message => AgentRunner.Role(message) == "user").Select(AgentRunner.FromVoice).SequenceEqual([false, true, false]),
+        "only voice-mode requests carry the persisted voice label");
+}
+
+static async Task NextActionsAsync(string root)
+{
+    const string answer = "Отчёт готов.\n<sharp-next>[\"Показать сводку\",\"Сравнить с прошлым отчётом\"]</sharp-next>";
+    var folder = Directory.CreateDirectory(Path.Combine(root, "next-actions")).FullName;
+    using var provider = new TitleProvider(Task.FromResult(new ChatResult(new(), "stop", null, null)), answer);
+    var agent = new AgentRunner(new ToolRegistry(new ToolContext { WorkingDirectory = folder }), new ChatStore(folder, folder))
+        { Api = provider, AutoChatTitles = false };
+    await agent.RunAsync("Подготовь отчёт.", [], "fake", default);
+    var reply = agent.History[^1];
+    Check(provider.ReplyPrompt?.Contains("<sharp-next>", StringComparison.Ordinal) == true && AgentRunner.ExtractText(reply["content"]) == "Отчёт готов." &&
+        AgentRunner.NextActionsOf(reply).SequenceEqual(["Показать сводку", "Сравнить с прошлым отчётом"]),
+        "the work prompt requests suggestions and stores them separately from the answer");
+    agent.SuggestNextActions = false;
+    await agent.RunAsync("Обнови отчёт.", [], "fake", default);
+    reply = agent.History[^1];
+    Check(provider.ReplyPrompt?.Contains("<sharp-next>", StringComparison.Ordinal) == false && AgentRunner.ExtractText(reply["content"]) == "Отчёт готов." &&
+        AgentRunner.NextActionsOf(reply).Length == 0, "disabling suggestions refreshes the prompt and keeps stray suggestions out of the answer and history");
+}
+
+static async Task ComputerInventoryAsync(string root)
+{
+    var work = Path.Combine(root, "pc-search-project");
+    var first = Path.Combine(root, "pc-search-first");
+    var second = Path.Combine(root, "pc-search-second");
+    var app = Path.Combine(first, "sharp-agent-data");
+    var service = Path.Combine(first, "Telematik-Service");
+    var server = Path.Combine(second, "Телематик_сервер");
+    foreach (var path in new[] { work, service, server, Path.Combine(app, "auth", "Телематик сервис") }) Directory.CreateDirectory(path);
+    var context = new ToolContext { WorkingDirectory = work, AppFolder = app };
+    var tools = new ToolRegistry(context);
+    var results = ComputerInventory.SearchFolders(context, ["Telematik Service", "Телематик сервер", "Телематик сервис"], [first, second], default);
+    Check(results.Contains(service) && results.Contains(server) && !results.Contains("sharp-agent-data"),
+        "folder name variants match across roots and never expose the application secret directory:\n" + results);
+    const string names = """{"names":["Телематик сервис"]}""";
+    int requests = 0;
+    bool executed = false;
+    Task<bool> Decline(ConfirmRequest request)
+    {
+        Check(request.AlwaysAsk, "outside-project permissions cannot be turned off");
+        requests++;
+        return Task.FromResult(false);
+    }
+    Check((await tools.ExecuteAsync(ComputerInventory.FindFolders, names, Decline, default, () => executed = true)).IsError &&
+        (await tools.ExecuteAsync(ComputerInventory.ListApps, "{}", Decline, default, () => executed = true)).IsError && requests == 2 && !executed,
+        "declining inventory actions stops them before disks or the application list can be scanned");
+    var external = new JsonObject { ["path"] = service }.ToJsonString();
+    Check((await tools.ExecuteAsync("get_file_info", external, null, default)).IsError &&
+        (await tools.ExecuteAsync("get_file_info", external, Decline, default)).IsError && requests == 3 &&
+        !(await tools.ExecuteAsync("get_file_info", external, request => Task.FromResult(request.AlwaysAsk && request.Subject == service), default)).IsError,
+        "a known external path requires a mandatory approval that shows the path");
+    context.SandboxRoot = work;
+    Check(tools.Definitions.All(definition => definition?["function"]?["name"]?.ToString() is not (ComputerInventory.FindFolders or ComputerInventory.ListApps)) &&
+        (await tools.ExecuteAsync(ComputerInventory.FindFolders, names, Decline, default)).IsError && requests == 3,
+        "sandbox never offers or starts whole-PC inventory tools");
 }
 
 static async Task VoiceDownloadResumeAsync(string root)
@@ -1344,7 +1432,7 @@ sealed class FakeProvider(long? fixedInput, int toolCalls) : IChatProvider
     public void Dispose() { }
 }
 
-sealed class TitleProvider(Task<ChatResult> title) : IChatProvider
+sealed class TitleProvider(Task<ChatResult> title, string answer = "Ответ") : IChatProvider
 {
     public int TitleCalls { get; private set; }
     public string? Subject { get; private set; }
@@ -1358,7 +1446,7 @@ sealed class TitleProvider(Task<ChatResult> title) : IChatProvider
         if (callTools)
         {
             ReplyPrompt = messages[0]["content"]?.ToString();
-            return Task.FromResult(new ChatResult(new JsonObject { ["content"] = "Ответ" }, "stop", null, null));
+            return Task.FromResult(new ChatResult(new JsonObject { ["content"] = answer }, "stop", null, null));
         }
         TitleCalls++;
         Subject = messages[1]["content"]?.ToString();

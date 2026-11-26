@@ -77,7 +77,16 @@ public partial class MainWindow
         list.Width = 180;
         list.Margin = new(8);
         list.ItemsSource = tasks;
-        list.DisplayMemberPath = nameof(ExtraTask.Title);
+        var taskLabel = new FrameworkElementFactory(typeof(StackPanel));
+        var title = new FrameworkElementFactory(typeof(TextBlock));
+        title.SetBinding(TextBlock.TextProperty, new Binding(nameof(ExtraTask.Title)));
+        title.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+        var source = new FrameworkElementFactory(typeof(TextBlock));
+        source.SetValue(StyleProperty, Theme.Style("VoiceTaskLabel"));
+        source.SetValue(TextBlock.TextProperty, Tr("Голос", "Voice"));
+        taskLabel.AppendChild(title);
+        taskLabel.AppendChild(source);
+        list.ItemTemplate = new DataTemplate { VisualTree = taskLabel };
         _extraTaskPage = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         var window = _extraTaskWindow = new Window
         {
@@ -114,7 +123,8 @@ public partial class MainWindow
         stop.Click += (_, _) => task.Stop?.Cancel();
         var header = new StackPanel
         {
-            Children = { new TextBlock { Text = task.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap }, stop, progress.View },
+            Children = { new TextBlock { Text = task.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap },
+                new TextBlock { Text = Tr("Голос", "Voice"), Style = Theme.Style("VoiceTaskLabel") }, stop, progress.View },
         };
         DockPanel.SetDock(header, Dock.Top);
         var view = _extraTaskView = new ExtraView(task, progress, list, stop);
@@ -229,7 +239,8 @@ public partial class MainWindow
         using (var access = _toolContext.FileAccess.Begin(allowConcurrentReads: true))
             try
             {
-                await agent.RunAsync(input.Text, input.Attachments, model, run.Cancellation.Token, useSelectedModel: true, replyLanguage: input.Language);
+                await agent.RunAsync(input.TaskText ?? input.Text, input.Attachments, model, run.Cancellation.Token, useSelectedModel: true,
+                    replyLanguage: input.Language, fromVoice: true);
                 if (voice is { Failure: null, Report: null })
                     voice.Failure = Tr("Агент не вернул итоговый ответ.", "The agent did not return a final answer.");
             }

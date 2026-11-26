@@ -112,6 +112,9 @@ public static partial class PluginTools
 
     static bool Abbreviates(string key, string name) => name.StartsWith(key, StringComparison.OrdinalIgnoreCase);
 
+    internal static IEnumerable<string> PathArguments(ToolArgs args) => args.Object("arguments")
+        .Where(pair => Abbreviates(pair.Key, "Source") || Abbreviates(pair.Key, "Target")).Select(pair => Str(pair.Value)).OfType<string>();
+
     static bool IsYes(string? value) => "yes".Equals(value, StringComparison.OrdinalIgnoreCase);
 
     internal static string? TargetOf(ToolArgs a, ToolContext c) =>

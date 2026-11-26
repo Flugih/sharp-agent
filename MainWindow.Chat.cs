@@ -75,7 +75,7 @@ public partial class MainWindow
         SyncCompactChat();
     }
 
-    void AddUserBubble(string text, IReadOnlyList<Attachment> attachments)
+    void AddUserBubble(string text, IReadOnlyList<Attachment> attachments, bool fromVoice)
     {
         ReleaseStickyProgress();
         FlushTurnFiles();
@@ -128,6 +128,7 @@ public partial class MainWindow
             bubble.SetResourceReference(BackgroundProperty, "UserBubble");
             stack.Children.Add(bubble);
         }
+        if (fromVoice) stack.Children.Add(new TextBlock { Text = Tr("Голос", "Voice"), Style = Theme.Style("VoiceTaskLabel"), HorizontalAlignment = HorizontalAlignment.Right });
         AppendToChat(stack);
     }
 
@@ -571,6 +572,8 @@ public partial class MainWindow
         "delete_path" => (Glyphs.Delete, Tr("Удаление", "Delete")),
         "search_files" => (Glyphs.Search, Tr("Поиск файлов", "File search")),
         "search_text" => (Glyphs.Search, Tr("Поиск текста", "Text search")),
+        ComputerInventory.FindFolders => (Glyphs.Search, Tr("Поиск папок на компьютере", "Search folders on the computer")),
+        ComputerInventory.ListApps => (Glyphs.View, Tr("Список приложений Windows", "Windows application list")),
         "exec_command" => (Glyphs.Terminal, Tr("Команда", "Command")),
         PatchTool.Name => (Glyphs.Edit, Tr("Патч файлов", "File patch")),
         "read_log" => (Glyphs.Terminal, Tr("Журнал команды", "Command log")),
@@ -991,7 +994,7 @@ public partial class MainWindow
                 if (role == "user")
                 {
                     FinishTurn();
-                    AddUserBubble(AgentRunner.ExtractText(m["content"]) ?? "", Attachment.ListFrom(m));
+                    AddUserBubble(AgentRunner.ExtractText(m["content"]) ?? "", Attachment.ListFrom(m), AgentRunner.FromVoice(m));
                     ((_chatView.Target ?? ChatPanel).Children[^1]).SetValue(SearchMessageProperty, start + i);
                 }
                 else if (role == "assistant")

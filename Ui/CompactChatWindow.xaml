@@ -26,7 +26,6 @@
                 </StackPanel>
             </ScrollViewer>
         </Border>
-        <ContentControl x:Name="QuestionSlot" Margin="0,7,0,0" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
         <Border x:Name="ToastHost" Background="{DynamicResource CompactTranscriptBg}" BorderBrush="{DynamicResource Line}" BorderThickness="1"
                 CornerRadius="12" Padding="10,6" Margin="0,7,0,0" Visibility="Collapsed" MouseLeftButtonUp="ToastHost_MouseLeftButtonUp">
             <DockPanel>
@@ -53,6 +52,7 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -62,7 +62,8 @@
                     <ScrollViewer x:Name="AttachmentScroll" Grid.ColumnSpan="2" Visibility="Collapsed" MaxHeight="72" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <WrapPanel x:Name="Attachments"/>
                     </ScrollViewer>
-                    <Grid Grid.Row="1" Margin="3,0,4,0" VerticalAlignment="Center">
+                    <ContentControl x:Name="QuestionSlot" Grid.Row="1" Grid.ColumnSpan="2" Margin="0,0,0,7" Visibility="Collapsed" HorizontalContentAlignment="Stretch"/>
+                    <Grid Grid.Row="2" Margin="3,0,4,0" VerticalAlignment="Center">
                         <TextBox x:Name="PromptInput" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0"
                                  CaretBrush="{DynamicResource Text}" SelectionBrush="{DynamicResource Accent}" Padding="0,4"
                                  AcceptsReturn="True" MaxHeight="80" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
@@ -86,7 +87,7 @@
                             </TextBlock.Style>
                         </TextBlock>
                     </Grid>
-                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button x:Name="CompactAttachButton" Style="{StaticResource IconButton}" Content="&#xE710;" Margin="0,0,4,0"
                                 ToolTip="{ui:Localized 'Прикрепить файлы (Ctrl+O)', 'Attach files (Ctrl+O)'}" AutomationProperties.Name="{ui:Localized 'Прикрепить файлы', 'Attach files'}" Click="AttachFiles_Click"/>
                         <Button Style="{StaticResource IconButton}" Content="&#xE8A7;" Margin="0,0,4,0"

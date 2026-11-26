@@ -33,6 +33,12 @@ internal sealed class NextActionStream(Action<string?, bool> emit)
 partial class AgentRunner
 {
     const string NextActionsField = "next_actions";
+    const string NextActionsGuidance = "When a final answer has useful follow-up actions, append a separate last line in this exact format:" +
+        NextActionStream.Prefix + "[\"Show the changes\", \"Review the report\"]" + NextActionStream.End +
+        ". Give up to three distinct requests in the user's language, each at most 64 characters. Make them specific to the result " +
+        "and suggest only work beyond the completed request. Omit the line if there is no useful follow-up.";
+
+    internal bool SuggestNextActions { get; set; } = true;
 
     internal static string[] NextActionsOf(JsonNode? message) => ReadNextActions(MetaOf(message)?[NextActionsField]);
 

@@ -19,7 +19,7 @@ public partial class MainWindow
         var current = branches?.Current;
         GitBranchButton.Visibility = VisibleIf(current != null);
         GitBranchText.Text = current ?? "";
-        if (current != null) SetHint(GitBranchButton, Tr($"Ветка Git: {current}. Выбрать ветку", $"Git branch: {current}. Choose branch"));
+        if (current != null) AutomationProperties.SetName(GitBranchButton, Tr($"Ветка Git: {current}. Выбрать ветку", $"Git branch: {current}. Choose branch"));
         UpdateLayoutWidths();
         return branches;
     }
@@ -35,7 +35,6 @@ public partial class MainWindow
             var item = FileActions.Item(branch.Replace("_", "__"), null,
                 () => _ = RunChatOperationAsync(() => SwitchGitBranchAsync(folder, branches.Root, branch)));
             item.IsChecked = branch == branches.Current;
-            item.ToolTip = branch;
             menu.Items.Add(item);
         }
         menu.IsOpen = true;

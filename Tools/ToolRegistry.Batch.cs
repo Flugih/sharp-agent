@@ -42,7 +42,7 @@ partial class ToolRegistry
                     "read" => new(await local.WithDocumentRetryAsync(() => Task.FromResult(FileTools.ReadFile(local, context, ct)), ct), false),
                     "ranges" => await FileTools.ReadManyAsync(local, context, ct),
                     "grep" => new(FileTools.SearchText(local, context, ct), false),
-                    _ => await ExecuteAsync(operation.Name, operation.Args.ToJsonString(), null, ct),
+                    _ => new(FileTools.SearchFiles(local, context, ct), false),
                 };
             }
             catch (Exception ex) when (ex is ToolException or IOException or UnauthorizedAccessException)

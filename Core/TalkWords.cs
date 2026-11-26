@@ -22,6 +22,8 @@ static partial class TalkWords
 
     internal static bool IsStop(string text) => Stop().IsMatch(text);
 
+    internal static bool IsTaskStop(string text) => TaskStop().IsMatch(text);
+
     internal static bool IsRecheck(string text) => Recheck().IsMatch(text);
 
     [GeneratedRegex(@"(?<![\p{L}\p{N}_])(?:postgres(?:ql)?|пост[ -]?гр[еэ]сс?(?:[ -]?(?:эс[ -]?к[уью][ -]?эль|к[уью][ -]?эль|sql))?)(?![\p{L}\p{N}_])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -35,6 +37,12 @@ static partial class TalkWords
 
     [GeneratedRegex(@"\A\s*(?:стоп|остановись|погоди|подожди|секунду|stop|wait|hold on|one second)[\s.!?,…]*\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Stop();
+
+    const string StopVerb = @"(?:останови|отмени|заверши|прерви|прекрати)(?:те)?";
+
+    [GeneratedRegex(@"\A\s*(?:(?:слушай|ну|давай|пожалуйста|агент|please|(?:can|could) you)[\s,]+)*(?:" + StopVerb + @"(?:\s+или\s+" + StopVerb +
+        @")?(?:\s+(?:выполнение\s+(?:(?:этой|текущей|активной)\s+)?задачи|(?:(?:эту|текущую|активную)\s+)?задачу(?:\s+(?:текущую|активную))?))?|(?:stop|cancel|end|abort|finish)\s+(?:(?:the|this)\s+)?(?:(?:current|active|running)\s+)?task)(?:[\s,]+(?:пожалуйста|please))?[\s.!?,…]*\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TaskStop();
 
     [GeneratedRegex(@"\A\s*(?:(?:смотри|слушай|ну|давай|пожалуйста|please)[\s,]+)*(?:(?:ещ[её]\s+раз\s+)?перепроверь(?:те)?|(?:ещ[её]\s+раз\s+проверь(?:те)?|проверь(?:те)?\s+(?:(?:эту|текущую|прошлую)\s+)?задачу\s+ещ[её]\s+раз|проверь(?:те)?\s+ещ[её]\s+раз)|recheck|check\s+(?:the\s+task\s+)?again)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Recheck();

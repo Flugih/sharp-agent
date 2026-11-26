@@ -9,7 +9,7 @@ static class ToolOutputStore
     static readonly object Gate = new();
 
     internal static bool Applies(string name) => name is "search_files" or
-        "list_directory" or LocalResearchEngine.Name or LocalTestTools.Name or LocalContractEngine.Name or "local_batch";
+        "list_directory" or LocalResearchEngine.Name or LocalTestTools.Name or LocalContractEngine.Name or "local_batch" or ComputerInventory.FindFolders or ComputerInventory.ListApps;
 
     internal static AgentTool Tool() => new()
     {

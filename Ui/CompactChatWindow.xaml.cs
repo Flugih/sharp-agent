@@ -116,11 +116,18 @@ public partial class CompactChatWindow : Window
         foreach (var message in messages)
             if (AgentRunner.Role(message) == "assistant")
                 Transcript.Children.Add(_answerView(AgentRunner.ExtractText(message["content"])!.Trim(), AgentRunner.SentAtOf(message)));
-            else Transcript.Children.Add(new Border
+            else
             {
-                CornerRadius = new(14), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(24, 6, 2, 4), Padding = new(12, 6, 12, 6),
-                Child = new TextBlock { Text = UserText(message), TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "UserBubbleText"),
-            }.Paint(BackgroundProperty, "UserBubble"));
+                Transcript.Children.Add(new Border
+                {
+                    CornerRadius = new(14), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(24, 6, 2, 4), Padding = new(12, 6, 12, 6),
+                    Child = new TextBlock { Text = UserText(message), TextWrapping = TextWrapping.Wrap }.Paint(ForegroundProperty, "UserBubbleText"),
+                }.Paint(BackgroundProperty, "UserBubble"));
+                if (AgentRunner.FromVoice(message)) Transcript.Children.Add(new TextBlock
+                {
+                    Text = Tr("Голос", "Voice"), Style = Theme.Style("VoiceTaskLabel"), HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 0, 2, 0),
+                });
+            }
         UpdateTranscript(scroll: true);
     }
 
@@ -193,7 +200,7 @@ public partial class CompactChatWindow : Window
 
     void Pill_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ButtonState != MouseButtonState.Pressed) return;
+        if (e.ButtonState != MouseButtonState.Pressed || QuestionSlot.IsMouseOver) return;
         DragMove();
         _anchorBottom = Top + ActualHeight;
         Anchor();

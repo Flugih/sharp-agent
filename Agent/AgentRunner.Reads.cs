@@ -33,6 +33,7 @@ partial class AgentRunner
     ReadKey? ReadKeyOf(ToolCallEvent call)
     {
         if (ArgsOf(call) is not { } parameters) return null;
+        if (call.Name is "exec_command" or "local_batch" && tools.ExternalPaths(call.Name, parameters).Length > 0) return null;
         if (call.Name == "use_plugin" && PluginName(call) is { } plugin) return new("use_plugin " + plugin.ToUpperInvariant());
         try
         {
@@ -43,7 +44,9 @@ partial class AgentRunner
                 var folder = PathHelper.FinalPath(tools.Context.Resolve(shell.Optional("working_directory")));
                 if (ShellTools.FileInspectionOf(shell) is { } fileName)
                 {
-                    var path = PathHelper.FinalPath(tools.Context.Resolve(Path.Combine(folder, fileName)));
+                    var candidate = tools.Context.Resolve(Path.Combine(folder, fileName));
+                    if (!PathHelper.IsInside(candidate, folder)) return null;
+                    var path = PathHelper.FinalPath(candidate);
                     if (!PathHelper.IsInside(path, folder) || tools.Context.IsForeignShare(path) || !File.Exists(path)) return null;
                     tools.Context.GuardSecrets(path);
                     tools.Context.GuardAppFiles(path);

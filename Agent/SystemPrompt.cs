@@ -23,6 +23,9 @@ static class SystemPrompt
         if (names.Contains(BrowserTools.Name)) notes.Add(Browser.Value);
         if (names.Contains(ComputerTools.Name) || names.Contains(ComputerTools.AppName)) notes.Add(Computer.Value);
         if (names.Contains(LocalResearchEngine.Name)) notes.Add(Documents.Value);
+        if (names.Contains(ComputerInventory.FindFolders)) notes.Add("When asked to find a folder on the user's PC without a known path, use find_folders_on_pc with likely name variants. Return the full paths. " +
+            "Use list_installed_apps for the list of Windows applications. These tools request user permission themselves. If permission is declined, stop that operation. " +
+            "For a known external path, use the file tools with that path so the application can show it in the confirmation.");
         return "\n\n" + string.Join("\n", notes);
     }
 

@@ -42,7 +42,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     RequestInputMeter _inputMeter = new();
     JsonObject? _systemMessage;
     string? _resumeContext, _model;
-    (bool WorkMode, ReplyLanguage Language) _systemKey;
+    (bool WorkMode, ReplyLanguage Language, bool SuggestNextActions) _systemKey;
     bool _saveFailed, _isTemporary;
     int _titleVersion;
     IChatProvider? _api;
@@ -196,7 +196,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     }
 
     public async Task RunAsync(string userText, IReadOnlyList<Attachment> attachments, string model, CancellationToken ct,
-        DateTimeOffset? sentAt = null, bool useSelectedModel = false, ReplyLanguage? replyLanguage = null)
+        DateTimeOffset? sentAt = null, bool useSelectedModel = false, ReplyLanguage? replyLanguage = null, bool fromVoice = false)
     {
         var local = !useSelectedModel && attachments.Count == 0 ? LocalActionRouter.Match(userText) : null;
         var diagnosis = !useSelectedModel && !delegated && attachments.Count == 0 ? LocalActionRouter.Diagnosis(userText) : null;
@@ -213,6 +213,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
         var message = new JsonObject { ["role"] = "user", ["content"] = userText,
             [MetaField] = new JsonObject { [SentAtField] = FormatSentAt(sentAt ?? DateTimeOffset.UtcNow) } };
         if (replyLanguage is { } language) message[MetaField]!["reply_language"] = language.ToString();
+        if (fromVoice) message[MetaField]!["voice"] = true;
         if (routed)
         {
             message[MetaField]!["routed_model"] = model;
@@ -250,6 +251,8 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     }
 
     internal static bool HasPendingTitle(JsonNode? first) => Bool(MetaOf(first)?[PendingTitleField]) == true;
+
+    internal static bool FromVoice(JsonNode? message) => Bool(MetaOf(message)?["voice"]) == true;
 
     async Task RunModelTurnAsync(string model, CancellationToken ct, string? repository = null)
     {
@@ -527,7 +530,7 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
             if (elapsed is { } time) meta[ElapsedField] = (long)time.TotalMilliseconds;
             if (review != null) meta[ReviewField] = review;
             if (verification != null) meta["local_verification"] = verification;
-            if (elapsed != null && result.FinishReason != "length" && !string.IsNullOrWhiteSpace(text) && nextActions.Length > 0)
+            if (WorkMode && SuggestNextActions && elapsed != null && result.FinishReason != "length" && !string.IsNullOrWhiteSpace(text) && nextActions.Length > 0)
                 meta[NextActionsField] = new JsonArray([.. nextActions.Select(action => JsonValue.Create(action))]);
             if (result.Progress?.Reasoning is { } reasoning) meta["reasoning"] = reasoning;
             if (progress.Commentary != null) meta["commentary"] = progress.Commentary;
@@ -1109,12 +1112,13 @@ public sealed partial class AgentRunner(ToolRegistry tools, ChatStore store)
     JsonObject SystemMessage()
     {
         var language = ReplyLanguageFor();
-        var key = (WorkMode, language);
+        bool suggest = WorkMode && SuggestNextActions && !delegated;
+        var key = (WorkMode, language, suggest);
         if (_systemMessage == null || _systemKey != key)
             (_systemMessage, _systemKey) = (new JsonObject
             {
                 ["role"] = "system",
-                ["content"] = SystemPrompt.Base(WorkMode) + "\n" + LanguageDetector.Guidance(language),
+                ["content"] = SystemPrompt.Base(WorkMode) + "\n" + LanguageDetector.Guidance(language) + (suggest ? "\n" + NextActionsGuidance : ""),
             }, key);
         return _systemMessage;
     }

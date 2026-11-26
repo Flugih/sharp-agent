@@ -57,7 +57,7 @@ public sealed class DarkDialog : Window
     }
 
     public static bool Ask(Window owner, string title, string message, string okText,
-        string? cancelText = null, bool danger = false, string? code = null, bool delayed = false)
+        string? cancelText = null, bool danger = false, string? code = null, bool delayed = false, CancellationToken ct = default)
     {
         if (code != null)
         {
@@ -88,6 +88,10 @@ public sealed class DarkDialog : Window
             (danger || delayed ? cancel : ok).Focus();
             if (delayed) Theme.After(TimeSpan.FromMilliseconds(400), () => ok.IsEnabled = true);
         };
+        using var cancellation = ct.Register(() => _ = dialog.Dispatcher.InvokeAsync(() =>
+        {
+            if (dialog.IsVisible) dialog.Close();
+        }));
         return dialog.Run() == true;
     }
 
